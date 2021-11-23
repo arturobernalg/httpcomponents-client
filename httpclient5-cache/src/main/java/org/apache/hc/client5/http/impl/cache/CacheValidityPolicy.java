@@ -26,6 +26,7 @@
  */
 package org.apache.hc.client5.http.impl.cache;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.Iterator;
@@ -51,6 +52,10 @@ class CacheValidityPolicy {
     }
 
     public TimeValue getCurrentAge(final HttpCacheEntry entry, final Date now) {
+        return TimeValue.ofSeconds(getCorrectedInitialAge(entry).toSeconds() + getResidentTime(entry, now).toSeconds());
+    }
+
+    public TimeValue getCurrentAge(final HttpCacheEntry entry, final Instant now) {
         return TimeValue.ofSeconds(getCorrectedInitialAge(entry).toSeconds() + getResidentTime(entry, now).toSeconds());
     }
 
@@ -245,6 +250,11 @@ class CacheValidityPolicy {
     protected TimeValue getResidentTime(final HttpCacheEntry entry, final Date now) {
         final long diff = now.getTime() - entry.getResponseDate().getTime();
         return TimeValue.ofSeconds(diff / 1000);
+    }
+
+    protected TimeValue getResidentTime(final HttpCacheEntry entry, final Instant now) {
+        final Duration diff = Duration.between(DateUtils.toInstant(entry.getResponseDate()), now);
+        return TimeValue.ofSeconds(diff.getSeconds());
     }
 
     protected long getMaxAge(final HttpCacheEntry entry) {

@@ -27,6 +27,7 @@
 
 package org.apache.hc.client5.http.cookie;
 
+import java.time.Instant;
 import java.util.Date;
 
 /**
@@ -119,13 +120,30 @@ public interface Cookie {
      * @param date Current time
      *
      * @return {@code true} if the cookie has expired.
+     * @deprecated Use {{@link #isExpired(Instant)}}
      */
+    @Deprecated
     boolean isExpired(final Date date);
+
+    /**
+     * Returns true if this cookie has expired.
+     * @param date Current time
+     *
+     * @return {@code true} if the cookie has expired.
+     */
+    default boolean isExpired(final Instant date) { return false; }
+
+    /**
+     * Returns creation time of the cookie.
+     * @deprecated Use {@link #getCreationInstant()}
+     */
+    @Deprecated
+    Date getCreationDate();
 
     /**
      * Returns creation time of the cookie.
      */
-    Date getCreationDate();
+    default Instant getCreationInstant() { return null;  }
 
     /**
      * Checks whether this Cookie has been marked as {@code httpOnly}.
