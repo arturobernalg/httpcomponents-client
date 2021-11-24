@@ -181,7 +181,7 @@ public class HttpCacheEntry implements MessageHeaders, Serializable {
     }
 
     /**
-     * Find the "Date" response header and parse it into a java.util.Date
+     * Find the "Date" response header and parse it into a {@link Instant}
      * @return the Date value of the header or null if the header is not present
      */
     private Instant parseDate() {
