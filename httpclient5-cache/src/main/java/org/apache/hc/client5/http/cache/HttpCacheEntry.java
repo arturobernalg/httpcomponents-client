@@ -27,6 +27,7 @@
 package org.apache.hc.client5.http.cache;
 
 import java.io.Serializable;
+import java.time.Instant;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -59,13 +60,13 @@ public class HttpCacheEntry implements MessageHeaders, Serializable {
     private static final long serialVersionUID = -6300496422359477413L;
     private static final String REQUEST_METHOD_HEADER_NAME = "Hc-Request-Method";
 
-    private final Date requestDate;
-    private final Date responseDate;
+    private final Instant requestDate;
+    private final Instant responseDate;
     private final int status;
     private final HeaderGroup responseHeaders;
     private final Resource resource;
     private final Map<String, String> variantMap;
-    private final Date date;
+    private final Instant date;
 
     /**
      * Create a new {@link HttpCacheEntry} with variants.
@@ -84,10 +85,47 @@ public class HttpCacheEntry implements MessageHeaders, Serializable {
      *   of this parent entry; this maps a "variant key" (derived
      *   from the varying request headers) to a "cache key" (where
      *   in the cache storage the particular variant is located)
+     * @deprecated  Use {{@link #HttpCacheEntry(Instant, Instant, int, Header[], Resource, Map)}}
      */
+    @Deprecated
     public HttpCacheEntry(
             final Date requestDate,
             final Date responseDate,
+            final int status,
+            final Header[] responseHeaders,
+            final Resource resource,
+            final Map<String, String> variantMap) {
+        super();
+        Args.notNull(requestDate, "Request date");
+        Args.notNull(responseDate, "Response date");
+        Args.check(status >= HttpStatus.SC_SUCCESS, "Status code");
+        Args.notNull(responseHeaders, "Response headers");
+        this.requestDate = DateUtils.toInstant(requestDate);
+        this.responseDate = DateUtils.toInstant(responseDate);
+        this.status = status;
+        this.responseHeaders = new HeaderGroup();
+        this.responseHeaders.setHeaders(responseHeaders);
+        this.resource = resource;
+        this.variantMap = variantMap != null ? new HashMap<>(variantMap) : null;
+        this.date = parseDate();
+    }
+
+    /**
+     * Create a new {@link HttpCacheEntry} with variants.
+     *
+     * @param requestDate     Date/time when the request was made (Used for age calculations)
+     * @param responseDate    Date/time that the response came back (Used for age calculations)
+     * @param status          HTTP status from origin response
+     * @param responseHeaders Header[] from original HTTP Response
+     * @param resource        representing origin response body
+     * @param variantMap      describing cache entries that are variants of this parent entry; this
+     *                        maps a "variant key" (derived from the varying request headers) to a
+     *                        "cache key" (where in the cache storage the particular variant is
+     *                        located)
+     */
+    public HttpCacheEntry(
+            final Instant requestDate,
+            final Instant responseDate,
             final int status,
             final Header[] responseHeaders,
             final Resource resource,
@@ -110,6 +148,21 @@ public class HttpCacheEntry implements MessageHeaders, Serializable {
     /**
      * Create a new {@link HttpCacheEntry}.
      *
+     * @param requestDate     Date/time when the request was made (Used for age calculations)
+     * @param responseDate    Date/time that the response came back (Used for age calculations)
+     * @param status          HTTP status from origin response
+     * @param responseHeaders Header[] from original HTTP Response
+     * @param resource        representing origin response body
+     * @deprecated {{@link #HttpCacheEntry(Instant, Instant, int, Header[], Resource)}}
+     */
+    @Deprecated
+    public HttpCacheEntry(final Date requestDate, final Date responseDate, final int status,
+                          final Header[] responseHeaders, final Resource resource) {
+        this(requestDate, responseDate, status, responseHeaders, resource, new HashMap<>());
+    }
+    /**
+     * Create a new {@link HttpCacheEntry}.
+     *
      * @param requestDate
      *          Date/time when the request was made (Used for age
      *            calculations)
@@ -122,8 +175,8 @@ public class HttpCacheEntry implements MessageHeaders, Serializable {
      *          Header[] from original HTTP Response
      * @param resource representing origin response body
      */
-    public HttpCacheEntry(final Date requestDate, final Date responseDate, final int status,
-            final Header[] responseHeaders, final Resource resource) {
+    public HttpCacheEntry(final Instant requestDate, final Instant responseDate, final int status,
+                          final Header[] responseHeaders, final Resource resource) {
         this(requestDate, responseDate, status, responseHeaders, resource, new HashMap<>());
     }
 
@@ -131,8 +184,8 @@ public class HttpCacheEntry implements MessageHeaders, Serializable {
      * Find the "Date" response header and parse it into a java.util.Date
      * @return the Date value of the header or null if the header is not present
      */
-    private Date parseDate() {
-        return DateUtils.toDate(DateUtils.parseStandardDate(this, HttpHeaders.DATE));
+    private Instant parseDate() {
+        return DateUtils.parseStandardDate(this, HttpHeaders.DATE);
     }
 
     /**
@@ -148,7 +201,7 @@ public class HttpCacheEntry implements MessageHeaders, Serializable {
      * @return {@link Date}
      */
     public Date getRequestDate() {
-        return requestDate;
+        return DateUtils.toDate(requestDate);
     }
 
     /**
@@ -156,7 +209,7 @@ public class HttpCacheEntry implements MessageHeaders, Serializable {
      * @return {@link Date}
      */
     public Date getResponseDate() {
-        return responseDate;
+        return DateUtils.toDate(responseDate);
     }
 
     /**
@@ -253,6 +306,10 @@ public class HttpCacheEntry implements MessageHeaders, Serializable {
      * @since 4.3
      */
     public Date getDate() {
+        return DateUtils.toDate(date);
+    }
+
+    public Instant getInstant() {
         return date;
     }
 

@@ -70,6 +70,11 @@ public class TestHttpCacheEntry {
                 HttpStatus.SC_OK, headers, mockResource);
     }
 
+    private HttpCacheEntry makeEntryInstantDate(final Header[] headers) {
+        return new HttpCacheEntry(elevenSecondsAgo, nineSecondsAgo,
+                HttpStatus.SC_OK, headers, mockResource);
+    }
+
     @Test
     public void testGetHeadersReturnsCorrectHeaders() {
         final Header[] headers = { new BasicHeader("foo", "fooValue"),
@@ -77,6 +82,9 @@ public class TestHttpCacheEntry {
                 new BasicHeader("bar", "barValue2")
         };
         entry = makeEntry(headers);
+        assertEquals(2, entry.getHeaders("bar").length);
+
+        entry = makeEntryInstantDate(headers);
         assertEquals(2, entry.getHeaders("bar").length);
     }
 
@@ -88,6 +96,9 @@ public class TestHttpCacheEntry {
         };
         entry = makeEntry(headers);
         assertEquals("barValue1", entry.getFirstHeader("bar").getValue());
+
+        entry = makeEntryInstantDate(headers);
+        assertEquals("barValue1", entry.getFirstHeader("bar").getValue());
     }
 
     @Test
@@ -98,6 +109,9 @@ public class TestHttpCacheEntry {
         };
         entry = makeEntry(headers);
         assertEquals(0, entry.getHeaders("baz").length);
+
+        entry = makeEntryInstantDate(headers);
+        assertEquals(0, entry.getHeaders("baz").length);
     }
 
     @Test
@@ -107,6 +121,9 @@ public class TestHttpCacheEntry {
                 new BasicHeader("bar", "barValue2")
         };
         entry = makeEntry(headers);
+        assertNull(entry.getFirstHeader("quux"));
+
+        entry = makeEntryInstantDate(headers);
         assertNull(entry.getFirstHeader("quux"));
     }
 
@@ -122,6 +139,9 @@ public class TestHttpCacheEntry {
         final Header[] headers = { new BasicHeader("Vary", "User-Agent") };
         entry = makeEntry(headers);
         assertTrue(entry.hasVariants());
+
+        entry = makeEntryInstantDate(headers);
+        assertTrue(entry.hasVariants());
     }
 
     @Test
@@ -131,12 +151,18 @@ public class TestHttpCacheEntry {
         };
         entry = makeEntry(headers);
         assertTrue(entry.hasVariants());
+
+        entry = makeEntryInstantDate(headers);
+        assertTrue(entry.hasVariants());
     }
 
     @Test
     public void testCacheEntryWithVaryStarHasVariants(){
         final Header[] headers = { new BasicHeader("Vary", "*") };
         entry = makeEntry(headers);
+        assertTrue(entry.hasVariants());
+
+        entry = makeEntryInstantDate(headers);
         assertTrue(entry.hasVariants());
     }
 
@@ -180,14 +206,14 @@ public class TestHttpCacheEntry {
     public void canGetOriginalRequestDate() {
         final Date requestDate = new Date();
         entry = new HttpCacheEntry(requestDate, new Date(), HttpStatus.SC_OK, new Header[]{}, mockResource);
-        assertSame(requestDate, entry.getRequestDate());
+        assertEquals(requestDate, entry.getRequestDate());
     }
 
     @Test
     public void canGetOriginalResponseDate() {
         final Date responseDate = new Date();
         entry = new HttpCacheEntry(new Date(), responseDate, HttpStatus.SC_OK, new Header[]{}, mockResource);
-        assertSame(responseDate, entry.getResponseDate());
+        assertEquals(responseDate, entry.getResponseDate());
     }
 
     @Test
