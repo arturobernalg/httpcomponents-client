@@ -78,8 +78,21 @@ public interface Cookie {
      * considered immutable. Changing it (e.g. using setTime()) could result
      * in undefined behaviour. Do so at your peril. </p>
      * @return Expiration {@link Date}, or {@code null}.
+     * @deprecated Use {{@link #getExpiryInstant()}}
      */
+    @Deprecated
     Date getExpiryDate();
+
+    /**
+     * Returns the expiration {@link Instant} of the cookie, or {@code null}
+     * if none exists.
+     * <p><strong>Note:</strong> the object returned by this method is
+     * considered immutable. Changing it (e.g. using setTime()) could result
+     * in undefined behaviour. Do so at your peril. </p>
+     * @return Expiration {@link Instant}, or {@code null}.
+     * @since 5.2
+     */
+    default Instant getExpiryInstant() { return null; }
 
     /**
      * Returns {@code false} if the cookie should be discarded at the end

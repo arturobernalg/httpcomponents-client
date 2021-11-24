@@ -268,6 +268,7 @@ public class TestBasicCookieAttribHandlers {
         final CookieAttributeHandler h = new BasicMaxAgeHandler();
         h.parse(cookie, "2000");
         Assertions.assertNotNull(cookie.getExpiryDate());
+        Assertions.assertNotNull(cookie.getExpiryInstant());
     }
 
     @Test
@@ -328,6 +329,7 @@ public class TestBasicCookieAttribHandlers {
 
         h.parse(cookie, DateUtils.formatStandardDate(Instant.now()));
         Assertions.assertNotNull(cookie.getExpiryDate());
+        Assertions.assertNotNull(cookie.getExpiryInstant());
     }
 
     @Test

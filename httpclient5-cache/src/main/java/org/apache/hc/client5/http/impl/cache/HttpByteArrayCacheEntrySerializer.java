@@ -33,7 +33,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.time.Instant;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -151,8 +150,8 @@ public class HttpByteArrayCacheEntrySerializer implements HttpCacheEntrySerializ
 
             // Extract metadata pseudo-headers
             final String storageKey = getCachePseudoHeaderAndRemove(response, SC_HEADER_NAME_STORAGE_KEY);
-            final Date requestDate = getCachePseudoHeaderDateAndRemove(response, SC_HEADER_NAME_REQUEST_DATE);
-            final Date responseDate = getCachePseudoHeaderDateAndRemove(response, SC_HEADER_NAME_RESPONSE_DATE);
+            final Instant requestDate = getCachePseudoHeaderDateAndRemove(response, SC_HEADER_NAME_REQUEST_DATE);
+            final Instant responseDate = getCachePseudoHeaderDateAndRemove(response, SC_HEADER_NAME_RESPONSE_DATE);
             final boolean noBody = getCachePseudoHeaderBooleanAndRemove(response, SC_HEADER_NAME_NO_CONTENT);
             final Map<String, String> variantMap = getVariantMapPseudoHeadersAndRemove(response);
             unescapeHeaders(response);
@@ -309,12 +308,12 @@ public class HttpByteArrayCacheEntrySerializer implements HttpCacheEntrySerializ
      * @return Value for metadata pseudo-header
      * @throws ResourceIOException if the given pseudo-header is not found, or contains invalid data
      */
-    private static Date getCachePseudoHeaderDateAndRemove(final HttpResponse response, final String name) throws ResourceIOException{
+    private static Instant getCachePseudoHeaderDateAndRemove(final HttpResponse response, final String name) throws ResourceIOException{
         final String value = getCachePseudoHeaderAndRemove(response, name);
         response.removeHeaders(name);
         try {
             final long timestamp = Long.parseLong(value);
-            return new Date(timestamp);
+            return Instant.ofEpochMilli(timestamp);
         } catch (final NumberFormatException e) {
             throw new ResourceIOException("Invalid value for header '" + name + "'", e);
         }

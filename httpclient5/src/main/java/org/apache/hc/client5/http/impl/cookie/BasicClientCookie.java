@@ -108,6 +108,14 @@ public final class BasicClientCookie implements SetCookie, Cloneable, Serializab
     }
 
     /**
+     * {@inheritDoc}
+     */
+    @Override
+    public Instant getExpiryInstant() {
+        return cookieExpiryDate;
+    }
+
+    /**
      * Sets expiration date.
      * <p><strong>Note:</strong> the object returned by this method is considered
      * immutable. Changing it (e.g. using setTime()) could result in undefined
@@ -123,6 +131,17 @@ public final class BasicClientCookie implements SetCookie, Cloneable, Serializab
         cookieExpiryDate = DateUtils.toInstant(expiryDate);
     }
 
+    /**
+     * Sets expiration date.
+     * <p><strong>Note:</strong> the object returned by this method is considered
+     * immutable. Changing it (e.g. using setTime()) could result in undefined
+     * behaviour. Do so at your peril.</p>
+     *
+     * @param expiryInstant the {@link Instant} after which this cookie is no longer valid.
+     *
+     * @see #getExpiryDate
+     *
+     */
     @Override
     public void setExpiryDate (final Instant expiryInstant) {
         cookieExpiryDate = expiryInstant;

@@ -67,6 +67,7 @@ public interface SetCookie extends Cookie {
      */
     default void setExpiryDate (Instant expiryDate) {}
 
+
     /**
      * Sets the domain attribute.
      *
