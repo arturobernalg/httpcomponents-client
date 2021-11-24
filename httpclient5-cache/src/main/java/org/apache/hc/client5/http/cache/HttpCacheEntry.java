@@ -199,17 +199,41 @@ public class HttpCacheEntry implements MessageHeaders, Serializable {
      * Returns the time the associated origin request was initiated by the
      * caching module.
      * @return {@link Date}
+     * @deprecated USe {@link #getRequestInstant()}
      */
+    @Deprecated
     public Date getRequestDate() {
         return DateUtils.toDate(requestDate);
     }
 
     /**
+     * Returns the time the associated origin request was initiated by the
+     * caching module.
+     * @return {@link Instant}
+     * @since 5.2
+     */
+    public Instant getRequestInstant() {
+        return requestDate;
+    }
+
+    /**
      * Returns the time the origin response was received by the caching module.
      * @return {@link Date}
+     * @deprecated  Use {@link #getResponseInstant()}
      */
+    @Deprecated
     public Date getResponseDate() {
         return DateUtils.toDate(responseDate);
+    }
+
+    /**
+     * Returns the time the origin response was received by the caching module.
+     *
+     * @return {@link Instant}
+     * @since 5.2
+     */
+    public Instant getResponseInstant() {
+        return responseDate;
     }
 
     /**

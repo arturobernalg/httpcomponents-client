@@ -32,6 +32,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.time.Instant;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -410,7 +411,7 @@ public class HttpByteArrayCacheEntrySerializer implements HttpCacheEntrySerializ
      */
     private static class NoAgeCacheValidityPolicy extends CacheValidityPolicy {
         @Override
-        public TimeValue getCurrentAge(final HttpCacheEntry entry, final Date now) {
+        public TimeValue getCurrentAge(final HttpCacheEntry entry, final Instant now) {
             return TimeValue.ZERO_MILLISECONDS;
         }
     }
