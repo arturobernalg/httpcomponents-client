@@ -48,7 +48,7 @@ import org.apache.hc.core5.util.TextUtils;
 @Contract(threading = ThreadingBehavior.STATELESS)
 public class LaxMaxAgeHandler extends AbstractCookieAttributeHandler implements CommonCookieAttributeHandler {
 
-    private final static Pattern MAX_AGE_PATTERN = Pattern.compile("^\\-?[0-9]+$");
+    private final static Pattern MAX_AGE_PATTERN = Pattern.compile("^-?[0-9]+$");
 
     public LaxMaxAgeHandler() {
         super();

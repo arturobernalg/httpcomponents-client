@@ -169,7 +169,7 @@ class WarningValue {
     private static final String IPV4ADDRESS = "\\d+\\.\\d+\\.\\d+\\.\\d+";
     private static final String HOST = "(" + HOSTNAME + ")|(" + IPV4ADDRESS + ")";
     private static final String PORT = "\\d*";
-    private static final String HOSTPORT = "(" + HOST + ")(\\:" + PORT + ")?";
+    private static final String HOSTPORT = "(" + HOST + ")(:" + PORT + ")?";
     private static final Pattern HOSTPORT_PATTERN = Pattern.compile(HOSTPORT);
 
     protected void consumeHostPort() {
