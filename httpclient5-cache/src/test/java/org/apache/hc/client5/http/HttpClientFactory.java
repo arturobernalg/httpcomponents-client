@@ -1,6 +1,5 @@
 package org.apache.hc.client5.http;
 
-import java.io.IOException;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
@@ -8,8 +7,6 @@ import java.util.Map;
 import org.apache.hc.client5.http.cache.HttpCacheCASOperation;
 import org.apache.hc.client5.http.cache.HttpCacheEntry;
 import org.apache.hc.client5.http.cache.HttpCacheStorage;
-import org.apache.hc.client5.http.cache.HttpCacheUpdateException;
-import org.apache.hc.client5.http.cache.ResourceIOException;
 import org.apache.hc.client5.http.classic.HttpClient;
 import org.apache.hc.client5.http.impl.cache.CacheConfig;
 import org.apache.hc.client5.http.impl.cache.CachingHttpClients;
@@ -82,6 +79,5 @@ public class HttpClientFactory {
         for (Map.Entry<String, HttpCacheEntry> entry : mCache.entrySet()) {
             System.out.println("cache key:  " + entry.getKey() + " content length:  " + entry.getValue().getResource().length());
         }
-
     }
 }
