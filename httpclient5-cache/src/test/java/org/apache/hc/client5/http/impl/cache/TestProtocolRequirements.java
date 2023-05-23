@@ -1106,6 +1106,7 @@ public class TestProtocolRequirements {
         originResponse2.setHeader("Cache-Control", "max-age=7200");
         originResponse2.setHeader("Expires", DateUtils.formatStandardDate(inTwoHoursPlusASec));
         originResponse2.setHeader("Vary", "Accept-Encoding");
+        originResponse2.addHeader("Accept-Encoding", "gzip");
 
         final ClassicHttpRequest req3 = new BasicClassicHttpRequest("GET", "/");
         req3.addHeader("Range", "bytes=0-50");
@@ -1510,8 +1511,10 @@ public class TestProtocolRequirements {
         resp1.setHeader("Expires", DateUtils.formatStandardDate(inTwoHours));
         resp1.setHeader("Vary", "Accept-Encoding");
         resp1.setEntity(HttpTestUtils.makeBody(ENTITY_LENGTH));
+        resp1.setHeader("Accept-Encoding", "gzip");
 
         final ClassicHttpRequest req2 = new BasicClassicHttpRequest("GET", "/");
+        req2.setHeader("Accept-Encoding", "gzip");
         req1.setHeader("Accept-Encoding", "gzip");
         req1.setHeader("Cache-Control", "no-cache");
 
@@ -3671,6 +3674,7 @@ public class TestProtocolRequirements {
         resp1.setHeader("Cache-Control","max-age=3600");
         resp1.setHeader("Vary","User-Agent");
         resp1.setHeader("Content-Type","application/octet-stream");
+        resp1.setHeader("User-Agent","MyBrowser/1.5");
 
         final ClassicHttpRequest req2 = new BasicClassicHttpRequest("GET", "/");
         req2.setHeader("User-Agent","MyBrowser/1.5");
@@ -5180,4 +5184,52 @@ public class TestProtocolRequirements {
         Assertions.assertTrue(warningHeaders == null || warningHeaders.length == 0);
     }
 
+    @Test
+    public void testVaryHeaderMismatchInvalidatesCache() throws Exception {
+        // Set up initial request and response with 'User-Agent' header
+        final ClassicHttpRequest req1 = new BasicClassicHttpRequest("GET", "/");
+        req1.setHeader("User-Agent","MyBrowser/1.5");
+
+        final ClassicHttpResponse resp1 = HttpTestUtils.make200Response();
+        resp1.setHeader("ETag","\"etag1\"");
+        resp1.setHeader("Cache-Control","max-age=3600");
+        resp1.setHeader("Vary","User-Agent");
+        resp1.setHeader("Content-Type","application/octet-stream");
+        resp1.setHeader("User-Agent","MyBrowser/1.5");
+
+        // Set up second request with a different 'User-Agent' header
+        final ClassicHttpRequest req2 = new BasicClassicHttpRequest("GET", "/");
+        req2.setHeader("User-Agent","DifferentBrowser/1.0");
+
+        final ClassicHttpResponse resp200 = HttpTestUtils.make200Response();
+        resp200.setHeader("ETag","\"etag2\"");
+        resp200.setHeader("Vary","User-Agent");
+
+        final ClassicHttpResponse resp300 = HttpTestUtils.make300Response();
+        resp300.setHeader("ETag","\"etag3\"");
+        resp300.setHeader("Vary","User-Agent");
+
+        // Mock the initial request and response
+        Mockito.when(mockExecChain.proceed(Mockito.argThat(req -> new RequestEquivalent<>(req1).matches(req)), Mockito.any()))
+                .thenReturn(resp1);
+
+        // Execute initial request
+        execute(req1);
+
+        // Mock the second request with different 'User-Agent' header
+        Mockito.when(mockExecChain.proceed(Mockito.argThat(req -> new RequestEquivalent<>(req2).matches(req)), Mockito.any()))
+                .thenReturn(resp300);
+
+        // Execute second request
+        final ClassicHttpResponse result = execute(req2);
+
+        // Check the HTTP status code
+        Assertions.assertEquals(HttpStatus.SC_MULTIPLE_CHOICES, result.getCode());
+
+        // Verify that the 'proceed' method was called twice (once for each request)
+        Mockito.verify(mockExecChain, Mockito.times(2)).proceed(Mockito.any(), Mockito.any());
+
+        // Assert that the responses are not equivalent (i.e., the cached response was not used)
+        Assertions.assertFalse(HttpTestUtils.semanticallyTransparent(resp200, result));
+    }
 }

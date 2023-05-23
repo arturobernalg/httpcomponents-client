@@ -1052,23 +1052,23 @@ public class TestProtocolRecommendations {
     @Test
     public void testSendsAllVariantEtagsInConditionalRequest() throws Exception {
         final ClassicHttpRequest req1 = new BasicClassicHttpRequest("GET","/");
-        req1.setHeader("User-Agent","agent1");
+        req1.setHeader("User-Agent","agent");
         final ClassicHttpResponse resp1 = HttpTestUtils.make200Response();
         resp1.setHeader("Cache-Control","max-age=3600");
         resp1.setHeader("Vary","User-Agent");
         resp1.setHeader("Etag","\"etag1\"");
+        resp1.setHeader("User-Agent","agent");
 
         final ClassicHttpRequest req2 = new BasicClassicHttpRequest("GET","/");
-        req2.setHeader("User-Agent","agent2");
+        req2.setHeader("User-Agent","agent");
         final ClassicHttpResponse resp2 = HttpTestUtils.make200Response();
         resp2.setHeader("Cache-Control","max-age=3600");
         resp2.setHeader("Vary","User-Agent");
         resp2.setHeader("Etag","\"etag2\"");
 
         final ClassicHttpRequest req3 = new BasicClassicHttpRequest("GET","/");
-        req3.setHeader("User-Agent","agent3");
+        req3.setHeader("User-Agent","agent");
         final ClassicHttpResponse resp3 = HttpTestUtils.make200Response();
-
         Mockito.when(mockExecChain.proceed(Mockito.any(), Mockito.any())).thenReturn(resp1);
 
         execute(req1);
@@ -1106,15 +1106,17 @@ public class TestProtocolRecommendations {
         resp1.setHeader("Vary", "User-Agent");
         resp1.setHeader("Cache-Control", "max-age=3600");
         resp1.setHeader("ETag", "\"etag1\"");
+        resp1.setHeader("User-Agent", "agent1");
 
         final ClassicHttpRequest req2 = new BasicClassicHttpRequest("GET", "/");
-        req2.setHeader("User-Agent", "agent2");
+        req2.setHeader("User-Agent", "agent1");
 
         final ClassicHttpResponse resp2 = HttpTestUtils.make200Response();
         resp2.setHeader("Date", DateUtils.formatStandardDate(tenSecondsAgo));
         resp2.setHeader("Vary", "User-Agent");
         resp2.setHeader("Cache-Control", "max-age=3600");
         resp2.setHeader("ETag", "\"etag2\"");
+        resp2.setHeader("User-Agent", "agent2");
 
         final ClassicHttpRequest req3 = new BasicClassicHttpRequest("GET", "/");
         req3.setHeader("User-Agent", "agent3");
@@ -1122,6 +1124,8 @@ public class TestProtocolRecommendations {
         final ClassicHttpResponse resp3 = new BasicClassicHttpResponse(HttpStatus.SC_NOT_MODIFIED, "Not Modified");
         resp3.setHeader("Date", DateUtils.formatStandardDate(now));
         resp3.setHeader("ETag", "\"etag1\"");
+        req3.setHeader("User-Agent", "agent1");
+
 
         final ClassicHttpRequest req4 = new BasicClassicHttpRequest("GET", "/");
         req4.setHeader("User-Agent", "agent1");
@@ -1189,7 +1193,7 @@ public class TestProtocolRecommendations {
         req1.setHeader("User-Agent", "agent1");
         final ClassicHttpResponse resp1 = HttpTestUtils.make200Response();
         resp1.setHeader("Cache-Control", "max-age=3600");
-        resp1.setHeader("Vary", "User-Agent");
+        //resp1.setHeader("Vary", "User-Agent");
         resp1.setHeader("ETag", "\"etag1\"");
 
         final ClassicHttpRequest req2 = HttpTestUtils.makeDefaultRequest();
@@ -1199,17 +1203,17 @@ public class TestProtocolRecommendations {
         resp2.setEntity(HttpTestUtils.makeBody(50));
         resp2.setHeader("Content-Length","50");
         resp2.setHeader("Content-Range","bytes 0-49/100");
-        resp2.setHeader("Vary","User-Agent");
+        //resp2.setHeader("Vary","User-Agent");
         resp2.setHeader("ETag", "\"etag2\"");
         resp2.setHeader("Cache-Control","max-age=3600");
         resp2.setHeader("Date", DateUtils.formatStandardDate(Instant.now()));
-
+        resp2.setHeader("User-Agent", "agent2");
         final ClassicHttpRequest req3 = HttpTestUtils.makeDefaultRequest();
         req3.setHeader("User-Agent", "agent3");
 
         final ClassicHttpResponse resp3 = HttpTestUtils.make200Response();
         resp1.setHeader("Cache-Control", "max-age=3600");
-        resp1.setHeader("Vary", "User-Agent");
+        //resp1.setHeader("Vary", "User-Agent");
         resp1.setHeader("ETag", "\"etag3\"");
 
         Mockito.when(mockExecChain.proceed(Mockito.any(), Mockito.any())).thenReturn(resp1);

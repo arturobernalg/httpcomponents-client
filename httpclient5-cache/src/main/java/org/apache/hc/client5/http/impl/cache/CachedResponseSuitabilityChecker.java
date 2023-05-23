@@ -28,14 +28,18 @@ package org.apache.hc.client5.http.impl.cache;
 
 import java.time.Instant;
 import java.util.Iterator;
+import java.util.Locale;
+import java.util.StringJoiner;
 
 import org.apache.hc.client5.http.cache.HeaderConstants;
 import org.apache.hc.client5.http.cache.HttpCacheEntry;
 import org.apache.hc.client5.http.utils.DateUtils;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HeaderElement;
+import org.apache.hc.core5.http.HttpHeaders;
 import org.apache.hc.core5.http.HttpRequest;
 import org.apache.hc.core5.http.HttpStatus;
+import org.apache.hc.core5.http.MessageHeaders;
 import org.apache.hc.core5.http.message.MessageSupport;
 import org.apache.hc.core5.util.TimeValue;
 import org.slf4j.Logger;
@@ -241,6 +245,11 @@ class CachedResponseSuitabilityChecker {
             }
         }
 
+        if (!isValidWithRespectToVary(request, entry)) {
+            LOG.debug("Vary header fields in request and cached entry do not match");
+            return false;
+        }
+
         LOG.debug("Response from cache was suitable");
         return true;
     }
@@ -374,5 +383,111 @@ class CachedResponseSuitabilityChecker {
             return instant != null;
         }
         return false;
+    }
+    /**
+     * Parses the Vary header from a response and stores it in the cache entry.
+     *
+     * @param messageHeaders the HttpResponse from the origin.
+     * @return a Set containing all the headers specified in the Vary header.
+     */
+    private VaryHeader parseVaryHeader(final MessageHeaders messageHeaders) {
+        final Iterator<Header> it = messageHeaders.headerIterator(HttpHeaders.VARY);
+        if (it == null || !it.hasNext()) {
+            // No Vary header in the response
+            return new VaryHeader(); // return empty VaryHeader
+        } else {
+            // parse the Vary header using the VaryParser
+            return VaryParser.INSTANCE.parse(it);
+        }
+    }
+
+
+    /**
+     * Checks whether a cached response is still valid based on the Vary header.
+     *
+     * @param request the HttpRequest that generated an origin hit
+     * @param cachedResponse the HttpCacheEntry from the cache
+     * @return {@code true} if the cached response is still valid based on the Vary header, {@code false} otherwise
+     */
+    public boolean isValidWithRespectToVary(final HttpRequest request, final HttpCacheEntry cachedResponse) {
+        final VaryHeader varyHeaders = parseVaryHeader(cachedResponse);
+        if (varyHeaders.hasWildcard()) {
+            // Vary header contains "*", cached response is not valid
+            return false;
+        }
+        if (varyHeaders.getHeaders().isEmpty()) {
+            // No Vary header, cached response is valid
+            return true;
+        }
+
+        for (final String headerName : varyHeaders.getHeaders()) {
+            final Header[] requestHeaders = request.getHeaders(headerName);
+            final Header[] cachedHeaders = cachedResponse.getHeaders(headerName);
+            if (requestHeaders == null || cachedHeaders == null || !normalizeAndCompare(requestHeaders, cachedHeaders)) {
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("Vary header field mismatch: {}", headerName);
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Normalizes and compares two headers.
+     *
+     * <p>
+     * Both headers are normalized by trimming leading and trailing whitespace
+     * and converting to lowercase. After normalization, their values are compared
+     * for equality.
+     * </p>
+     *
+     * @param requestHeader the request header to compare
+     * @param cachedHeader the cached header to compare
+     * @return true if the normalized header values are equal or both headers are null,
+     *         false otherwise
+     */
+    private boolean normalizeAndCompare(final Header[] requestHeader, final Header[] cachedHeader) {
+        final String requestHeaderValue = normalizeHeaderValue(requestHeader);
+        final String cachedHeaderValue = normalizeHeaderValue(cachedHeader);
+
+        if (requestHeaderValue == null || cachedHeaderValue == null) {
+            return requestHeaderValue == null && cachedHeaderValue == null;
+        }
+
+        return requestHeaderValue.equals(cachedHeaderValue);
+    }
+
+/*    private String normalizeHeaderValue(final Header[] httpMessage) {
+        final StringJoiner joiner = new StringJoiner(", ");
+        for (final Header h : httpMessage) {
+            final String value = h.getValue();
+            if (value == null) {
+                return null;
+            }
+            joiner.add(value.trim().toLowerCase(Locale.ROOT));
+        }
+        return joiner.toString();
+    }*/
+
+    private String normalizeHeaderValue(final Header[] httpMessage) {
+        final char[] buf = new char[256]; // adjust size as needed
+        int pos = 0;
+        for (int i = 0; i < httpMessage.length; i++) {
+            if (i > 0) {
+                buf[pos++] = ',';
+                buf[pos++] = ' ';
+            }
+            final Header h = httpMessage[i];
+            final String value = h.getValue();
+            if (value == null) {
+                return null;
+            }
+            final String trimmedLowerCased = value.trim().toLowerCase(Locale.ROOT);
+            for (char c : trimmedLowerCased.toCharArray()) {
+                buf[pos++] = c;
+            }
+        }
+        return new String(buf, 0, pos);
     }
 }

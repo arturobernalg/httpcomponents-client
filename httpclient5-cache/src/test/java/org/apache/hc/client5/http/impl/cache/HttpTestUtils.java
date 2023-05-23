@@ -304,6 +304,15 @@ public class HttpTestUtils {
         return out;
     }
 
+    public static ClassicHttpResponse make300Response() {
+        final ClassicHttpResponse out = new BasicClassicHttpResponse(HttpStatus.SC_MULTIPLE_CHOICES, "Multiple Choices");
+        out.setHeader("Date", DateUtils.formatStandardDate(Instant.now()));
+        out.setHeader("Server", "MockOrigin/1.0");
+        out.setHeader("Content-Length", "128");
+        out.setEntity(makeBody(128));
+        return out;
+    }
+
     public static final ClassicHttpResponse make200Response(final Instant date, final String cacheControl) {
         final ClassicHttpResponse response = HttpTestUtils.make200Response();
         response.setHeader("Date", DateUtils.formatStandardDate(date));
