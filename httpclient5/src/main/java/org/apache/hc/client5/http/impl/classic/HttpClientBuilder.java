@@ -485,6 +485,7 @@ public class HttpClientBuilder {
 
     /**
      * Disables automatic content decompression.
+     * @deprecated
      */
     public HttpClientBuilder disableContentCompression() {
         contentCompressionDisabled = true;
@@ -623,6 +624,7 @@ public class HttpClientBuilder {
     /**
      * Assigns a map of {@link org.apache.hc.client5.http.entity.InputStreamFactory}s
      * to be used for automatic content decompression.
+     * @deprecated
      */
     public HttpClientBuilder setContentDecoderRegistry(
             final LinkedHashMap<String, InputStreamFactory> contentDecoderMap) {
