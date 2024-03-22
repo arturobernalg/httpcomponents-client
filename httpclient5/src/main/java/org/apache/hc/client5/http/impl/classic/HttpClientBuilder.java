@@ -487,6 +487,7 @@ public class HttpClientBuilder {
      * Disables automatic content decompression.
      * @deprecated
      */
+   @Deprecated
     public HttpClientBuilder disableContentCompression() {
         contentCompressionDisabled = true;
         return this;
@@ -626,6 +627,7 @@ public class HttpClientBuilder {
      * to be used for automatic content decompression.
      * @deprecated
      */
+    @Deprecated
     public HttpClientBuilder setContentDecoderRegistry(
             final LinkedHashMap<String, InputStreamFactory> contentDecoderMap) {
         this.contentDecoderMap = contentDecoderMap;
