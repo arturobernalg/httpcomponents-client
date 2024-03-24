@@ -52,6 +52,7 @@ public class CompressHttpClientBuilder extends HttpClientBuilder {
 
     }
 
+
     public final CompressHttpClientBuilder setContentDecoder(
             final LinkedHashMap<String, Function<InputStream, InputStream>> contentDecoderMap) {
         this.contentDecoderMap = contentDecoderMap;

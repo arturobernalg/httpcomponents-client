@@ -25,39 +25,45 @@
  *
  */
 
-package org.apache.hc.client5.http.compress.util;
+package org.apache.hc.client5.http.examples.compress;
 
-public enum CompressionAlgorithm {
-    BROTLI("br"),
-    BZIP2("bzip2"),
-    GZIP("gzip"),
-    PACK200("pack200"),
-    XZ("xz"),
-    LZMA("lzma"),
-    SNAPPY_FRAMED("snappy-framed"),
-    SNAPPY_RAW("snappy-raw"),
-    Z("z"),
-    DEFLATE("deflate"),
-    DEFLATE64("deflate64"),
-    LZ4_BLOCK("lz4-block"),
-    LZ4_FRAMED("lz4-framed"),
-    ZSTANDARD("zstd"),
-    IDENTITY("identity");
+import java.io.IOException;
 
-    private final String identifier;
+import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.URIScheme;
+import org.apache.hc.core5.http.io.HttpRequestHandler;
+import org.apache.hc.core5.io.CloseMode;
+import org.apache.hc.core5.testing.classic.ClassicTestServer;
 
-    CompressionAlgorithm(final String identifier) {
-        this.identifier = identifier;
+public class AutoCloseableTestServer implements AutoCloseable {
+
+
+    private final URIScheme scheme;
+
+    private final ClassicTestServer server;
+
+    public AutoCloseableTestServer(final URIScheme scheme) throws IOException {
+        System.out.println("Starting up the server");
+        this.server = new ClassicTestServer();
+        this.server.start();
+        this.scheme = scheme;
     }
 
-    public String getIdentifier() {
-        return identifier;
+    public AutoCloseableTestServer() throws IOException {
+        this(URIScheme.HTTP);
     }
 
-    public boolean isSame(final String value) {
-        if (value == null) {
-            return false;
-        }
-        return getIdentifier().equalsIgnoreCase(value);
+    public void registerHandler(final String pattern, final HttpRequestHandler handler) {
+        server.registerHandler(pattern, handler);
+    }
+
+    public HttpHost getHttpHost() {
+        return new HttpHost(scheme.id, "localhost", server.getPort());
+    }
+
+    @Override
+    public void close() {
+        System.out.println("Shutting down");
+        server.shutdown(CloseMode.GRACEFUL);
     }
 }

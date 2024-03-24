@@ -44,7 +44,7 @@ import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.cookie.BasicCookieStore;
 import org.apache.hc.client5.http.cookie.CookieStore;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
-import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
+import org.apache.hc.client5.http.compress.CompressHttpClientBuilder;
 import org.apache.hc.client5.http.impl.cookie.BasicClientCookie;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.http.protocol.RedirectLocations;
@@ -101,7 +101,7 @@ public abstract class TestRedirects {
         return testResources.startServer(null, httpProcessor, handlerDecorator);
     }
 
-    public CloseableHttpClient startClient(final Consumer<HttpClientBuilder> clientCustomizer) throws Exception {
+    public CloseableHttpClient startClient(final Consumer<CompressHttpClientBuilder> clientCustomizer) throws Exception {
         return testResources.startClient(clientCustomizer);
     }
 
@@ -649,8 +649,7 @@ public abstract class TestRedirects {
         Assertions.assertEquals(new URIBuilder().setHttpHost(target).setPath("/random/100").build(),
                 reqWrapper.getUri());
 
-        assertThat(values.poll(), CoreMatchers.equalTo("gzip, x-gzip, deflate"));
-        assertThat(values.poll(), CoreMatchers.equalTo("gzip, x-gzip, deflate"));
+        assertThat(values.poll(), CoreMatchers.equalTo("snappy-raw, xz, snappy-framed, bzip2, lz4-framed, deflate64, br, lzma, zstd, lz4-block, gz, deflate, z, pack200"));
         assertThat(values.poll(), CoreMatchers.nullValue());
     }
 

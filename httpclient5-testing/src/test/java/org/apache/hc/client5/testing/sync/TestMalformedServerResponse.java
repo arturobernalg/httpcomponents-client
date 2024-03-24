@@ -31,7 +31,7 @@ import java.net.Socket;
 
 import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
-import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
+import org.apache.hc.client5.http.compress.CompressHttpClientBuilder;
 import org.apache.hc.core5.http.ClassicHttpResponse;
 import org.apache.hc.core5.http.HttpException;
 import org.apache.hc.core5.http.HttpHost;
@@ -95,7 +95,7 @@ public class TestMalformedServerResponse {
                 .create()) {
             server.start();
             final HttpHost target = new HttpHost("localhost", server.getLocalPort());
-            try (final CloseableHttpClient httpclient = HttpClientBuilder.create().build()) {
+            try (final CloseableHttpClient httpclient = CompressHttpClientBuilder.create().build()) {
                 final HttpGet get1 = new HttpGet("/nostuff");
                 httpclient.execute(target, get1, response -> {
                     Assertions.assertEquals(HttpStatus.SC_NO_CONTENT, response.getCode());

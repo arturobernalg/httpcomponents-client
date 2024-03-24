@@ -36,18 +36,26 @@ import org.apache.hc.client5.http.compress.entity.CompressingEntity;
 import org.apache.hc.client5.http.compress.entity.DecompressingEntity;
 import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.util.Args;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 public class ContentEncodingUtil {
 
-    public static HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding) {
+    private static final Logger LOG = LoggerFactory.getLogger(ContentEncodingUtil.class);
+
+    public static HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding, final boolean decompressConcatenated) {
         Args.notNull(entity, "Entity");
         Args.notNull(contentEncoding, "Content Encoding");
 
         if (!CompressorFactory.INSTANCE.isSupportedInput(contentEncoding)) {
-            throw new IllegalArgumentException("Unsupported decompression type: " + contentEncoding);
+            if (LOG.isWarnEnabled()) {
+                LOG.warn("Unsupported decompression type: {}", contentEncoding);
+            }
+            return null;
         }
 
-        final Function<InputStream, InputStream> decompressorFunction = CompressorFactory.INSTANCE.getCompressorInput(contentEncoding);
+        final Function<InputStream, InputStream> decompressorFunction = CompressorFactory.INSTANCE.getCompressorInput(contentEncoding, decompressConcatenated);
         return new DecompressingEntity(entity, decompressorFunction);
     }
 
@@ -56,10 +64,19 @@ public class ContentEncodingUtil {
         Args.notNull(contentEncoding, "Content Encoding");
 
         if (!CompressorFactory.INSTANCE.isSupportedOutput(contentEncoding)) {
-            throw new IllegalArgumentException("Unsupported compression type: " + contentEncoding);
+            if (LOG.isWarnEnabled()) {
+                LOG.warn("Unsupported compression type: {}", contentEncoding);
+            }
+            return null;
         }
 
         final Function<OutputStream, OutputStream> compressorFunction = CompressorFactory.INSTANCE.getCompressorOutputStream(contentEncoding);
         return new CompressingEntity(entity, compressorFunction, contentEncoding);
     }
+
+
+    public static HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding) {
+        return decompressEntity(entity, contentEncoding, true);
+    }
+
 }

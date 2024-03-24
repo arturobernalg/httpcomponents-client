@@ -59,7 +59,7 @@ import org.apache.hc.client5.http.impl.auth.BasicScheme;
 import org.apache.hc.client5.http.impl.auth.BasicSchemeFactory;
 import org.apache.hc.client5.http.impl.auth.CredentialsProviderBuilder;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
-import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
+import org.apache.hc.client5.http.compress.CompressHttpClientBuilder;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.testing.BasicTestAuthenticator;
 import org.apache.hc.client5.testing.auth.Authenticator;
@@ -125,7 +125,7 @@ public abstract class TestClientAuthentication {
         return startServer(new BasicTestAuthenticator("test:test", "test realm"));
     }
 
-    public CloseableHttpClient startClient(final Consumer<HttpClientBuilder> clientCustomizer) throws Exception {
+    public CloseableHttpClient startClient(final Consumer<CompressHttpClientBuilder> clientCustomizer) throws Exception {
         return testResources.startClient(clientCustomizer);
     }
 

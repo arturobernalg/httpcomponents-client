@@ -66,8 +66,10 @@ public final class ContentCompressionExec implements ExecChainHandler {
     public ContentCompressionExec(final List<String> acceptEncoding,
                                   final Function<String, Function<InputStream, InputStream>> decoderFunction,
                                   final boolean ignoreUnknown) {
-        this.acceptEncoding = MessageSupport.headerOfTokens(HttpHeaders.ACCEPT_ENCODING, acceptEncoding != null ? acceptEncoding : new ArrayList<>(CompressorFactory.INSTANCE.getAllCompressorInput().keySet()));
-        this.decoderFunction = decoderFunction != null ? decoderFunction : CompressorFactory.INSTANCE::getCompressorInput;
+        this.acceptEncoding = MessageSupport.headerOfTokens(HttpHeaders.ACCEPT_ENCODING,
+                acceptEncoding != null ? acceptEncoding : new ArrayList<>(CompressorFactory.INSTANCE.getInputStreamCompressorNames()));
+        this.decoderFunction = decoderFunction != null ? decoderFunction : name -> CompressorFactory.INSTANCE.getCompressorInput(name, true);
+
         this.ignoreUnknown = ignoreUnknown;
     }
 
@@ -107,7 +109,7 @@ public final class ContentCompressionExec implements ExecChainHandler {
                 final ParserCursor cursor = new ParserCursor(0, contentEncoding.length());
                 final HeaderElement[] codecs = BasicHeaderValueParser.INSTANCE.parseElements(contentEncoding, cursor);
                 for (final HeaderElement codec : codecs) {
-                    final String codecname = codec.getName().toLowerCase(Locale.ROOT);
+                    final String codecName = codec.getName().toLowerCase(Locale.ROOT);
                     final Function<InputStream, InputStream> decompress = decoderFunction.apply(contentEncoding.toLowerCase(Locale.ROOT));
                     if (decompress != null) {
                         response.setEntity(new DecompressingEntity(response.getEntity(), decompress));
@@ -115,7 +117,7 @@ public final class ContentCompressionExec implements ExecChainHandler {
                         response.removeHeaders(HttpHeaders.CONTENT_ENCODING);
                         response.removeHeaders(HttpHeaders.CONTENT_MD5);
                     } else {
-                        if (!CompressionAlgorithm.IDENTITY.isSame(codecname) && !ignoreUnknown) {
+                        if (!CompressionAlgorithm.IDENTITY.isSame(codecName) && !ignoreUnknown) {
                             throw new HttpException("Unsupported Content-Encoding: " + codec.getName());
                         }
                     }

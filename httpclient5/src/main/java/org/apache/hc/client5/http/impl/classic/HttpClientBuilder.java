@@ -209,6 +209,7 @@ public class HttpClientBuilder {
     private BackoffManager backoffManager;
     private Lookup<AuthSchemeFactory> authSchemeRegistry;
     private Lookup<CookieSpecFactory> cookieSpecRegistry;
+    @Deprecated
     private LinkedHashMap<String, InputStreamFactory> contentDecoderMap;
     private CookieStore cookieStore;
     private CredentialsProvider credentialsProvider;
@@ -223,6 +224,7 @@ public class HttpClientBuilder {
     private boolean systemProperties;
     private boolean redirectHandlingDisabled;
     private boolean automaticRetriesDisabled;
+    @Deprecated
     private boolean contentCompressionDisabled;
     private boolean cookieManagementDisabled;
     private boolean authCachingDisabled;
@@ -489,7 +491,6 @@ public class HttpClientBuilder {
      */
    @Deprecated
     public HttpClientBuilder disableContentCompression() {
-        contentCompressionDisabled = true;
         return this;
     }
 
@@ -630,7 +631,6 @@ public class HttpClientBuilder {
     @Deprecated
     public HttpClientBuilder setContentDecoderRegistry(
             final LinkedHashMap<String, InputStreamFactory> contentDecoderMap) {
-        this.contentDecoderMap = contentDecoderMap;
         return this;
     }
 

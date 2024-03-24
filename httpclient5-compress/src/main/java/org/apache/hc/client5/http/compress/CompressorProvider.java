@@ -28,30 +28,23 @@ package org.apache.hc.client5.http.compress;
 
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 
 public interface CompressorProvider {
 
-    // Gets a function that can decompress data for a given compression type.
-    Function<InputStream, InputStream> getCompressorInput(String compressionType);
 
-    // Gets all available decompression functions mapped by compression type.
-    Map<String, Function<InputStream, InputStream>> getAllCompressorInput();
-
-    // Gets a function that can compress data for a given compression type.
-    Function<OutputStream, OutputStream> getCompressorOutputStream(String compressionType);
-
-    // Checks if a given compression type is supported for input (decompression).
     boolean isSupportedInput(String compressionType);
 
-    // Checks if a given compression type is supported for output (compression).
+
     boolean isSupportedOutput(String compressionType);
 
-    // Gets the names of all supported compression types for input (decompression).
     Set<String> getInputStreamCompressorNames();
 
-    // Gets the names of all supported compression types for output (compression).
+
     Set<String> getOutputStreamCompressorNames();
+
+    Function<InputStream, InputStream> getCompressorInput(String name, boolean decompressConcatenated);
+
+    Function<OutputStream, OutputStream> getCompressorOutputStream(final String name);
 }

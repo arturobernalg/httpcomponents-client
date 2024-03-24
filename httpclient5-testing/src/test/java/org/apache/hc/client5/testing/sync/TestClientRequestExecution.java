@@ -39,7 +39,7 @@ import org.apache.hc.client5.http.HttpRequestRetryStrategy;
 import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
-import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
+import org.apache.hc.client5.http.compress.CompressHttpClientBuilder;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.http.protocol.RedirectLocations;
 import org.apache.hc.client5.http.utils.URIUtils;
@@ -94,7 +94,7 @@ public abstract class TestClientRequestExecution {
         return testResources.startServer(null, null, null);
     }
 
-    public CloseableHttpClient startClient(final Consumer<HttpClientBuilder> clientCustomizer) throws Exception {
+    public CloseableHttpClient startClient(final Consumer<CompressHttpClientBuilder> clientCustomizer) throws Exception {
         return testResources.startClient(clientCustomizer);
     }
 

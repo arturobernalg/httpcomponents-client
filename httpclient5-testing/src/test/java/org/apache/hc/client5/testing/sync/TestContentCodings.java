@@ -39,18 +39,21 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
-import java.util.zip.Deflater;
 import java.util.zip.GZIPOutputStream;
 
 import org.apache.hc.client5.http.classic.methods.HttpGet;
+import org.apache.hc.client5.http.compress.util.CompressionAlgorithm;
+import org.apache.hc.client5.http.compress.util.ContentEncodingUtil;
 import org.apache.hc.client5.http.impl.classic.BasicHttpClientResponseHandler;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
-import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
+import org.apache.hc.client5.http.compress.CompressHttpClientBuilder;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
 import org.apache.hc.client5.testing.sync.extension.TestClientResources;
 import org.apache.hc.core5.http.ClassicHttpRequest;
 import org.apache.hc.core5.http.ClassicHttpResponse;
+import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HeaderElement;
+import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.HttpException;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpStatus;
@@ -91,7 +94,7 @@ public abstract class TestContentCodings {
         return testResources.startServer(null, null, null);
     }
 
-    public CloseableHttpClient startClient(final Consumer<HttpClientBuilder> clientCustomizer) throws Exception {
+    public CloseableHttpClient startClient(final Consumer<CompressHttpClientBuilder> clientCustomizer) throws Exception {
         return testResources.startClient(clientCustomizer);
     }
 
@@ -374,20 +377,10 @@ public abstract class TestContentCodings {
                     if ("deflate".equalsIgnoreCase(element.getName())) {
                         response.addHeader("Content-Encoding", "deflate");
 
-                            /* Gack. DeflaterInputStream is Java 6. */
-                        // response.setEntity(new InputStreamEntity(new DeflaterInputStream(new
-                        // ByteArrayInputStream(
-                        // entityText.getBytes("utf-8"))), -1));
-                        final byte[] uncompressed = entityText.getBytes(StandardCharsets.UTF_8);
-                        final Deflater compressor = new Deflater(Deflater.DEFAULT_COMPRESSION, rfc1951);
-                        compressor.setInput(uncompressed);
-                        compressor.finish();
-                        final byte[] output = new byte[100];
-                        final int compressedLength = compressor.deflate(output);
-                        final byte[] compressed = new byte[compressedLength];
-                        System.arraycopy(output, 0, compressed, 0, compressedLength);
-                        response.setEntity(new InputStreamEntity(
-                                new ByteArrayInputStream(compressed), compressedLength, null));
+                        final StringEntity originalEntity = new StringEntity(entityText, ContentType.TEXT_PLAIN);
+                        final HttpEntity compressedEntity = ContentEncodingUtil.compressEntity(originalEntity, CompressionAlgorithm.DEFLATE.getIdentifier());
+                        response.setEntity(compressedEntity);
+
                         return;
                     }
                 }

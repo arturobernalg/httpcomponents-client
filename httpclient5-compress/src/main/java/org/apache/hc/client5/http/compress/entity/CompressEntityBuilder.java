@@ -313,6 +313,7 @@ public class CompressEntityBuilder {
 
     /**
      * Sets entities to be chunked.
+     *
      * @return this
      */
     public CompressEntityBuilder chunked() {
@@ -352,13 +353,13 @@ public class CompressEntityBuilder {
         final AbstractHttpEntity e;
         if (this.text != null) {
             e = new StringEntity(this.text, getContentOrDefault(ContentType.DEFAULT_TEXT), this.contentEncoding,
-                this.chunked);
+                    this.chunked);
         } else if (this.binary != null) {
             e = new ByteArrayEntity(this.binary, getContentOrDefault(ContentType.DEFAULT_BINARY),
-                this.contentEncoding, this.chunked);
+                    this.contentEncoding, this.chunked);
         } else if (this.stream != null) {
             e = new InputStreamEntity(this.stream, -1, getContentOrDefault(ContentType.DEFAULT_BINARY),
-                this.contentEncoding);
+                    this.contentEncoding);
         } else if (this.parameters != null) {
             e = new UrlEncodedFormEntity(this.parameters,
                     this.contentType != null ? this.contentType.getCharset() : null);
@@ -373,8 +374,6 @@ public class CompressEntityBuilder {
             final Function<OutputStream, OutputStream> compressorFunction = CompressorFactory.INSTANCE.getCompressorOutputStream(contentEncoding);
             if (compressorFunction != null) {
                 return new CompressingEntity(e, compressorFunction, contentEncoding);
-            } else {
-                throw new IllegalStateException("Compression type " + contentEncoding + " is not supported or not registered.");
             }
         }
         return e;

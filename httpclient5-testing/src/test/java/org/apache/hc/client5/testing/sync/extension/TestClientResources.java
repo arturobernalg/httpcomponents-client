@@ -32,7 +32,7 @@ import java.util.function.Consumer;
 
 import org.apache.hc.client5.http.config.ConnectionConfig;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
-import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
+import org.apache.hc.client5.http.compress.CompressHttpClientBuilder;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.classic.MinimalHttpClient;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
@@ -119,7 +119,7 @@ public class TestClientResources implements BeforeEachCallback, AfterEachCallbac
 
     public CloseableHttpClient startClient(
             final Consumer<PoolingHttpClientConnectionManagerBuilder> connManagerCustomizer,
-            final Consumer<HttpClientBuilder> clientCustomizer) throws Exception {
+            final Consumer<CompressHttpClientBuilder> clientCustomizer) throws Exception {
         Assertions.assertNull(connManager);
         Assertions.assertNull(client);
 
@@ -135,7 +135,7 @@ public class TestClientResources implements BeforeEachCallback, AfterEachCallbac
 
         connManager = connManagerBuilder.build();
 
-        final HttpClientBuilder clientBuilder = HttpClientBuilder.create()
+        final CompressHttpClientBuilder clientBuilder = (CompressHttpClientBuilder)CompressHttpClientBuilder.create()
                 .setConnectionManager(connManager);
         clientCustomizer.accept(clientBuilder);
         client = clientBuilder.build();
@@ -162,7 +162,7 @@ public class TestClientResources implements BeforeEachCallback, AfterEachCallbac
     }
 
     public CloseableHttpClient startClient(
-            final Consumer<HttpClientBuilder> clientCustomizer) throws Exception {
+            final Consumer<CompressHttpClientBuilder> clientCustomizer) throws Exception {
         return startClient(b -> {}, clientCustomizer);
     }
 
