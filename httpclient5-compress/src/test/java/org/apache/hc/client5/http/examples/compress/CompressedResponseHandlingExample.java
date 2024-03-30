@@ -29,8 +29,8 @@ package org.apache.hc.client5.http.examples.compress;
 
 
 import org.apache.hc.client5.http.compress.CompressHttpClients;
-import org.apache.hc.client5.http.compress.util.CompressionAlgorithm;
-import org.apache.hc.client5.http.compress.util.ContentEncodingUtil;
+import org.apache.hc.client5.http.compress.CompressionAlgorithm;
+import org.apache.hc.client5.http.compress.CompressorFactory;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.core5.http.ClassicHttpRequest;
 import org.apache.hc.core5.http.ContentType;
@@ -104,6 +104,6 @@ public class CompressedResponseHandlingExample {
      */
     private static HttpEntity compress(final String data, final CompressionAlgorithm algorithm) {
         final StringEntity originalEntity = new StringEntity(data, ContentType.TEXT_PLAIN);
-        return ContentEncodingUtil.compressEntity(originalEntity, algorithm.getIdentifier());
+        return CompressorFactory.INSTANCE.compressEntity(originalEntity, algorithm.getIdentifier());
     }
 }

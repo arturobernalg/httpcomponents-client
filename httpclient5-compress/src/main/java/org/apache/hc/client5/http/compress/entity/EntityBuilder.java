@@ -36,7 +36,7 @@ import java.util.List;
 import java.util.function.Function;
 
 import org.apache.hc.client5.http.compress.CompressorFactory;
-import org.apache.hc.client5.http.compress.util.CompressionAlgorithm;
+import org.apache.hc.client5.http.compress.CompressionAlgorithm;
 import org.apache.hc.client5.http.entity.UrlEncodedFormEntity;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HttpEntity;
@@ -49,7 +49,7 @@ import org.apache.hc.core5.http.io.entity.SerializableEntity;
 import org.apache.hc.core5.http.io.entity.StringEntity;
 
 
-public class CompressEntityBuilder {
+public class EntityBuilder {
 
     private String text;
     private byte[] binary;
@@ -63,12 +63,12 @@ public class CompressEntityBuilder {
     private boolean gzipCompressed;
 
 
-    CompressEntityBuilder() {
+    EntityBuilder() {
         super();
     }
 
-    public static CompressEntityBuilder create() {
-        return new CompressEntityBuilder();
+    public static EntityBuilder create() {
+        return new EntityBuilder();
     }
 
     private void clearContent() {
@@ -101,7 +101,7 @@ public class CompressEntityBuilder {
      * @param text entity content as a string.
      * @return this
      */
-    public CompressEntityBuilder setText(final String text) {
+    public EntityBuilder setText(final String text) {
         clearContent();
         this.text = text;
         return this;
@@ -129,7 +129,7 @@ public class CompressEntityBuilder {
      * @param binary The new entity content as a byte array.
      * @return this
      */
-    public CompressEntityBuilder setBinary(final byte[] binary) {
+    public EntityBuilder setBinary(final byte[] binary) {
         clearContent();
         this.binary = binary;
         return this;
@@ -157,7 +157,7 @@ public class CompressEntityBuilder {
      * @param stream The new entity content as an InputStream.
      * @return this
      */
-    public CompressEntityBuilder setStream(final InputStream stream) {
+    public EntityBuilder setStream(final InputStream stream) {
         clearContent();
         this.stream = stream;
         return this;
@@ -185,7 +185,7 @@ public class CompressEntityBuilder {
      * @param parameters entity content as a parameter list.
      * @return this
      */
-    public CompressEntityBuilder setParameters(final List<NameValuePair> parameters) {
+    public EntityBuilder setParameters(final List<NameValuePair> parameters) {
         clearContent();
         this.parameters = parameters;
         return this;
@@ -202,7 +202,7 @@ public class CompressEntityBuilder {
      * @param parameters entity content as a parameter list.
      * @return this
      */
-    public CompressEntityBuilder setParameters(final NameValuePair... parameters) {
+    public EntityBuilder setParameters(final NameValuePair... parameters) {
         return setParameters(Arrays.asList(parameters));
     }
 
@@ -228,7 +228,7 @@ public class CompressEntityBuilder {
      * @param serializable entity content as a {@link Serializable}.
      * @return this
      */
-    public CompressEntityBuilder setSerializable(final Serializable serializable) {
+    public EntityBuilder setSerializable(final Serializable serializable) {
         clearContent();
         this.serializable = serializable;
         return this;
@@ -256,7 +256,7 @@ public class CompressEntityBuilder {
      * @param file entity content as a {@link File}.
      * @return this
      */
-    public CompressEntityBuilder setFile(final File file) {
+    public EntityBuilder setFile(final File file) {
         clearContent();
         this.file = file;
         return this;
@@ -277,7 +277,7 @@ public class CompressEntityBuilder {
      * @param contentType the {@link ContentType} of the entity, may be null.
      * @return this
      */
-    public CompressEntityBuilder setContentType(final ContentType contentType) {
+    public EntityBuilder setContentType(final ContentType contentType) {
         this.contentType = contentType;
         return this;
     }
@@ -297,7 +297,7 @@ public class CompressEntityBuilder {
      * @param contentEncoding the content encoding of the entity, may be null.
      * @return this
      */
-    public CompressEntityBuilder setContentEncoding(final String contentEncoding) {
+    public EntityBuilder setContentEncoding(final String contentEncoding) {
         this.contentEncoding = contentEncoding;
         return this;
     }
@@ -316,7 +316,7 @@ public class CompressEntityBuilder {
      *
      * @return this
      */
-    public CompressEntityBuilder chunked() {
+    public EntityBuilder chunked() {
         this.chunked = true;
         return this;
     }
@@ -335,7 +335,7 @@ public class CompressEntityBuilder {
      *
      * @return this
      */
-    public CompressEntityBuilder gzipCompressed() {
+    public EntityBuilder gzipCompressed() {
         this.gzipCompressed = true;
         return this;
     }

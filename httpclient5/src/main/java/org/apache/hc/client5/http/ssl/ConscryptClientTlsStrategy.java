@@ -116,7 +116,7 @@ public class ConscryptClientTlsStrategy extends AbstractClientTlsStrategy {
             sslEngine.setSSLParameters(sslParameters);
             Conscrypt.setApplicationProtocols(sslEngine, appProtocols);
         } else {
-            sslParameters.setApplicationProtocols(appProtocols);
+            //sslParameters.setApplicationProtocols(appProtocols);
             sslEngine.setSSLParameters(sslParameters);
         }
     }

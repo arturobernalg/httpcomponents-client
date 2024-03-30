@@ -25,7 +25,7 @@
  *
  */
 
-package org.apache.hc.client5.http.compress.util;
+package org.apache.hc.client5.http.compress;
 
 public enum CompressionAlgorithm {
     BROTLI("br"),

@@ -31,13 +31,9 @@ import java.io.OutputStream;
 import java.util.Set;
 import java.util.function.Function;
 
+import org.apache.hc.core5.http.HttpEntity;
+
 public interface CompressorProvider {
-
-
-    boolean isSupportedInput(String compressionType);
-
-
-    boolean isSupportedOutput(String compressionType);
 
     Set<String> getInputStreamCompressorNames();
 
@@ -47,4 +43,11 @@ public interface CompressorProvider {
     Function<InputStream, InputStream> getCompressorInput(String name, boolean decompressConcatenated);
 
     Function<OutputStream, OutputStream> getCompressorOutputStream(final String name);
+
+    HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding, final boolean decompressConcatenated);
+
+    HttpEntity compressEntity(final HttpEntity entity, final String contentEncoding);
+
+
+    HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding);
 }

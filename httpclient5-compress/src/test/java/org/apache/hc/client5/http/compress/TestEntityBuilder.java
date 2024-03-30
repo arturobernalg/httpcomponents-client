@@ -32,9 +32,7 @@ import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
-import org.apache.hc.client5.http.compress.entity.CompressEntityBuilder;
-import org.apache.hc.client5.http.compress.util.CompressionAlgorithm;
-import org.apache.hc.client5.http.compress.util.ContentEncodingUtil;
+import org.apache.hc.client5.http.compress.entity.EntityBuilder;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.io.entity.ByteArrayEntity;
@@ -49,12 +47,12 @@ public class TestEntityBuilder {
     @Test
     public void testBuildEmptyEntity() {
         Assertions.assertThrows(IllegalStateException.class, () ->
-                CompressEntityBuilder.create().build());
+                EntityBuilder.create().build());
     }
 
     @Test
     public void testBuildTextEntity() throws Exception {
-        final HttpEntity entity = CompressEntityBuilder.create().setText("stuff").build();
+        final HttpEntity entity = EntityBuilder.create().setText("stuff").build();
         Assertions.assertNotNull(entity);
         Assertions.assertNotNull(entity.getContent());
         Assertions.assertNotNull(entity.getContentType());
@@ -63,7 +61,7 @@ public class TestEntityBuilder {
 
     @Test
     public void testBuildBinaryEntity() throws Exception {
-        final HttpEntity entity = CompressEntityBuilder.create().setBinary(new byte[]{0, 1, 2}).build();
+        final HttpEntity entity = EntityBuilder.create().setBinary(new byte[]{0, 1, 2}).build();
         Assertions.assertNotNull(entity);
         Assertions.assertNotNull(entity.getContent());
         Assertions.assertNotNull(entity.getContentType());
@@ -73,7 +71,7 @@ public class TestEntityBuilder {
     @Test
     public void testBuildStreamEntity() throws Exception {
         final InputStream in = Mockito.mock(InputStream.class);
-        final HttpEntity entity = CompressEntityBuilder.create().setStream(in).build();
+        final HttpEntity entity = EntityBuilder.create().setStream(in).build();
         Assertions.assertNotNull(entity);
         Assertions.assertNotNull(entity.getContent());
         Assertions.assertNotNull(entity.getContentType());
@@ -83,7 +81,7 @@ public class TestEntityBuilder {
 
     @Test
     public void testBuildSerializableEntity() throws Exception {
-        final HttpEntity entity = CompressEntityBuilder.create().setSerializable(Boolean.TRUE).build();
+        final HttpEntity entity = EntityBuilder.create().setSerializable(Boolean.TRUE).build();
         Assertions.assertNotNull(entity);
         Assertions.assertNotNull(entity.getContent());
         Assertions.assertNotNull(entity.getContentType());
@@ -93,7 +91,7 @@ public class TestEntityBuilder {
     @Test
     public void testBuildFileEntity() {
         final File file = new File("stuff");
-        final HttpEntity entity = CompressEntityBuilder.create().setFile(file).build();
+        final HttpEntity entity = EntityBuilder.create().setFile(file).build();
         Assertions.assertNotNull(entity);
         Assertions.assertNotNull(entity.getContentType());
         Assertions.assertEquals("application/octet-stream", entity.getContentType());
@@ -101,7 +99,7 @@ public class TestEntityBuilder {
 
     @Test
     public void testExplicitContentProperties() throws Exception {
-        final HttpEntity entity = CompressEntityBuilder.create()
+        final HttpEntity entity = EntityBuilder.create()
                 .setContentType(ContentType.APPLICATION_JSON)
                 .setContentEncoding("identity")
                 .setBinary(new byte[]{0, 1, 2})
@@ -116,14 +114,14 @@ public class TestEntityBuilder {
 
     @Test
     public void testBuildChunked() {
-        final HttpEntity entity = CompressEntityBuilder.create().setText("stuff").chunked().build();
+        final HttpEntity entity = EntityBuilder.create().setText("stuff").chunked().build();
         Assertions.assertNotNull(entity);
         Assertions.assertTrue(entity.isChunked());
     }
 
     @Test
     public void testBuildGZipped() {
-        final HttpEntity entity = CompressEntityBuilder.create().setText("stuff").setContentEncoding(CompressionAlgorithm.GZIP.getIdentifier()).build();
+        final HttpEntity entity = EntityBuilder.create().setText("stuff").setContentEncoding(CompressionAlgorithm.GZIP.getIdentifier()).build();
         Assertions.assertNotNull(entity);
         Assertions.assertNotNull(entity.getContentType());
         Assertions.assertEquals("text/plain; charset=UTF-8", entity.getContentType());
@@ -138,14 +136,14 @@ public class TestEntityBuilder {
         final String originalContent = "some kind of text";
         final StringEntity originalEntity = new StringEntity(originalContent, ContentType.TEXT_PLAIN);
 
-        final HttpEntity compressedEntity = ContentEncodingUtil.compressEntity(originalEntity, CompressionAlgorithm.GZIP.getIdentifier());
+        final HttpEntity compressedEntity = CompressorFactory.INSTANCE.compressEntity(originalEntity, CompressionAlgorithm.GZIP.getIdentifier());
 
         final ByteArrayOutputStream compressedOut = new ByteArrayOutputStream();
         compressedEntity.writeTo(compressedOut);
 
         final ByteArrayEntity out = new ByteArrayEntity(compressedOut.toByteArray(), ContentType.APPLICATION_OCTET_STREAM);
 
-        final HttpEntity decompressedEntity = ContentEncodingUtil.decompressEntity(out, CompressionAlgorithm.GZIP.getIdentifier());
+        final HttpEntity decompressedEntity = CompressorFactory.INSTANCE.decompressEntity(out, CompressionAlgorithm.GZIP.getIdentifier());
 
         final String decompressedContent = EntityUtils.toString(decompressedEntity, StandardCharsets.UTF_8);
 

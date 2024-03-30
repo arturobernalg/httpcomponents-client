@@ -32,15 +32,31 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import org.apache.commons.compress.compressors.CompressorStreamFactory;
+import org.apache.hc.client5.http.compress.entity.CompressingEntity;
+import org.apache.hc.client5.http.compress.entity.DecompressingEntity;
+import org.apache.hc.core5.http.HttpEntity;
+import org.apache.hc.core5.util.Args;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class CompressorFactory implements CompressorProvider {
 
+    private static final Logger LOG = LoggerFactory.getLogger(CompressorFactory.class);
+
     private static final Map<String, String> httpToApacheCompressMapping;
+
+
+    private Set<String> supportedInputCompressors = null;
+    private Set<String> supportedOutputCompressors = null;
+
+    private final ReentrantLock lock = new ReentrantLock();
+
+    public static final CompressorFactory INSTANCE = new CompressorFactory();
 
     static {
         httpToApacheCompressMapping = new HashMap<>();
@@ -48,95 +64,74 @@ public class CompressorFactory implements CompressorProvider {
         httpToApacheCompressMapping.put("x-gzip", "gz"); // Treat 'x-gzip' the same as 'gzip'
     }
 
-    private static final Logger LOG = LoggerFactory.getLogger(CompressorFactory.class);
-    public static final CompressorFactory INSTANCE = new CompressorFactory();
-    private final CompressorStreamFactory compressorStreamFactory;
+    private final CompressorStreamFactory compressorStreamFactory = new CompressorStreamFactory();
 
-    public CompressorFactory() {
-        this(true, -1);
+    private boolean isOutputSupported(final String name) {
+        populateSupportedOutputCompressors();
+        final String translated = translateHttpToApacheCompress(name).toLowerCase(Locale.ROOT);
+        return supportedOutputCompressors.contains(translated);
     }
 
-    public CompressorFactory(final int memoryLimitInKb) {
-        this(true, memoryLimitInKb);
+    private boolean isInputSupported(final String name) {
+        populateSupportedInputCompressors();
+        final String translated = translateHttpToApacheCompress(name).toLowerCase(Locale.ROOT);
+        return supportedInputCompressors.contains(translated);
     }
 
-    public CompressorFactory(final boolean decompressConcatenated, final int memoryLimitInKb) {
-        compressorStreamFactory = new CompressorStreamFactory(decompressConcatenated, memoryLimitInKb);
+    private void populateSupportedInputCompressors() {
+        if (supportedInputCompressors == null || supportedInputCompressors.isEmpty()) {
+            lock.lock();
+            try {
+                supportedInputCompressors = compressorStreamFactory.getInputStreamCompressorNames()
+                        .stream()
+                        .map(String::toLowerCase)
+                        .collect(Collectors.toSet());
+
+            } finally {
+                lock.unlock();
+            }
+        }
+    }
+
+    private void populateSupportedOutputCompressors() {
+        if (supportedOutputCompressors == null || supportedOutputCompressors.isEmpty()) {
+            lock.lock();
+            try {
+                supportedOutputCompressors = compressorStreamFactory.getOutputStreamCompressorNames()
+                        .stream()
+                        .map(String::toLowerCase)
+                        .collect(Collectors.toSet());
+
+            } finally {
+                lock.unlock();
+            }
+        }
     }
 
     @Override
     public Function<InputStream, InputStream> getCompressorInput(final String name, final boolean decompressConcatenated) {
         final String normalizeName = translateHttpToApacheCompress(name.toLowerCase(Locale.ROOT));
-        if (!isSupported(normalizeName)) {
-            LOG.debug("Compressor {} is not supported.", normalizeName);
+        if (!isInputSupported(normalizeName)) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Compressor {} is not supported.", normalizeName);
+            }
             return null;
         }
         return inputStream -> createCompressorInputStream((normalizeName), inputStream, decompressConcatenated);
     }
 
+    @Override
     public Function<OutputStream, OutputStream> getCompressorOutputStream(final String name) {
         final String normalizeName = translateHttpToApacheCompress(name.toLowerCase(Locale.ROOT));
-        if (!isSupported(normalizeName)) {
-            LOG.debug("Compressor {} is not supported.", normalizeName);
+        if (!isOutputSupported(normalizeName)) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Compressor {} is not supported.", normalizeName);
+            }
             return null;
         }
         return outputStream -> createCompressorOutputStream((translateHttpToApacheCompress(name)), outputStream);
     }
 
-    private InputStream createCompressorInputStream(final String name, final InputStream inputStream, final boolean decompressConcatenated) {
-        try {
-            return compressorStreamFactory.createCompressorInputStream(name, inputStream, decompressConcatenated);
-        } catch (final Exception ex) {
-            LOG.debug("Could not create decompressor input stream for {}", name, ex);
-            return null;
-        }
-    }
-
-    private OutputStream createCompressorOutputStream(final String name, final OutputStream outputStream) {
-        try {
-            return compressorStreamFactory.createCompressorOutputStream(translateHttpToApacheCompress(name), outputStream);
-        } catch (final Exception ex) {
-            LOG.debug("Could not create compressor output stream for {}", name, ex);
-            return null;
-        }
-    }
-
-    private boolean isSupported(final String name) {
-        if (name == null) {
-            return false;
-        }
-
-        final boolean isInputSupported = compressorStreamFactory.getInputStreamCompressorNames()
-                .stream()
-                .map(String::toLowerCase)
-                .anyMatch(name::equals);
-
-        final boolean isOutputSupported = compressorStreamFactory.getOutputStreamCompressorNames()
-                .stream()
-                .map(String::toLowerCase)
-                .anyMatch(name::equals);
-
-        final boolean isProviderSupported = compressorStreamFactory.getCompressorOutputStreamProviders()
-                .keySet()
-                .stream()
-                .map(String::toLowerCase)
-                .anyMatch(name::equals);
-
-        return isInputSupported || isOutputSupported || isProviderSupported;
-    }
-
-
-    @Override
-    public boolean isSupportedInput(final String compressionType) {
-        final String translated = translateHttpToApacheCompress(compressionType);
-        return compressorStreamFactory.getInputStreamCompressorNames().contains(translated);
-    }
-
-    @Override
-    public boolean isSupportedOutput(final String compressionType) {
-        final String translated = translateHttpToApacheCompress(compressionType);
-        return compressorStreamFactory.getOutputStreamCompressorNames().contains(translated);
-    }
 
     @Override
     public Set<String> getInputStreamCompressorNames() {
@@ -148,8 +143,68 @@ public class CompressorFactory implements CompressorProvider {
         return compressorStreamFactory.getOutputStreamCompressorNames();
     }
 
-    private static String translateHttpToApacheCompress(final String httpContentEncoding) {
+    private String translateHttpToApacheCompress(final String httpContentEncoding) {
         return httpToApacheCompressMapping.getOrDefault(httpContentEncoding, httpContentEncoding);
+    }
+
+    @Override
+    public HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding, final boolean decompressConcatenated) {
+        Args.notNull(entity, "Entity");
+        Args.notNull(contentEncoding, "Content Encoding");
+
+        if (!isInputSupported(contentEncoding)) {
+            if (LOG.isWarnEnabled()) {
+                LOG.warn("Unsupported decompression type: {}", contentEncoding);
+            }
+            return null;
+        }
+
+        final Function<InputStream, InputStream> decompressorFunction = getCompressorInput(contentEncoding, decompressConcatenated);
+        return new DecompressingEntity(entity, decompressorFunction);
+    }
+
+    @Override
+    public HttpEntity compressEntity(final HttpEntity entity, final String contentEncoding) {
+        Args.notNull(entity, "Entity");
+        Args.notNull(contentEncoding, "Content Encoding");
+
+        if (!isOutputSupported(contentEncoding)) {
+            if (LOG.isWarnEnabled()) {
+                LOG.warn("Unsupported compression type: {}", contentEncoding);
+            }
+            return null;
+        }
+
+        final Function<OutputStream, OutputStream> compressorFunction = getCompressorOutputStream(contentEncoding);
+        return new CompressingEntity(entity, compressorFunction, contentEncoding);
+    }
+
+    @Override
+    public HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding) {
+        return decompressEntity(entity, contentEncoding, true);
+    }
+
+
+    private InputStream createCompressorInputStream(final String name, final InputStream inputStream, final boolean decompressConcatenated) {
+        try {
+            return compressorStreamFactory.createCompressorInputStream(name, inputStream, decompressConcatenated);
+        } catch (final Exception ex) {
+            if (LOG.isWarnEnabled()) {
+                LOG.warn("Could not create decompressor input stream for {}", name, ex);
+            }
+            return null;
+        }
+    }
+
+    private OutputStream createCompressorOutputStream(final String name, final OutputStream outputStream) {
+        try {
+            return compressorStreamFactory.createCompressorOutputStream(translateHttpToApacheCompress(name), outputStream);
+        } catch (final Exception ex) {
+            if (LOG.isWarnEnabled()) {
+                LOG.warn("Could not create compressor output stream for {}", name, ex);
+            }
+            return null;
+        }
     }
 
 

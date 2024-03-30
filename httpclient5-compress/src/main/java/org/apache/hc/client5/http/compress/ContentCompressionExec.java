@@ -37,7 +37,6 @@ import java.util.function.Function;
 import org.apache.hc.client5.http.classic.ExecChain;
 import org.apache.hc.client5.http.classic.ExecChainHandler;
 import org.apache.hc.client5.http.compress.entity.DecompressingEntity;
-import org.apache.hc.client5.http.compress.util.CompressionAlgorithm;
 import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.core5.annotation.Contract;
@@ -54,10 +53,15 @@ import org.apache.hc.core5.http.message.BasicHeaderValueParser;
 import org.apache.hc.core5.http.message.MessageSupport;
 import org.apache.hc.core5.http.message.ParserCursor;
 import org.apache.hc.core5.util.Args;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Contract(threading = ThreadingBehavior.STATELESS)
 @Internal
 public final class ContentCompressionExec implements ExecChainHandler {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ContentCompressionExec.class);
+
 
     private final Header acceptEncoding;
     private final Function<String, Function<InputStream, InputStream>> decoderFunction;
@@ -69,6 +73,12 @@ public final class ContentCompressionExec implements ExecChainHandler {
         this.acceptEncoding = MessageSupport.headerOfTokens(HttpHeaders.ACCEPT_ENCODING,
                 acceptEncoding != null ? acceptEncoding : new ArrayList<>(CompressorFactory.INSTANCE.getInputStreamCompressorNames()));
         this.decoderFunction = decoderFunction != null ? decoderFunction : name -> CompressorFactory.INSTANCE.getCompressorInput(name, true);
+
+        if (LOG.isDebugEnabled()) {
+            CompressorFactory.INSTANCE.getInputStreamCompressorNames().forEach(name -> {
+               LOG.debug("Available decoder: {}", name);
+            });
+        }
 
         this.ignoreUnknown = ignoreUnknown;
     }
