@@ -121,12 +121,12 @@ public class TestEntityBuilder {
 
     @Test
     public void testBuildGZipped() {
-        final HttpEntity entity = EntityBuilder.create().setText("stuff").setContentEncoding(CompressionAlgorithm.GZIP.getIdentifier()).build();
+        final HttpEntity entity = EntityBuilder.create().setText("stuff").setContentEncoding(CompressionTpe.GZIP.getName()).build();
         Assertions.assertNotNull(entity);
         Assertions.assertNotNull(entity.getContentType());
         Assertions.assertEquals("text/plain; charset=UTF-8", entity.getContentType());
         Assertions.assertNotNull(entity.getContentEncoding());
-        Assertions.assertEquals(CompressionAlgorithm.GZIP.getIdentifier(), entity.getContentEncoding());
+        Assertions.assertEquals(CompressionTpe.GZIP.getName(), entity.getContentEncoding());
 
     }
 
@@ -136,14 +136,14 @@ public class TestEntityBuilder {
         final String originalContent = "some kind of text";
         final StringEntity originalEntity = new StringEntity(originalContent, ContentType.TEXT_PLAIN);
 
-        final HttpEntity compressedEntity = CompressorFactory.INSTANCE.compressEntity(originalEntity, CompressionAlgorithm.GZIP.getIdentifier());
+        final HttpEntity compressedEntity = CompressorFactory.INSTANCE.compressEntity(originalEntity, CompressionTpe.GZIP.getName());
 
         final ByteArrayOutputStream compressedOut = new ByteArrayOutputStream();
         compressedEntity.writeTo(compressedOut);
 
         final ByteArrayEntity out = new ByteArrayEntity(compressedOut.toByteArray(), ContentType.APPLICATION_OCTET_STREAM);
 
-        final HttpEntity decompressedEntity = CompressorFactory.INSTANCE.decompressEntity(out, CompressionAlgorithm.GZIP.getIdentifier());
+        final HttpEntity decompressedEntity = CompressorFactory.INSTANCE.decompressEntity(out, CompressionTpe.GZIP.getName());
 
         final String decompressedContent = EntityUtils.toString(decompressedEntity, StandardCharsets.UTF_8);
 

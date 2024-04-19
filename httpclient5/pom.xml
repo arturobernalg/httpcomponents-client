@@ -80,7 +80,6 @@
     <dependency>
       <groupId>org.brotli</groupId>
       <artifactId>dec</artifactId>
-      <optional>true</optional>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>

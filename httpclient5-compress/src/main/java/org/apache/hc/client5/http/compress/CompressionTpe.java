@@ -27,7 +27,7 @@
 
 package org.apache.hc.client5.http.compress;
 
-public enum CompressionAlgorithm {
+public enum CompressionTpe {
     BROTLI("br"),
     BZIP2("bzip2"),
     GZIP("gzip"),
@@ -44,20 +44,20 @@ public enum CompressionAlgorithm {
     ZSTANDARD("zstd"),
     IDENTITY("identity");
 
-    private final String identifier;
+    private final String name;
 
-    CompressionAlgorithm(final String identifier) {
-        this.identifier = identifier;
+    CompressionTpe(final String identifier) {
+        this.name = identifier;
     }
 
-    public String getIdentifier() {
-        return identifier;
+    public String getName() {
+        return name;
     }
 
     public boolean isSame(final String value) {
         if (value == null) {
             return false;
         }
-        return getIdentifier().equalsIgnoreCase(value);
+        return name().equalsIgnoreCase(value);
     }
 }

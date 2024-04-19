@@ -56,7 +56,7 @@ public class TestDeflate {
         compresser.finish();
         final int len = compresser.deflate(compressed);
 
-        final HttpEntity entity = CompressorFactory.INSTANCE.decompressEntity(new ByteArrayEntity(compressed, 0, len, ContentType.APPLICATION_OCTET_STREAM), CompressionAlgorithm.DEFLATE.getIdentifier());
+        final HttpEntity entity = CompressorFactory.INSTANCE.decompressEntity(new ByteArrayEntity(compressed, 0, len, ContentType.APPLICATION_OCTET_STREAM), CompressionTpe.DEFLATE.getName());
         Assertions.assertEquals(s, EntityUtils.toString(entity));
     }
 
@@ -66,7 +66,7 @@ public class TestDeflate {
         final StringEntity originalEntity = new StringEntity(originalContent, ContentType.TEXT_PLAIN);
 
         // Compress the original content
-        final HttpEntity compressedEntity = CompressorFactory.INSTANCE.compressEntity(originalEntity, CompressionAlgorithm.DEFLATE.getIdentifier());
+        final HttpEntity compressedEntity = CompressorFactory.INSTANCE.compressEntity(originalEntity, CompressionTpe.DEFLATE.getName());
 
         // Write the compressed data to a ByteArrayOutputStream
         final ByteArrayOutputStream compressedOut = new ByteArrayOutputStream();
@@ -94,14 +94,14 @@ public class TestDeflate {
         final String originalContent = "some kind of text";
         final StringEntity originalEntity = new StringEntity(originalContent, ContentType.TEXT_PLAIN);
 
-        final HttpEntity compressedEntity = CompressorFactory.INSTANCE.compressEntity(originalEntity, CompressionAlgorithm.DEFLATE.getIdentifier());
+        final HttpEntity compressedEntity = CompressorFactory.INSTANCE.compressEntity(originalEntity, CompressionTpe.DEFLATE.getName());
 
         final ByteArrayOutputStream compressedOut = new ByteArrayOutputStream();
         compressedEntity.writeTo(compressedOut);
 
         final ByteArrayEntity out = new ByteArrayEntity(compressedOut.toByteArray(), ContentType.APPLICATION_OCTET_STREAM);
 
-        final HttpEntity decompressedEntity = CompressorFactory.INSTANCE.decompressEntity(out, CompressionAlgorithm.DEFLATE.getIdentifier());
+        final HttpEntity decompressedEntity = CompressorFactory.INSTANCE.decompressEntity(out, CompressionTpe.DEFLATE.getName());
 
         final String decompressedContent = EntityUtils.toString(decompressedEntity, StandardCharsets.UTF_8);
 

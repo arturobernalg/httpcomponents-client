@@ -36,7 +36,7 @@ import java.util.List;
 import java.util.function.Function;
 
 import org.apache.hc.client5.http.compress.CompressorFactory;
-import org.apache.hc.client5.http.compress.CompressionAlgorithm;
+import org.apache.hc.client5.http.compress.CompressionTpe;
 import org.apache.hc.client5.http.entity.UrlEncodedFormEntity;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HttpEntity;
@@ -370,7 +370,7 @@ public class EntityBuilder {
         } else {
             throw new IllegalStateException("No entity set");
         }
-        if (contentEncoding != null && !CompressionAlgorithm.IDENTITY.isSame(contentEncoding)) {
+        if (contentEncoding != null && !CompressionTpe.IDENTITY.isSame(contentEncoding)) {
             final Function<OutputStream, OutputStream> compressorFunction = CompressorFactory.INSTANCE.getCompressorOutputStream(contentEncoding);
             if (compressorFunction != null) {
                 return new CompressingEntity(e, compressorFunction, contentEncoding);
