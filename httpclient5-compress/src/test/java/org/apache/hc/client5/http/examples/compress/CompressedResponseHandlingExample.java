@@ -29,7 +29,7 @@ package org.apache.hc.client5.http.examples.compress;
 
 
 import org.apache.hc.client5.http.compress.CompressHttpClients;
-import org.apache.hc.client5.http.compress.CompressionAlgorithm;
+import org.apache.hc.client5.http.compress.CompressionTpe;
 import org.apache.hc.client5.http.compress.CompressorFactory;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.core5.http.ClassicHttpRequest;
@@ -40,6 +40,10 @@ import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.http.io.entity.StringEntity;
 import org.apache.hc.core5.http.io.support.ClassicRequestBuilder;
 import org.apache.hc.core5.http.message.StatusLine;
+
+import java.io.InputStream;
+import java.util.LinkedHashMap;
+import java.util.function.Function;
 
 
 /**
@@ -63,15 +67,25 @@ public class CompressedResponseHandlingExample {
             server.registerHandler("/compressed", (request, response, context) -> {
                 final String uncompressedContent = "This is the uncompressed response content";
                 // Compress the response content using the specified compression algorithm
-                response.setEntity(compress(uncompressedContent, CompressionAlgorithm.GZIP));
+                response.setEntity(compress(uncompressedContent, CompressionTpe.GZIP));
                 // Indicate the content encoding in the response header
-                response.addHeader("Content-Encoding", CompressionAlgorithm.GZIP.getIdentifier());
+                response.addHeader("Content-Encoding", CompressionTpe.GZIP.getName());
             });
 
             final HttpHost target = server.getHttpHost();
 
+            LinkedHashMap<String, Function<InputStream, InputStream>> decoderMap = new LinkedHashMap<>();
+            decoderMap.put(CompressionTpe.GZIP.getName(),
+                    CompressorFactory.INSTANCE.getCompressorInput(CompressionTpe.GZIP.getName(), true));  // Add GZIP decoder
+            decoderMap.put(CompressionTpe.ZSTANDARD.getName(),
+                    CompressorFactory.INSTANCE.getCompressorInput(CompressionTpe.ZSTANDARD.getName(), true));  // Add GZIP decoder
+            decoderMap.put(CompressionTpe.BZIP2.getName(),
+                    CompressorFactory.INSTANCE.getCompressorInput(CompressionTpe.BZIP2.getName(), true));  // Add GZIP decoder
+
+
             try (final CloseableHttpClient httpclient = CompressHttpClients
                     .custom()
+                  //  .setContentDecoder(decoderMap)
                     .build()) {
                 final ClassicHttpRequest httpget1 = ClassicRequestBuilder.get()
                         .setHttpHost(target)
@@ -102,8 +116,8 @@ public class CompressedResponseHandlingExample {
      * @param algorithm The compression algorithm to use.
      * @return An HttpEntity representing the compressed data.
      */
-    private static HttpEntity compress(final String data, final CompressionAlgorithm algorithm) {
+    private static HttpEntity compress(final String data, final CompressionTpe algorithm) {
         final StringEntity originalEntity = new StringEntity(data, ContentType.TEXT_PLAIN);
-        return CompressorFactory.INSTANCE.compressEntity(originalEntity, algorithm.getIdentifier());
+        return CompressorFactory.INSTANCE.compressEntity(originalEntity, algorithm.getName());
     }
 }

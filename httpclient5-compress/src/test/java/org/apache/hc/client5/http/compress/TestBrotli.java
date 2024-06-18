@@ -45,7 +45,7 @@ public class TestBrotli {
 
         final byte[] bytes = new byte[] {33, 44, 0, 4, 116, 101, 115, 116, 32, 98, 114, 111, 116, 108, 105, 10, 3};
 
-        final HttpEntity entity = CompressorFactory.INSTANCE.decompressEntity(new ByteArrayEntity(bytes, null), CompressionAlgorithm.BROTLI.getIdentifier());
+        final HttpEntity entity = CompressorFactory.INSTANCE.decompressEntity(new ByteArrayEntity(bytes, null), CompressionTpe.BROTLI.getName());
         Assertions.assertEquals("test brotli\n", EntityUtils.toString(entity));
     }
 

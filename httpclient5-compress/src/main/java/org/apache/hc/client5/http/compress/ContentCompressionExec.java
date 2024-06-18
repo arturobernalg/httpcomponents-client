@@ -75,9 +75,7 @@ public final class ContentCompressionExec implements ExecChainHandler {
         this.decoderFunction = decoderFunction != null ? decoderFunction : name -> CompressorFactory.INSTANCE.getCompressorInput(name, true);
 
         if (LOG.isDebugEnabled()) {
-            CompressorFactory.INSTANCE.getInputStreamCompressorNames().forEach(name -> {
-               LOG.debug("Available decoder: {}", name);
-            });
+            CompressorFactory.INSTANCE.getInputStreamCompressorNames().forEach(name -> LOG.debug("Available decoder: {}", name));
         }
 
         this.ignoreUnknown = ignoreUnknown;
@@ -127,7 +125,7 @@ public final class ContentCompressionExec implements ExecChainHandler {
                         response.removeHeaders(HttpHeaders.CONTENT_ENCODING);
                         response.removeHeaders(HttpHeaders.CONTENT_MD5);
                     } else {
-                        if (!CompressionAlgorithm.IDENTITY.isSame(codecName) && !ignoreUnknown) {
+                        if (!CompressionTpe.IDENTITY.isSame(codecName) && !ignoreUnknown) {
                             throw new HttpException("Unsupported Content-Encoding: " + codec.getName());
                         }
                     }

@@ -42,7 +42,7 @@ import java.util.function.Consumer;
 import java.util.zip.GZIPOutputStream;
 
 import org.apache.hc.client5.http.classic.methods.HttpGet;
-import org.apache.hc.client5.http.compress.CompressionAlgorithm;
+import org.apache.hc.client5.http.compress.CompressionTpe;
 import org.apache.hc.client5.http.compress.CompressorFactory;
 import org.apache.hc.client5.http.impl.classic.BasicHttpClientResponseHandler;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
@@ -378,7 +378,7 @@ public abstract class TestContentCodings {
                         response.addHeader("Content-Encoding", "deflate");
 
                         final StringEntity originalEntity = new StringEntity(entityText, ContentType.TEXT_PLAIN);
-                        final HttpEntity compressedEntity = CompressorFactory.INSTANCE.compressEntity(originalEntity, CompressionAlgorithm.DEFLATE.getIdentifier());
+                        final HttpEntity compressedEntity = CompressorFactory.INSTANCE.compressEntity(originalEntity, CompressionTpe.DEFLATE.getName());
                         response.setEntity(compressedEntity);
 
                         return;

@@ -64,7 +64,6 @@ public class CompressHttpClientBuilder extends HttpClientBuilder {
         return this;
     }
 
-
     @Override
     protected void customizeExecChain(final NamedElementChain<ExecChainHandler> execChainDefinition) {
         if (!contentCompressionDisabled) {
