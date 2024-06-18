@@ -30,7 +30,7 @@ package org.apache.hc.client5.http.compress;
 public enum CompressionAlgorithm {
     BROTLI("br"),
     BZIP2("bzip2"),
-    GZIP("gzip"),
+    GZIP("gzip", new String[]{"gz", "x-gzip"}), // Include "gz" and "x-gzip" as alternatives
     PACK200("pack200"),
     XZ("xz"),
     LZMA("lzma"),
@@ -45,19 +45,32 @@ public enum CompressionAlgorithm {
     IDENTITY("identity");
 
     private final String identifier;
+    private final String[] alternativeIdentifiers; // Array to hold alternative identifiers
 
     CompressionAlgorithm(final String identifier) {
+        this(identifier, new String[]{});
+    }
+
+    CompressionAlgorithm(final String identifier, String[] alternativeIdentifiers) {
         this.identifier = identifier;
+        this.alternativeIdentifiers = alternativeIdentifiers;
     }
 
     public String getIdentifier() {
         return identifier;
     }
 
-    public boolean isSame(final String value) {
-        if (value == null) {
-            return false;
+    public static CompressionAlgorithm fromHttpName(final  String httpName) {
+        for (final CompressionAlgorithm algorithm : values()) {
+            if (algorithm.identifier.equalsIgnoreCase(httpName)) {
+                return algorithm;
+            }
+            for (String alt : algorithm.alternativeIdentifiers) {
+                if (alt.equalsIgnoreCase(httpName)) {
+                    return algorithm;
+                }
+            }
         }
-        return getIdentifier().equalsIgnoreCase(value);
+        return null;
     }
 }

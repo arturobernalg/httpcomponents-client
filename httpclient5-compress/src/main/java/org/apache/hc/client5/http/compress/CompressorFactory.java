@@ -28,12 +28,11 @@ package org.apache.hc.client5.http.compress;
 
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.HashMap;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.apache.commons.compress.compressors.CompressorStreamFactory;
@@ -48,64 +47,40 @@ public class CompressorFactory implements CompressorProvider {
 
     private static final Logger LOG = LoggerFactory.getLogger(CompressorFactory.class);
 
-    private static final Map<String, String> httpToApacheCompressMapping;
-
-
-    private Set<String> supportedInputCompressors = null;
-    private Set<String> supportedOutputCompressors = null;
-
-    private final ReentrantLock lock = new ReentrantLock();
+    private final AtomicReference<Set<String>> supportedInputCompressors = new AtomicReference<>();
+    private final AtomicReference<Set<String>> supportedOutputCompressors = new AtomicReference<>();
 
     public static final CompressorFactory INSTANCE = new CompressorFactory();
-
-    static {
-        httpToApacheCompressMapping = new HashMap<>();
-        httpToApacheCompressMapping.put("gzip", "gz"); // HTTP 'gzip' maps to Apache 'gz'
-        httpToApacheCompressMapping.put("x-gzip", "gz"); // Treat 'x-gzip' the same as 'gzip'
-    }
 
     private final CompressorStreamFactory compressorStreamFactory = new CompressorStreamFactory();
 
     private boolean isOutputSupported(final String name) {
-        populateSupportedOutputCompressors();
         final String translated = translateHttpToApacheCompress(name).toLowerCase(Locale.ROOT);
-        return supportedOutputCompressors.contains(translated);
+        return populateSupportedOutputCompressors().contains(translated);
     }
 
     private boolean isInputSupported(final String name) {
-        populateSupportedInputCompressors();
         final String translated = translateHttpToApacheCompress(name).toLowerCase(Locale.ROOT);
-        return supportedInputCompressors.contains(translated);
+        return populateSupportedInputCompressors().contains(translated);
     }
 
-    private void populateSupportedInputCompressors() {
-        if (supportedInputCompressors == null || supportedInputCompressors.isEmpty()) {
-            lock.lock();
-            try {
-                supportedInputCompressors = compressorStreamFactory.getInputStreamCompressorNames()
-                        .stream()
+    private Set<String> populateSupportedCompressors(final Supplier<Set<String>> compressorNamesSupplier, final AtomicReference<Set<String>> compressorSetRef) {
+        return compressorSetRef.updateAndGet(existingSet -> {
+            if (existingSet == null) {
+                return compressorNamesSupplier.get().stream()
                         .map(String::toLowerCase)
                         .collect(Collectors.toSet());
-
-            } finally {
-                lock.unlock();
             }
-        }
+            return existingSet;
+        });
     }
 
-    private void populateSupportedOutputCompressors() {
-        if (supportedOutputCompressors == null || supportedOutputCompressors.isEmpty()) {
-            lock.lock();
-            try {
-                supportedOutputCompressors = compressorStreamFactory.getOutputStreamCompressorNames()
-                        .stream()
-                        .map(String::toLowerCase)
-                        .collect(Collectors.toSet());
+    private Set<String> populateSupportedInputCompressors() {
+        return populateSupportedCompressors(compressorStreamFactory::getInputStreamCompressorNames, supportedInputCompressors);
+    }
 
-            } finally {
-                lock.unlock();
-            }
-        }
+    private Set<String> populateSupportedOutputCompressors() {
+        return populateSupportedCompressors(compressorStreamFactory::getOutputStreamCompressorNames, supportedOutputCompressors);
     }
 
     @Override
@@ -144,7 +119,8 @@ public class CompressorFactory implements CompressorProvider {
     }
 
     private String translateHttpToApacheCompress(final String httpContentEncoding) {
-        return httpToApacheCompressMapping.getOrDefault(httpContentEncoding, httpContentEncoding);
+        final CompressionAlgorithm alg = CompressionAlgorithm.fromHttpName(httpContentEncoding);
+        return alg != null ? alg.getIdentifier() : httpContentEncoding;
     }
 
     @Override
@@ -206,6 +182,4 @@ public class CompressorFactory implements CompressorProvider {
             return null;
         }
     }
-
-
 }
