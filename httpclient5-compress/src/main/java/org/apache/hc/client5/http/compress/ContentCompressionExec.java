@@ -125,7 +125,7 @@ public final class ContentCompressionExec implements ExecChainHandler {
                         response.removeHeaders(HttpHeaders.CONTENT_ENCODING);
                         response.removeHeaders(HttpHeaders.CONTENT_MD5);
                     } else {
-                        if (!CompressionTpe.IDENTITY.isSame(codecName) && !ignoreUnknown) {
+                        if (!CompressionAlgorithm.IDENTITY.isSame(codecName) && !ignoreUnknown) {
                             throw new HttpException("Unsupported Content-Encoding: " + codec.getName());
                         }
                     }
