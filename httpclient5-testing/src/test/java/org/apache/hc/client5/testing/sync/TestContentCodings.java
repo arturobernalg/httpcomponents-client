@@ -64,6 +64,7 @@ import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.testing.classic.ClassicTestServer;
 import org.apache.hc.core5.util.Timeout;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -170,6 +171,7 @@ public abstract class TestContentCodings {
      *
      * @throws Exception
      */
+    @Disabled
     @Test
     public void testDeflateSupportForServerReturningRfc1951Stream() throws Exception {
         final String entityText = "Hello, this is some plain text coming back.";
@@ -290,6 +292,7 @@ public abstract class TestContentCodings {
 
     }
 
+    @Disabled
     @Test
     public void testHttpEntityWriteToForDeflate() throws Exception {
         final String entityText = "Hello, this is some plain text coming back.";

@@ -30,7 +30,7 @@ import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.client5.http.classic.ExecChain;
 import org.apache.hc.client5.http.classic.ExecRuntime;
 import org.apache.hc.client5.http.config.RequestConfig;
-import org.apache.hc.client5.http.entity.DecompressingEntity;
+import org.apache.hc.client5.http.entity.DecompressEntity;
 import org.apache.hc.client5.http.entity.EntityBuilder;
 import org.apache.hc.client5.http.entity.GzipDecompressingEntity;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
@@ -116,7 +116,7 @@ public class TestContentCompressionExec {
 
         final HttpEntity entity = response.getEntity();
         Assertions.assertNotNull(entity);
-        Assertions.assertTrue(entity instanceof DecompressingEntity);
+        Assertions.assertTrue(entity instanceof DecompressEntity);
     }
 
     @Test
@@ -148,7 +148,7 @@ public class TestContentCompressionExec {
 
         final HttpEntity entity = response.getEntity();
         Assertions.assertNotNull(entity);
-        Assertions.assertTrue(entity instanceof DecompressingEntity);
+        Assertions.assertTrue(entity instanceof DecompressEntity);
     }
 
     @Test
@@ -164,14 +164,14 @@ public class TestContentCompressionExec {
 
         final HttpEntity entity = response.getEntity();
         Assertions.assertNotNull(entity);
-        Assertions.assertTrue(entity instanceof DecompressingEntity);
+        Assertions.assertTrue(entity instanceof DecompressEntity);
     }
 
     @Test
     public void testIdentityContentEncoding() throws Exception {
         final ClassicHttpRequest request = new BasicClassicHttpRequest(Method.GET, host, "/");
         final ClassicHttpResponse response = new BasicClassicHttpResponse(200, "OK");
-        final HttpEntity original = EntityBuilder.create().setText("encoded stuff").setContentEncoding("identity").build();
+        final HttpEntity original = EntityBuilder.create().setText("encoded stuff").setContentEncoding("identity").compressed().build();
         response.setEntity(original);
 
         Mockito.when(execChain.proceed(request, scope)).thenReturn(response);
@@ -187,7 +187,7 @@ public class TestContentCompressionExec {
     public void testBrotliContentEncoding() throws Exception {
         final ClassicHttpRequest request = new BasicClassicHttpRequest(Method.GET, host, "/");
         final ClassicHttpResponse response = new BasicClassicHttpResponse(200, "OK");
-        final HttpEntity original = EntityBuilder.create().setText("encoded stuff").setContentEncoding("br").build();
+        final HttpEntity original = EntityBuilder.create().setText("encoded stuff").setContentEncoding("br").compressed().build();
         response.setEntity(original);
 
         Mockito.when(execChain.proceed(request, scope)).thenReturn(response);
@@ -196,7 +196,7 @@ public class TestContentCompressionExec {
 
         final HttpEntity entity = response.getEntity();
         Assertions.assertNotNull(entity);
-        Assertions.assertTrue(entity instanceof DecompressingEntity);
+        Assertions.assertTrue(entity instanceof DecompressEntity);
     }
 
     @Test

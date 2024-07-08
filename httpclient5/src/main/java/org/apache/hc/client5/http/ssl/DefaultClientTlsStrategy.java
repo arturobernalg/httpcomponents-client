@@ -152,7 +152,7 @@ public class DefaultClientTlsStrategy extends AbstractClientTlsStrategy {
 
     @Override
     void applyParameters(final SSLEngine sslEngine, final SSLParameters sslParameters, final String[] appProtocols) {
-        sslParameters.setApplicationProtocols(appProtocols);
+      //  sslParameters.setApplicationProtocols(appProtocols);
         sslEngine.setSSLParameters(sslParameters);
     }
 

@@ -25,35 +25,45 @@
  *
  */
 
-package org.apache.hc.client5.http.entity;
+package org.apache.hc.client5.testing.sync.compress;
 
-import java.nio.charset.StandardCharsets;
-import java.util.zip.Deflater;
+import java.io.IOException;
 
-import org.apache.hc.core5.http.ContentType;
-import org.apache.hc.core5.http.HttpEntity;
-import org.apache.hc.core5.http.io.entity.ByteArrayEntity;
-import org.apache.hc.core5.http.io.entity.EntityUtils;
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Test;
+import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.URIScheme;
+import org.apache.hc.core5.http.io.HttpRequestHandler;
+import org.apache.hc.core5.io.CloseMode;
+import org.apache.hc.core5.testing.classic.ClassicTestServer;
 
-public class TestDeflate {
+public class AutoCloseableTestServer implements AutoCloseable {
 
-    @Test
-    public void testCompressDecompress() throws Exception {
 
-        final String s = "some kind of text";
-        final byte[] input = s.getBytes(StandardCharsets.US_ASCII);
+    private final URIScheme scheme;
 
-        // Compress the bytes
-        final byte[] compressed = new byte[input.length * 2];
-        final Deflater compresser = new Deflater();
-        compresser.setInput(input);
-        compresser.finish();
-        final int len = compresser.deflate(compressed);
+    private final ClassicTestServer server;
 
-        final HttpEntity entity = CompressorFactory.INSTANCE.decompressEntity(new ByteArrayEntity(compressed, 0, len, ContentType.APPLICATION_OCTET_STREAM), "deflate");
-        Assertions.assertEquals(s, EntityUtils.toString(entity));
+    public AutoCloseableTestServer(final URIScheme scheme) throws IOException {
+        System.out.println("Starting up the server");
+        this.server = new ClassicTestServer();
+        this.server.start();
+        this.scheme = scheme;
     }
 
+    public AutoCloseableTestServer() throws IOException {
+        this(URIScheme.HTTP);
+    }
+
+    public void registerHandler(final String pattern, final HttpRequestHandler handler) {
+        server.registerHandler(pattern, handler);
+    }
+
+    public HttpHost getHttpHost() {
+        return new HttpHost(scheme.id, "localhost", server.getPort());
+    }
+
+    @Override
+    public void close() {
+        System.out.println("Shutting down");
+        server.shutdown(CloseMode.GRACEFUL);
+    }
 }

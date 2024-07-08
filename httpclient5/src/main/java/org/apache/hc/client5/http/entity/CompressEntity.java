@@ -27,26 +27,46 @@
 
 package org.apache.hc.client5.http.entity;
 
+import java.io.IOException;
+import java.io.OutputStream;
+import java.util.function.Function;
+
 import org.apache.hc.core5.http.HttpEntity;
-import org.apache.hc.core5.http.io.entity.ByteArrayEntity;
-import org.apache.hc.core5.http.io.entity.EntityUtils;
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Test;
+import org.apache.hc.core5.http.io.entity.HttpEntityWrapper;
 
-public class TestBrotli {
+public class CompressEntity extends HttpEntityWrapper {
+    private final Function<OutputStream, OutputStream> compressorFunction;
+    private final String compressionType;
 
-    /**
-     * Brotli decompression test implemented by request with specified response encoding br
-     *
-     * @throws Exception
-     */
-    @Test
-    public void testDecompressionWithBrotli() throws Exception {
-
-        final byte[] bytes = new byte[] {33, 44, 0, 4, 116, 101, 115, 116, 32, 98, 114, 111, 116, 108, 105, 10, 3};
-
-        final HttpEntity entity = CompressorFactory.INSTANCE.decompressEntity(new ByteArrayEntity(bytes, null), "br");
-        Assertions.assertEquals("test brotli\n", EntityUtils.toString(entity));
+    public CompressEntity(final HttpEntity wrappedEntity,
+                             final Function<OutputStream, OutputStream> compressorFunction,
+                             final String compressionType) {
+        super(wrappedEntity);
+        this.compressorFunction = compressorFunction;
+        this.compressionType = compressionType;
     }
 
+    @Override
+    public void writeTo(final OutputStream outstream) throws IOException {
+        try (final OutputStream compressorStream = compressorFunction.apply(outstream)) {
+            super.writeTo(compressorStream);
+        } catch (final Exception e) {
+            throw new IOException("Failed to compress data using " + compressionType, e);
+        }
+    }
+
+    @Override
+    public String getContentEncoding() {
+        return compressionType;
+    }
+
+    @Override
+    public long getContentLength() {
+        return -1;
+    }
+
+    @Override
+    public boolean isChunked() {
+        return true;
+    }
 }

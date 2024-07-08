@@ -28,6 +28,7 @@
 package org.apache.hc.client5.http.impl.classic;
 
 import java.io.Closeable;
+import java.io.InputStream;
 import java.net.ProxySelector;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
@@ -54,6 +55,7 @@ import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.cookie.BasicCookieStore;
 import org.apache.hc.client5.http.cookie.CookieSpecFactory;
 import org.apache.hc.client5.http.cookie.CookieStore;
+import org.apache.hc.client5.http.entity.CompressorFactory;
 import org.apache.hc.client5.http.entity.InputStreamFactory;
 import org.apache.hc.client5.http.impl.ChainElement;
 import org.apache.hc.client5.http.impl.CookieSpecSupport;
@@ -94,7 +96,6 @@ import org.apache.hc.core5.http.HttpRequestInterceptor;
 import org.apache.hc.core5.http.HttpResponseInterceptor;
 import org.apache.hc.core5.http.config.Lookup;
 import org.apache.hc.core5.http.config.NamedElementChain;
-import org.apache.hc.core5.http.config.Registry;
 import org.apache.hc.core5.http.config.RegistryBuilder;
 import org.apache.hc.core5.http.impl.io.HttpRequestExecutor;
 import org.apache.hc.core5.http.protocol.DefaultHttpProcessor;
@@ -212,6 +213,7 @@ public class HttpClientBuilder {
     private Lookup<AuthSchemeFactory> authSchemeRegistry;
     private Lookup<CookieSpecFactory> cookieSpecRegistry;
     private LinkedHashMap<String, InputStreamFactory> contentDecoderMap;
+    private LinkedHashMap<String, Function<InputStream, InputStream>> contentDecoderFunctionMap;
     private CookieStore cookieStore;
     private CredentialsProvider credentialsProvider;
     private String userAgent;
@@ -625,10 +627,28 @@ public class HttpClientBuilder {
     /**
      * Assigns a map of {@link org.apache.hc.client5.http.entity.InputStreamFactory}s
      * to be used for automatic content decompression.
+     * @deprecated Use {@link #setContentDecoder(LinkedHashMap)} instead.
      */
+    @Deprecated
     public final HttpClientBuilder setContentDecoderRegistry(
             final LinkedHashMap<String, InputStreamFactory> contentDecoderMap) {
         this.contentDecoderMap = contentDecoderMap;
+        for (final Map.Entry<String, InputStreamFactory> entry : contentDecoderMap.entrySet()) {
+            contentDecoderFunctionMap.put(entry.getKey(),
+                    CompressorFactory.INSTANCE.getCompressorInput(entry.getKey(), true));
+        }
+        return this;
+    }
+
+    /**
+     * Assigns a map of {@link Function}s to be used for automatic content decompression.
+     *
+     * @param contentDecoderFunctionMap the map of content decoders
+     * @return this builder
+     */
+    public final HttpClientBuilder setContentDecoder(
+            final LinkedHashMap<String, Function<InputStream, InputStream>> contentDecoderFunctionMap) {
+        this.contentDecoderFunctionMap = contentDecoderFunctionMap;
         return this;
     }
 
@@ -908,20 +928,14 @@ public class HttpClientBuilder {
         }
 
         if (!contentCompressionDisabled) {
-            if (contentDecoderMap != null) {
-                final List<String> encodings = new ArrayList<>(contentDecoderMap.keySet());
-                final RegistryBuilder<InputStreamFactory> b2 = RegistryBuilder.create();
-                for (final Map.Entry<String, InputStreamFactory> entry: contentDecoderMap.entrySet()) {
-                    b2.register(entry.getKey(), entry.getValue());
-                }
-                final Registry<InputStreamFactory> decoderRegistry = b2.build();
-                execChainDefinition.addFirst(
-                        new ContentCompressionExec(encodings, decoderRegistry, true),
-                        ChainElement.COMPRESS.name());
+            if (contentDecoderFunctionMap != null) {
+                final Function<String, Function<InputStream, InputStream>> decoderFunction = encoding -> contentDecoderFunctionMap.getOrDefault(encoding, inputStream -> inputStream);
+                execChainDefinition.addFirst(new ContentCompressionExec(new ArrayList<>(contentDecoderFunctionMap.keySet()), decoderFunction, true), ChainElement.COMPRESS.name());
             } else {
-                execChainDefinition.addFirst(new ContentCompressionExec(true), ChainElement.COMPRESS.name());
+                execChainDefinition.addFirst(new ContentCompressionExec(), ChainElement.COMPRESS.name());
             }
         }
+
 
         // Add redirect executor, if not disabled
         if (!redirectHandlingDisabled) {

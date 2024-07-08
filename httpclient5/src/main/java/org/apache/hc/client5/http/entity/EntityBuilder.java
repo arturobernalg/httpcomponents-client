@@ -29,9 +29,11 @@ package org.apache.hc.client5.http.entity;
 
 import java.io.File;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Function;
 
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HttpEntity;
@@ -73,6 +75,8 @@ public class EntityBuilder {
     private String contentEncoding;
     private boolean chunked;
     private boolean gzipCompressed;
+
+    private boolean compressed;
 
     EntityBuilder() {
         super();
@@ -340,6 +344,10 @@ public class EntityBuilder {
         return gzipCompressed;
     }
 
+    public boolean isCompressed() {
+        return compressed;
+    }
+
     /**
      * Sets entities to be GZIP compressed.
      *
@@ -347,6 +355,11 @@ public class EntityBuilder {
      */
     public EntityBuilder gzipCompressed() {
         this.gzipCompressed = true;
+        return this;
+    }
+
+    public EntityBuilder compressed() {
+        this.compressed = true;
         return this;
     }
 
@@ -380,9 +393,14 @@ public class EntityBuilder {
         } else {
             throw new IllegalStateException("No entity set");
         }
-        if (this.gzipCompressed) {
-            return new GzipCompressingEntity(e);
+
+        if (compressed && !"identity".equalsIgnoreCase(contentEncoding)) {
+            final Function<OutputStream, OutputStream> compressorFunction = CompressorFactory.INSTANCE.getCompressorOutputStream(contentEncoding);
+            if (compressorFunction != null) {
+                return new CompressEntity(e, compressorFunction, contentEncoding);
+            }
         }
+
         return e;
     }
 
