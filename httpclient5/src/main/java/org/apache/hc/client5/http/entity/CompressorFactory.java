@@ -33,117 +33,114 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.SortedMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.apache.commons.compress.compressors.CompressorStreamFactory;
-import org.apache.commons.compress.compressors.CompressorStreamProvider;
 import org.apache.hc.core5.http.HttpEntity;
+import org.apache.hc.core5.util.Args;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Provides compression and decompression capabilities for HTTP entities using various
+ * compression formats supported by Apache Commons Compress.
+ * This class serves as a factory for creating input and output streams that handle
+ * the compression and decompression of data streams.
+ * <p>
+ * It utilizes a cache for formatted compressor names and caches for input and output
+ * compressor providers to optimize performance. The available compressors are determined
+ * dynamically at runtime by querying the {@link CompressorStreamFactory}.
+ * </p>
+ */
 public class CompressorFactory implements CompressorProvider {
 
+    /**
+     * Logger for logging information and errors.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(CompressorFactory.class);
 
+    /**
+     * Singleton instance of the CompressorFactory.
+     */
     public static final CompressorFactory INSTANCE = new CompressorFactory();
 
+    /**
+     * Instance of CompressorStreamFactory for creating compressor streams.
+     */
     private final CompressorStreamFactory compressorStreamFactory = new CompressorStreamFactory();
 
-    private static final Map<String, String> COMPRESSOR_NAME_MAP = new HashMap<>();
+    /**
+     * Cache for input stream compressor providers to optimize performance.
+     */
+    private final AtomicReference<Set<String>> inputProvidersCache = new AtomicReference<>();
 
-    static {
-        COMPRESSOR_NAME_MAP.put("gzip", "gz");
-        COMPRESSOR_NAME_MAP.put("x-gzip", "gz");
-        COMPRESSOR_NAME_MAP.put("compress", "z");  // "z" is the identifier used by Commons Compress
-        COMPRESSOR_NAME_MAP.put("deflate", "deflate");
-        COMPRESSOR_NAME_MAP.put("br", "br");
-        COMPRESSOR_NAME_MAP.put("zstd", "zstd");
-    }
+    /**
+     * Cache for output stream compressor providers to optimize performance.
+     */
+    private final AtomicReference<Set<String>> outputProvidersCache = new AtomicReference<>();
 
-    private final AtomicReference<SortedMap<String, CompressorStreamProvider>> inputProvidersCache = new AtomicReference<>();
-    private final AtomicReference<SortedMap<String, CompressorStreamProvider>> outputProvidersCache = new AtomicReference<>();
+    /**
+     * Cache for formatted compressor names to avoid redundant formatting operations.
+     */
+    private final Map<String, String> formattedNameCache = new HashMap<>();
 
-    private SortedMap<String, CompressorStreamProvider> getAvailableInputProviders() {
-        return inputProvidersCache.updateAndGet(existing -> {
-            if (existing == null) {
-                return CompressorStreamFactory.findAvailableCompressorInputStreamProviders();
-            }
-            return existing;
-        });
-    }
-
-    private SortedMap<String, CompressorStreamProvider> getAvailableOutputProviders() {
-        return outputProvidersCache.updateAndGet(existing -> {
-            if (existing == null) {
-                return CompressorStreamFactory.findAvailableCompressorOutputStreamProviders();
-            }
-            return existing;
-        });
-    }
-
-    private boolean isOutputSupported(final String name) {
-        final String supportName = name.toLowerCase(Locale.ROOT);
-        final String mappedName = getOrDefault(supportName);
-        return (COMPRESSOR_NAME_MAP.containsKey(supportName) || COMPRESSOR_NAME_MAP.containsValue(supportName))
-                && getAvailableOutputProviders().containsKey(mappedName.toUpperCase(Locale.ROOT));
-    }
-
-    private boolean isInputSupported(final String name) {
-        final String supportName = name.toLowerCase(Locale.ROOT);
-        final String mappedName = getOrDefault(supportName);
-        return (COMPRESSOR_NAME_MAP.containsKey(supportName) || COMPRESSOR_NAME_MAP.containsValue(supportName))
-                && getAvailableInputProviders().containsKey(mappedName.toUpperCase(Locale.ROOT));
-    }
 
     @Override
-    public Function<InputStream, InputStream> getCompressorInput(final String name, final boolean decompressConcatenated) {
-        if (!isInputSupported(name)) {
+    public Function<InputStream, InputStream> getCompressorInput(final String name) {
+        final String formattedName = getFormattedName(name);
+
+        if (!isInputSupported(formattedName)) {
             return null;
         }
-        final String compressorName = getOrDefault(name);
-        return inputStream -> createCompressorInputStream(compressorName, inputStream, decompressConcatenated);
+        return inputStream -> createCompressorInputStream(formattedName, inputStream);
     }
 
     @Override
     public Function<OutputStream, OutputStream> getCompressorOutputStream(final String name) {
-        if (!isOutputSupported(name)) {
+        final String formattedName = getFormattedName(name);
+
+        if (!isOutputSupported(formattedName)) {
             return null;
         }
-        final String compressorName = getOrDefault(name);
-        return outputStream -> createCompressorOutputStream(compressorName, outputStream);
+
+        return outputStream -> createCompressorOutputStream(formattedName, outputStream);
     }
 
     @Override
     public Set<String> getInputStreamCompressorNames() {
-        return COMPRESSOR_NAME_MAP.keySet().stream()
-                .filter(this::isInputSupported)
+        return getAvailableInputProviders().stream()
+                .map(String::toLowerCase)
                 .collect(Collectors.toSet());
     }
 
     @Override
     public Set<String> getOutputStreamCompressorNames() {
-        return COMPRESSOR_NAME_MAP.keySet().stream()
-                .filter(this::isOutputSupported)
+        return getAvailableOutputProviders().stream()
+                .map(String::toLowerCase)
                 .collect(Collectors.toSet());
     }
 
     @Override
-    public HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding, final boolean decompressConcatenated) {
+    public HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding) {
+        Args.notNull(entity, "Entity");
+        Args.notNull(contentEncoding, "Content Encoding");
+
         if (!isInputSupported(contentEncoding)) {
             if (LOG.isWarnEnabled()) {
                 LOG.warn("Unsupported decompression type: {}", contentEncoding);
             }
             return null;
         }
-        final Function<InputStream, InputStream> decompressorFunction = getCompressorInput(contentEncoding, decompressConcatenated);
+        final Function<InputStream, InputStream> decompressorFunction = getCompressorInput(contentEncoding);
         return new DecompressEntity(entity, decompressorFunction, contentEncoding);
     }
 
     @Override
     public HttpEntity compressEntity(final HttpEntity entity, final String contentEncoding) {
+        Args.notNull(entity, "Entity");
+        Args.notNull(contentEncoding, "Content Encoding");
         if (!isOutputSupported(contentEncoding)) {
             if (LOG.isWarnEnabled()) {
                 LOG.warn("Unsupported compression type: {}", contentEncoding);
@@ -154,14 +151,27 @@ public class CompressorFactory implements CompressorProvider {
         return new CompressEntity(entity, compressorFunction, contentEncoding);
     }
 
-    @Override
-    public HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding) {
-        return decompressEntity(entity, contentEncoding, true);
-    }
-
-    private InputStream createCompressorInputStream(final String name, final InputStream inputStream, final boolean decompressConcatenated) {
+    /**
+     * Creates a compressor input stream for the specified compressor name, input stream, and
+     * decompression concatenation flag.
+     * <p>
+     * For the "DEFLATE" compression, we use the {@link DeflateInputStream} from Apache HTTP Components
+     * instead of the one from Apache Commons Compress. This is because the latter requires an additional
+     * parameter {@code zlibHeader} to handle both RFC1951 (raw DEFLATE) and RFC1950 (zlib wrapped DEFLATE)
+     * streams. By using {@link DeflateInputStream}, we simplify the handling of DEFLATE streams without
+     * the need to manually specify the {@code zlibHeader} parameter.
+     * </p>
+     *
+     * @param name                   the name of the compressor
+     * @param inputStream            the input stream to be decompressed
+     * @return the decompressed input stream, or {@code null} if an error occurs
+     */
+    private InputStream createCompressorInputStream(final String name, final InputStream inputStream) {
         try {
-            return compressorStreamFactory.createCompressorInputStream(name, inputStream, decompressConcatenated);
+            if ("DEFLATE".equalsIgnoreCase(name)) {
+                return new DeflateInputStream(inputStream);
+            }
+            return compressorStreamFactory.createCompressorInputStream(name, inputStream);
         } catch (final Exception ex) {
             if (LOG.isWarnEnabled()) {
                 LOG.warn("Could not create compressor input stream for {}", name, ex);
@@ -170,6 +180,13 @@ public class CompressorFactory implements CompressorProvider {
         }
     }
 
+    /**
+     * Creates a compressor output stream for the specified compressor name and output stream.
+     *
+     * @param name         the name of the compressor
+     * @param outputStream the output stream to be compressed
+     * @return the compressed output stream, or {@code null} if an error occurs
+     */
     private OutputStream createCompressorOutputStream(final String name, final OutputStream outputStream) {
         try {
             return compressorStreamFactory.createCompressorOutputStream(name, outputStream);
@@ -181,7 +198,100 @@ public class CompressorFactory implements CompressorProvider {
         }
     }
 
-    private String getOrDefault(final String compressorName) {
-        return COMPRESSOR_NAME_MAP.getOrDefault(compressorName.toLowerCase(Locale.ROOT), compressorName);
+    /**
+     * Retrieves the available input stream compressor providers, using a cache for efficiency.
+     *
+     * @return a sorted map of available input stream compressor providers
+     */
+    private Set<String> getAvailableInputProviders() {
+        return inputProvidersCache.updateAndGet(existing -> {
+            if (existing == null) {
+                return CompressorStreamFactory.findAvailableCompressorInputStreamProviders().keySet();
+            }
+            return existing;
+        });
+    }
+
+    /**
+     * Retrieves the available output stream compressor providers, using a cache for efficiency.
+     *
+     * @return a sorted map of available output stream compressor providers
+     */
+    private Set<String> getAvailableOutputProviders() {
+        return outputProvidersCache.updateAndGet(existing -> {
+            if (existing == null) {
+                return CompressorStreamFactory.findAvailableCompressorOutputStreamProviders().keySet();
+            }
+            return existing;
+        });
+    }
+
+    /**
+     * Formats the given compressor name by converting it to lowercase.
+     *
+     * @param name the compressor name to format
+     * @return the formatted compressor name
+     */
+    private String formatName(final String name) {
+        return name.toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Checks if the specified compressor is supported, either for input or output.
+     *
+     * @param name     the name of the compressor
+     * @param isOutput whether to check for output support (true) or input support (false)
+     * @return {@code true} if the compressor is supported, {@code false} otherwise
+     */
+    private boolean isSupported(final String name, final boolean isOutput) {
+        final String formattedName = getFormattedName(name);
+        if (formattedName == null) {
+            return false;
+        }
+        if (isOutput) {
+            return getAvailableOutputProviders().contains(formattedName);
+        } else {
+            return getAvailableInputProviders().contains(formattedName);
+        }
+    }
+
+    /**
+     * Retrieves the formatted name for the specified compressor, using a cache for efficiency.
+     *
+     * @param name the compressor name to format
+     * @return the formatted compressor name, or the original name in uppercase if not found
+     */
+    private String getFormattedName(final String name) {
+        return formattedNameCache.computeIfAbsent(formatName(name), key -> {
+            switch (key) {
+                case "gzip":
+                case "x-gzip":
+                    return "GZ";
+                case "compress":
+                    return "Z";
+                default:
+                    return key.toUpperCase(Locale.ROOT);
+            }
+        });
+    }
+
+    /**
+     * Checks if the specified compressor is supported for output.
+     *
+     * @param name the name of the compressor
+     * @return {@code true} if the compressor is supported for output, {@code false} otherwise
+     */
+    private boolean isOutputSupported(final String name) {
+        return isSupported(name, true);
+    }
+
+    /**
+     * Checks if the specified compressor is supported for input.
+     *
+     * @param name the name of the compressor
+     * @return {@code true} if the compressor is supported for input, {@code false} otherwise
+     */
+    private boolean isInputSupported(final String name) {
+        return isSupported(name, false);
     }
 }

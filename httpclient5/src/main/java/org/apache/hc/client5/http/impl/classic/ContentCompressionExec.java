@@ -65,15 +65,34 @@ public final class ContentCompressionExec implements ExecChainHandler {
 
 
     private final Header acceptEncoding;
+
+    /**
+     * Function to obtain a decompression function based on the content encoding.
+     * <p>
+     * This function takes a content encoding name as input and returns a function
+     * that can decompress an {@link InputStream} with that encoding.
+     * <p>
+     * If {@code null}, a default function from {@link CompressorFactory} is used,
+     * which retrieves the appropriate decompressor for the given content encoding name.
+     */
     private final Function<String, Function<InputStream, InputStream>> decoderFunction;
     private final boolean ignoreUnknown;
 
+    /**
+     * Constructs a new instance of {@code ContentCompressionExec}.
+     *
+     * @param acceptEncoding  the list of accepted encoding schemes for requests; if {@code null},
+     *                        all available input stream compressor names from {@link CompressorFactory} will be used
+     * @param decoderFunction the function to obtain a decompression function based on content encoding; if {@code null},
+     *                        the default function from {@link CompressorFactory} will be used
+     * @param ignoreUnknown   whether to ignore unknown content-encoding schemes
+     */
     public ContentCompressionExec(final List<String> acceptEncoding,
                                   final Function<String, Function<InputStream, InputStream>> decoderFunction,
                                   final boolean ignoreUnknown) {
         this.acceptEncoding = MessageSupport.headerOfTokens(HttpHeaders.ACCEPT_ENCODING,
                 acceptEncoding != null ? acceptEncoding : new ArrayList<>(CompressorFactory.INSTANCE.getInputStreamCompressorNames()));
-        this.decoderFunction = decoderFunction != null ? decoderFunction : name -> CompressorFactory.INSTANCE.getCompressorInput(name, true);
+        this.decoderFunction = decoderFunction != null ? decoderFunction : CompressorFactory.INSTANCE::getCompressorInput;
 
         if (LOG.isDebugEnabled()) {
             CompressorFactory.INSTANCE.getInputStreamCompressorNames().forEach(name -> LOG.debug("Available decoder: {}", name));

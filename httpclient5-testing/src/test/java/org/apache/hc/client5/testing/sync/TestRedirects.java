@@ -649,8 +649,8 @@ public abstract class TestRedirects {
         Assertions.assertEquals(new URIBuilder().setHttpHost(target).setPath("/random/100").build(),
                 reqWrapper.getUri());
 
-        assertThat(values.poll(), CoreMatchers.equalTo("br, zstd, deflate, compress, gzip, x-gzip"));
-        assertThat(values.poll(), CoreMatchers.equalTo("br, zstd, deflate, compress, gzip, x-gzip"));
+        assertThat(values.poll(), CoreMatchers.equalTo("snappy-raw, snappy-framed, xz, bzip2, lz4-framed, deflate64, br, lzma, zstd, lz4-block, deflate, gz, z, pack200"));
+        assertThat(values.poll(), CoreMatchers.equalTo("snappy-raw, snappy-framed, xz, bzip2, lz4-framed, deflate64, br, lzma, zstd, lz4-block, deflate, gz, z, pack200"));
         assertThat(values.poll(), CoreMatchers.nullValue());
     }
 

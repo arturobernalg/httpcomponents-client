@@ -35,22 +35,45 @@ import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.io.entity.HttpEntityWrapper;
 import org.apache.hc.core5.util.Args;
 
+/**
+ * An {@link HttpEntity} wrapper that decompresses the wrapped entity's content.
+ * This class handles the decompression of content encoded using various compression
+ * formats by applying a provided decompressor function to the entity's input stream.
+ * <p>
+ * It overrides the {@link HttpEntity#getContent()} and {@link HttpEntity#writeTo(OutputStream)}
+ * methods to provide decompressed data.
+ * </p>
+ *
+ * @since 5.4
+ */
 public class DecompressEntity extends HttpEntityWrapper {
 
+    /**
+     * Buffer size for reading data during decompression.
+     */
     private static final int BUFFER_SIZE = 1024 * 2;
 
+    /**
+     * The decompressor function that applies decompression to the input stream.
+     */
     private final Function<InputStream, InputStream> decompressor;
-    private InputStream content;
 
+    /**
+     * The content encoding of the entity.
+     */
     private final String contentEncoding;
 
+    /**
+     * The decompressed content stream.
+     */
+    private InputStream content;
 
     /**
      * Creates a new instance of {@code DecompressEntity}.
      *
-     * @param wrapped          the wrapped entity
-     * @param decompressor     the decompressor function
-     * @param contentEncoding  the content encoding of the entity
+     * @param wrapped         the wrapped entity
+     * @param decompressor    the decompressor function
+     * @param contentEncoding the content encoding of the entity
      */
     public DecompressEntity(final HttpEntity wrapped,
                             final Function<InputStream, InputStream> decompressor,
@@ -60,10 +83,22 @@ public class DecompressEntity extends HttpEntityWrapper {
         this.contentEncoding = contentEncoding;
     }
 
+    /**
+     * Retrieves the decompressed content stream.
+     *
+     * @return the decompressed content stream
+     * @throws IOException if an I/O error occurs
+     */
     private InputStream getDecompressingStream() throws IOException {
         return decompressor.apply(super.getContent());
     }
 
+    /**
+     * Returns the decompressed content stream.
+     *
+     * @return the decompressed content stream
+     * @throws IOException if an I/O error occurs
+     */
     @Override
     public InputStream getContent() throws IOException {
         if (super.isStreaming()) {
@@ -75,6 +110,12 @@ public class DecompressEntity extends HttpEntityWrapper {
         return getDecompressingStream();
     }
 
+    /**
+     * Writes the decompressed content to the specified output stream.
+     *
+     * @param outStream the output stream to write to
+     * @throws IOException if an I/O error occurs
+     */
     @Override
     public void writeTo(final OutputStream outStream) throws IOException {
         Args.notNull(outStream, "Output stream");
@@ -87,11 +128,21 @@ public class DecompressEntity extends HttpEntityWrapper {
         }
     }
 
+    /**
+     * Returns the content encoding of the entity.
+     *
+     * @return the content encoding
+     */
     @Override
     public String getContentEncoding() {
         return contentEncoding;
     }
 
+    /**
+     * Returns the content length of the decompressed entity.
+     *
+     * @return the content length, or -1 if unknown
+     */
     @Override
     public long getContentLength() {
         return -1;

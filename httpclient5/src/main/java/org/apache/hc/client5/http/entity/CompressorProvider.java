@@ -34,21 +34,88 @@ import java.util.function.Function;
 
 import org.apache.hc.core5.http.HttpEntity;
 
+/**
+ * Interface for providing compression and decompression capabilities for HTTP entities.
+ * Implementations of this interface are responsible for supporting various compression
+ * formats and handling the compression and decompression of HTTP entity streams.
+ * <p>
+ * This interface defines methods for obtaining the names of supported compression formats,
+ * retrieving functions for compressing and decompressing streams, and compressing or
+ * decompressing HTTP entities.
+ * </p>
+ * <p>
+ * Implementations of this interface must ensure thread-safety and may utilize internal
+ * caches for efficiency. The {@link #getCompressorInput(String, boolean)} and
+ * {@link #getCompressorOutputStream(String)} methods return functions that wrap
+ * {@link InputStream} and {@link OutputStream} objects with appropriate compression
+ * or decompression streams.
+ * </p>
+ * <p>
+ * Example usage:
+ * <pre>
+ * {@code
+ * CompressorProvider compressorProvider = new MyCompressorProvider();
+ * Function<InputStream, InputStream> gzipDecompressor = compressorProvider.getCompressorInput("gzip", true);
+ * InputStream decompressedStream = gzipDecompressor.apply(compressedInputStream);
+ * }
+ * </pre>
+ * </p>
+ * <p>
+ * This interface is designed to be extensible for supporting additional compression formats
+ * and customizable decompression behavior. It provides a unified API for handling compression
+ * in HTTP communications, which can be particularly useful for optimizing data transfer
+ * and reducing bandwidth usage.
+ * </p>a
+ *
+ * @since 5.4
+ */
 public interface CompressorProvider {
 
+    /**
+     * Returns the names of the supported input stream compressors.
+     *
+     * @return a set of supported input stream compressor names
+     */
     Set<String> getInputStreamCompressorNames();
 
-
+    /**
+     * Returns the names of the supported output stream compressors.
+     *
+     * @return a set of supported output stream compressor names
+     */
     Set<String> getOutputStreamCompressorNames();
 
-    Function<InputStream, InputStream> getCompressorInput(String name, boolean decompressConcatenated);
+    /**
+     * Retrieves a function that provides a decompressed input stream for the specified compressor name.
+     *
+     * @param name                   the name of the compressor to use for decompression
+     * @return a function that decompresses an input stream, or {@code null} if the compressor is not supported
+     */
+    Function<InputStream, InputStream> getCompressorInput(final String name);
 
-    Function<OutputStream, OutputStream> getCompressorOutputStream(final String name);
+    /**
+     * Retrieves a function that provides a compressed output stream for the specified compressor name.
+     *
+     * @param name the name of the compressor to use for compression
+     * @return a function that compresses an output stream, or {@code null} if the compressor is not supported
+     */
+    Function<OutputStream, OutputStream> getCompressorOutputStream(String name);
 
-    HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding, final boolean decompressConcatenated);
+    /**
+     * Decompresses the given HTTP entity using the specified content encoding.
+     *
+     * @param entity          the HTTP entity to decompress
+     * @param contentEncoding the content encoding to use for decompression
+     * @return a decompressed HTTP entity, or {@code null} if the content encoding is not supported
+     */
+    HttpEntity decompressEntity(HttpEntity entity, String contentEncoding);
 
-    HttpEntity compressEntity(final HttpEntity entity, final String contentEncoding);
-
-
-    HttpEntity decompressEntity(final HttpEntity entity, final String contentEncoding);
+    /**
+     * Compresses the given HTTP entity using the specified content encoding.
+     *
+     * @param entity          the HTTP entity to compress
+     * @param contentEncoding the content encoding to use for compression
+     * @return a compressed HTTP entity, or {@code null} if the content encoding is not supported
+     */
+    HttpEntity compressEntity(HttpEntity entity, String contentEncoding);
 }

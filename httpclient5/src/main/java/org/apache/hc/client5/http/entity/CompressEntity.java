@@ -34,39 +34,90 @@ import java.util.function.Function;
 import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.io.entity.HttpEntityWrapper;
 
+/**
+ * An {@link HttpEntity} wrapper that compresses the content using a specified
+ * compressor function. The compression type is specified by the {@code compressionType}.
+ * This class is used to apply compression to the content of an HTTP entity.
+ *
+ * @since 5.4
+ */
 public class CompressEntity extends HttpEntityWrapper {
+
+    /**
+     * Function that applies the compression to the output stream.
+     */
     private final Function<OutputStream, OutputStream> compressorFunction;
+
+    /**
+     * The type of compression to be used.
+     */
     private final String compressionType;
 
+    /**
+     * Constructs a new {@code CompressEntity}.
+     *
+     * @param wrappedEntity      the entity to be compressed
+     * @param compressorFunction the function that applies the compression
+     * @param compressionType    the type of compression to be used
+     */
     public CompressEntity(final HttpEntity wrappedEntity,
-                             final Function<OutputStream, OutputStream> compressorFunction,
-                             final String compressionType) {
+                          final Function<OutputStream, OutputStream> compressorFunction,
+                          final String compressionType) {
         super(wrappedEntity);
         this.compressorFunction = compressorFunction;
         this.compressionType = compressionType;
     }
 
+    /**
+     * Writes the compressed content to the provided output stream.
+     * <p>
+     * This method applies the compression function to the output stream, then writes the
+     * content of the wrapped entity to the resulting compressed stream. The compressor function
+     * is applied to the provided output stream to get the appropriate compressor, and the
+     * wrapped entity's content is written to this compressor stream.
+     * </p>
+     *
+     * @param outstream the output stream to write to
+     * @throws IOException if an I/O error occurs
+     */
     @Override
     public void writeTo(final OutputStream outstream) throws IOException {
-        try (final OutputStream compressorStream = compressorFunction.apply(outstream)) {
-            super.writeTo(compressorStream);
-        } catch (final Exception e) {
-            throw new IOException("Failed to compress data using " + compressionType, e);
-        }
+        final OutputStream compressorStream = compressorFunction.apply(outstream);
+        super.writeTo(compressorStream);
+        compressorStream.close();
     }
 
+
+    /**
+     * Returns the content encoding type used for compression.
+     *
+     * @return the content encoding type
+     */
     @Override
     public String getContentEncoding() {
         return compressionType;
     }
 
+    /**
+     * Returns the content length. This implementation always returns -1, indicating
+     * that the content length is unknown.
+     *
+     * @return the content length, which is always -1
+     */
     @Override
     public long getContentLength() {
         return -1;
     }
 
+    /**
+     * Indicates whether the content is chunked. This implementation always returns
+     * {@code true} as compressed content is generally chunked.
+     *
+     * @return {@code true} if the content is chunked, {@code false} otherwise
+     */
     @Override
     public boolean isChunked() {
         return true;
     }
 }
+

@@ -74,8 +74,27 @@ public class EntityBuilder {
     private ContentType contentType;
     private String contentEncoding;
     private boolean chunked;
+
+    /**
+     * @deprecated Use {@link #compressed()} instead.
+     * This method sets the entity to be GZIP compressed.
+     * The new {@code compressed()} method allows for more flexible compression.
+     */
+    @Deprecated
     private boolean gzipCompressed;
 
+    /**
+     * Flag indicating whether the entity should be compressed.
+     * <p>
+     * When this flag is set to {@code true}, the entity will be compressed using the
+     * appropriate compression method specified in the {@link CompressorFactory} based on
+     * the given content encoding. The actual compression method is determined based on
+     * the content encoding.
+     * </p>
+     * <p>
+     * If this flag is {@code false}, no compression will be applied to the entity.
+     * </p>
+     */
     private boolean compressed;
 
     EntityBuilder() {
@@ -339,7 +358,9 @@ public class EntityBuilder {
      * Tests if entities are to be GZIP compressed ({@code true}), or not ({@code false}).
      *
      * @return {@code true} if entity is to be GZIP compressed, {@code false} otherwise.
+     * @deprecated Use {@link #isCompressed()} for a more flexible compression check.
      */
+    @Deprecated
     public boolean isGzipCompressed() {
         return gzipCompressed;
     }
@@ -347,6 +368,7 @@ public class EntityBuilder {
     public boolean isCompressed() {
         return compressed;
     }
+
 
     /**
      * Sets entities to be GZIP compressed.
@@ -358,6 +380,14 @@ public class EntityBuilder {
         return this;
     }
 
+
+    /**
+     * Sets entities to be compressed using the specified compression method.
+     * If compression is enabled, the {@link CompressorFactory} will be used to
+     * obtain the appropriate compressor based on the content encoding.
+     *
+     * @return this builder
+     */
     public EntityBuilder compressed() {
         this.compressed = true;
         return this;
