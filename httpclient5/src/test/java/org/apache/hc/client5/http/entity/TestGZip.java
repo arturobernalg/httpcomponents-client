@@ -64,7 +64,7 @@ public class TestGZip {
 
         // Use CompressorFactory to get the gzip compressor and decompressor
         final Function<OutputStream, OutputStream> gzipCompressor = CompressorFactory.INSTANCE.getCompressorOutputStream("gz");
-        final Function<InputStream, InputStream> gzipDecompressor = CompressorFactory.INSTANCE.getCompressorInput("gzG", true);
+        final Function<InputStream, InputStream> gzipDecompressor = CompressorFactory.INSTANCE.getCompressorInput("gz");
 
         try (final CompressEntity compressEntity = new CompressEntity(in, gzipCompressor, "gz")) {
             final ByteArrayOutputStream buf = new ByteArrayOutputStream();

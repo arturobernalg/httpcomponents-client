@@ -294,4 +294,15 @@ public class CompressorFactory implements CompressorProvider {
     private boolean isInputSupported(final String name) {
         return isSupported(name, false);
     }
+
+    public InputStream getCompressorInputStream(final String name, final InputStream inputStream, final boolean decompressConcatenated) {
+        final String formattedName = getFormattedName(name);
+
+        if (!isInputSupported(formattedName)) {
+            return null;
+        }
+
+        return createCompressorInputStream(formattedName, inputStream);
+    }
+
 }

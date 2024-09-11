@@ -74,11 +74,11 @@ public class CompressedResponseHandlingExample {
 
             final LinkedHashMap<String, Function<InputStream, InputStream>> decoderMap = new LinkedHashMap<>();
             decoderMap.put("gz",
-                    CompressorFactory.INSTANCE.getCompressorInput("gz", true));  // Add GZIP decoder
+                    CompressorFactory.INSTANCE.getCompressorInput("gz"));  // Add GZIP decoder
             decoderMap.put("zstd",
-                    CompressorFactory.INSTANCE.getCompressorInput("zstd", true));  // Add GZIP decoder
+                    CompressorFactory.INSTANCE.getCompressorInput("zstd"));  // Add GZIP decoder
             decoderMap.put("bzip2",
-                    CompressorFactory.INSTANCE.getCompressorInput("bzip2", true));  // Add GZIP decoder
+                    CompressorFactory.INSTANCE.getCompressorInput("bzip2"));  // Add GZIP decoder
 
 
             try (final CloseableHttpClient httpclient = HttpClients

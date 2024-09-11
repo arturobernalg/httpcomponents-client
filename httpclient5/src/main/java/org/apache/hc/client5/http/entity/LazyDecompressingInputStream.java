@@ -32,6 +32,7 @@ import java.io.InputStream;
 /**
  * Lazy init InputStream wrapper.
  */
+@Deprecated
 class LazyDecompressingInputStream extends InputStream {
 
     private final InputStream wrappedStream;

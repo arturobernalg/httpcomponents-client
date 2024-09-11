@@ -39,6 +39,7 @@ import org.apache.hc.core5.util.Args;
  *
  * @since 4.4
  */
+@Deprecated
 public class DecompressingEntity extends HttpEntityWrapper {
 
     /**

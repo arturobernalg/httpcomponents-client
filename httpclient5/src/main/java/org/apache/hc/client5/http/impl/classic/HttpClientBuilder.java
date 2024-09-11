@@ -635,7 +635,7 @@ public class HttpClientBuilder {
         this.contentDecoderMap = contentDecoderMap;
         for (final Map.Entry<String, InputStreamFactory> entry : contentDecoderMap.entrySet()) {
             contentDecoderFunctionMap.put(entry.getKey(),
-                    CompressorFactory.INSTANCE.getCompressorInput(entry.getKey(), true));
+                    CompressorFactory.INSTANCE.getCompressorInput(entry.getKey()));
         }
         return this;
     }

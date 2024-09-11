@@ -139,6 +139,7 @@ public final class ContentCompressionExec implements ExecChainHandler {
                 for (final HeaderElement codec : codecs) {
                     final String codecName = codec.getName().toLowerCase(Locale.ROOT);
                     final Function<InputStream, InputStream> decompress = decoderFunction.apply(contentEncoding.toLowerCase(Locale.ROOT));
+
                     if (decompress != null) {
                         response.setEntity(new DecompressEntity(response.getEntity(), decompress, codecName));
                         response.removeHeaders(HttpHeaders.CONTENT_LENGTH);
