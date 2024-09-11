@@ -60,9 +60,7 @@ public class ClientFormLogin {
                 if (cookies.isEmpty()) {
                     System.out.println("None");
                 } else {
-                    for (int i = 0; i < cookies.size(); i++) {
-                        System.out.println("- " + cookies.get(i));
-                    }
+                    cookies.forEach(e -> System.out.println("- " + e));
                 }
                 return null;
             });
@@ -82,9 +80,7 @@ public class ClientFormLogin {
                 if (cookies.isEmpty()) {
                     System.out.println("None");
                 } else {
-                    for (int i = 0; i < cookies.size(); i++) {
-                        System.out.println("- " + cookies.get(i));
-                    }
+                    cookies.forEach(e -> System.out.println("- " + e));
                 }
                 return null;
             });
