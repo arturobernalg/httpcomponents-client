@@ -78,4 +78,8 @@ abstract  class AbstractIntegrationTestBase {
         return testResources.client();
     }
 
+    public TestClient client(final boolean nowrap) throws Exception {
+        return testResources.client(nowrap);
+    }
+
 }

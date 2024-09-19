@@ -118,4 +118,9 @@ public class TestClientResources implements AfterEachCallback {
         return client;
     }
 
+    public TestClient client(final boolean nowrap) throws Exception {
+        clientBuilder.setnowrap(nowrap);
+        return client();
+    }
+
 }

@@ -98,6 +98,10 @@ public interface TestClientBuilder {
         throw new UnsupportedOperationException("Operation not supported by " + getProtocolLevel());
     }
 
+    default  TestClientBuilder setnowrap(boolean nowrap){
+        return this;
+    }
+
     TestClient build() throws Exception;
 
 }

@@ -38,7 +38,9 @@ import org.apache.hc.core5.annotation.ThreadingBehavior;
  * {@link InputStreamFactory} for handling GZIPContent Coded responses.
  *
  * @since 5.0
+ * @deprecated
  */
+@Deprecated
 @Contract(threading = ThreadingBehavior.STATELESS)
 public class GZIPInputStreamFactory implements InputStreamFactory {
 
