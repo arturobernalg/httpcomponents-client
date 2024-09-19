@@ -34,7 +34,9 @@ import org.apache.hc.core5.http.HttpEntity;
  *
  * @see GzipDecompressingEntity
  * @since 5.2
+ * @deprecated
  */
+@Deprecated
 public class BrotliDecompressingEntity extends DecompressingEntity {
     /**
      * Creates a new {@link DecompressingEntity}.

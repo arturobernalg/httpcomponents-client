@@ -37,7 +37,9 @@ import org.brotli.dec.BrotliInputStream;
  * {@link InputStreamFactory} for handling Brotli Content Coded responses.
  *
  * @since 5.2
+ * @deprecated
  */
+@Deprecated
 @Contract(threading = ThreadingBehavior.STATELESS)
 public class BrotliInputStreamFactory implements InputStreamFactory {
 
