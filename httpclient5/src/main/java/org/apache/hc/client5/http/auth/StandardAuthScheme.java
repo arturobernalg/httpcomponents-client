@@ -82,4 +82,7 @@ public final class StandardAuthScheme {
     @Deprecated
     public static final String KERBEROS = "Kerberos";
 
+
+    public static final String SCRAM = "Scram";
+
 }

@@ -219,12 +219,44 @@ public class HttpClientContext extends HttpCoreContext {
      */
     private String nextNonce;
 
+
+    private byte[] tlsUnique;
+
+    private String serverProof;
+
+    private String channelBindingType;
+
+    public String getChannelBindingType() {
+        return channelBindingType;
+    }
+
+    public void setChannelBindingType(final String channelBindingType) {
+        this.channelBindingType = channelBindingType;
+    }
+
     public HttpClientContext(final HttpContext context) {
         super(context);
     }
 
     public HttpClientContext() {
         super();
+    }
+
+
+    public byte[] getTlsUnique() {
+        return tlsUnique;
+    }
+
+    public void setTlsUnique(final byte[] tlsUnique) {
+        this.tlsUnique = tlsUnique;
+    }
+
+    public String getServerProof() {
+        return serverProof;
+    }
+
+    public void setServerProof(final String serverProof) {
+        this.serverProof = serverProof;
     }
 
     /**
@@ -476,6 +508,8 @@ public class HttpClientContext extends HttpCoreContext {
     public String getNextNonce() {
         return nextNonce;
     }
+
+
 
     /**
      * Sets the {@code nextnonce} value directly as an instance attribute.
