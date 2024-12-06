@@ -27,6 +27,18 @@
 
 package org.apache.hc.client5.http.impl.auth;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
+import java.util.List;
+
+import javax.net.ssl.SSLSession;
+
 import org.apache.hc.client5.http.auth.AuthChallenge;
 import org.apache.hc.client5.http.auth.AuthScheme;
 import org.apache.hc.client5.http.auth.AuthScope;
@@ -35,6 +47,7 @@ import org.apache.hc.client5.http.auth.ChallengeType;
 import org.apache.hc.client5.http.auth.CredentialsProvider;
 import org.apache.hc.client5.http.auth.MalformedChallengeException;
 import org.apache.hc.client5.http.auth.StandardAuthScheme;
+import org.apache.hc.client5.http.impl.ScramException;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpRequest;
@@ -45,17 +58,6 @@ import org.apache.hc.core5.util.CharArrayBuffer;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-
-import javax.net.ssl.SSLSession;
-import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
-import java.util.List;
-
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 class TestScramScheme {
 
@@ -97,7 +99,7 @@ class TestScramScheme {
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256";
         final AuthChallenge authChallenge = parse(challenge);
 
         final HttpClientContext context = HttpClientContext.create();
@@ -131,7 +133,7 @@ class TestScramScheme {
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256";
         final AuthChallenge authChallenge = parse(challenge);
 
         final HttpClientContext context = HttpClientContext.create();
@@ -203,7 +205,7 @@ class TestScramScheme {
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
 
         final HttpClientContext context = HttpClientContext.create();
@@ -236,7 +238,7 @@ class TestScramScheme {
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
 
         final HttpClientContext context = HttpClientContext.create();
@@ -270,7 +272,7 @@ class TestScramScheme {
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
 
 
@@ -297,7 +299,6 @@ class TestScramScheme {
     }
 
 
-
     @Test
     void testScramAuthenticationScramPlusMechanismTlsExporter() throws Exception {
         final HttpRequest request = new BasicHttpRequest("Simple", "/");
@@ -321,7 +322,7 @@ class TestScramScheme {
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
 
         final SSLSession mockSession = mock(SSLSession.class);
@@ -365,7 +366,7 @@ class TestScramScheme {
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
 
         // Mock the SSLSession, X509Certificate, and tlsUnique
@@ -422,7 +423,7 @@ class TestScramScheme {
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
 
         // Mock the SSLSession, X509Certificate, and tlsUnique
@@ -469,7 +470,7 @@ class TestScramScheme {
         }).when(mockSecureRandom).nextBytes(any(byte[].class));
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm1\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm1\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256";
         final AuthChallenge authChallenge = parse(challenge);
 
         final HttpClientContext context = HttpClientContext.create();
@@ -502,7 +503,7 @@ class TestScramScheme {
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
 
         final HttpClientContext context = HttpClientContext.create();
@@ -537,7 +538,7 @@ class TestScramScheme {
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
 
         // Mock the SSLSession, X509Certificate, and tlsUnique
@@ -584,7 +585,7 @@ class TestScramScheme {
 
         final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256";
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i= 4096, algorithm=SCRAM-SHA-256";
         final AuthChallenge authChallenge = parse(challenge);
 
         final HttpClientContext context = HttpClientContext.create();
@@ -594,5 +595,253 @@ class TestScramScheme {
         Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
         Assertions.assertThrows(AuthenticationException.class, () ->
                 authscheme.generateAuthResponse(host, request, context));
+    }
+
+    @Test
+    void testScramAuthenticationBidirectionalCharactersD1() throws Exception {
+        final HttpRequest request = new BasicHttpRequest("Simple", "/");
+        final HttpHost host = new HttpHost("somehost", 80);
+        final CredentialsProvider credentialsProvider = CredentialsProviderBuilder.create()
+                .add(new AuthScope(host, "realm", null), "username\u05D0", "password".toCharArray())
+                .build();
+        final int nonceLength = 256 / 8;
+        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
+        doAnswer(invocation -> {
+            final byte[] nonceBytes = invocation.getArgument(0);
+            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
+            final byte[] generatedBytes = new byte[nonceLength];
+            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
+            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
+            return fixedBytes;
+        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+
+        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+
+        // Keep the challenge itself standard as we want to focus on credentials validation
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
+
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setServerProof(null);
+        authscheme.processChallenge(authChallenge, context);
+
+        Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
+        Assertions.assertThrows(AuthenticationException.class, () ->
+                authscheme.generateAuthResponse(host, request, context));
+    }
+
+    @Test
+    void testScramAuthenticationRandALCat() throws Exception {
+        final HttpRequest request = new BasicHttpRequest("Simple", "/");
+        final HttpHost host = new HttpHost("somehost", 80);
+
+        final CredentialsProvider credentialsProvider = CredentialsProviderBuilder.create()
+                .add(new AuthScope(host, "realm", null), "\uFB1D$", "password".toCharArray())
+                .build();
+
+        final int nonceLength = 256 / 8;
+        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
+        doAnswer(invocation -> {
+            final byte[] nonceBytes = invocation.getArgument(0);
+            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
+            final byte[] generatedBytes = new byte[nonceLength];
+            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
+            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
+            return fixedBytes;
+        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+
+        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
+
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setServerProof(null);
+        authscheme.processChallenge(authChallenge, context);
+
+        Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
+
+        Assertions.assertThrows(ScramException.class, () ->
+                authscheme.generateAuthResponse(host, request, context));
+    }
+
+
+    @Test
+    void testScramAuthenticationProhibited() throws Exception {
+        final HttpRequest request = new BasicHttpRequest("Simple", "/");
+        final HttpHost host = new HttpHost("somehost", 80);
+
+        final CredentialsProvider credentialsProvider = CredentialsProviderBuilder.create()
+                .add(new AuthScope(host, "realm", null), "$\0x0020", "password".toCharArray())
+                .build();
+
+        final int nonceLength = 256 / 8;
+        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
+        doAnswer(invocation -> {
+            final byte[] nonceBytes = invocation.getArgument(0);
+            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
+            final byte[] generatedBytes = new byte[nonceLength];
+            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
+            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
+            return fixedBytes;
+        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+
+        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
+
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setServerProof(null);
+        authscheme.processChallenge(authChallenge, context);
+
+        Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
+
+        Assertions.assertThrows(ScramException.class, () ->
+                authscheme.generateAuthResponse(host, request, context));
+    }
+
+    @Test
+    void testScramAuthenticationRandALCatFirst() throws Exception {
+        final HttpRequest request = new BasicHttpRequest("Simple", "/");
+        final HttpHost host = new HttpHost("somehost", 80);
+
+        final CredentialsProvider credentialsProvider = CredentialsProviderBuilder.create()
+                .add(new AuthScope(host, "realm", null), "$\uFB1D", "password".toCharArray())
+                .build();
+
+        final int nonceLength = 256 / 8;
+        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
+        doAnswer(invocation -> {
+            final byte[] nonceBytes = invocation.getArgument(0);
+            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
+            final byte[] generatedBytes = new byte[nonceLength];
+            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
+            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
+            return fixedBytes;
+        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+
+        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
+
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setServerProof(null);
+        authscheme.processChallenge(authChallenge, context);
+
+        Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
+
+        Assertions.assertThrows(ScramException.class, () ->
+                authscheme.generateAuthResponse(host, request, context));
+    }
+
+    @Test
+    void testScramAuthenticationScramExtremelyLowBoundaries() throws Exception {
+
+        final ScramScheme authscheme = new ScramScheme();
+
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i =  1, algorithm=SCRAM-SHA-256-PLUS";
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setSSLSession(Mockito.mock(SSLSession.class));
+
+        Assertions.assertThrows(MalformedChallengeException.class, () -> authscheme.processChallenge(authChallenge, context));
+
+    }
+
+    @Test
+    void testScramAuthenticationScramNotNumberBoundaries() throws Exception {
+
+        final ScramScheme authscheme = new ScramScheme();
+
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=aaa , algorithm=SCRAM-SHA-256-PLUS";
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setSSLSession(Mockito.mock(SSLSession.class));
+
+        Assertions.assertThrows(MalformedChallengeException.class, () -> authscheme.processChallenge(authChallenge, context));
+
+    }
+
+
+    @Test
+    void testScramAuthenticationScramNullSalt() throws Exception {
+
+        final ScramScheme authscheme = new ScramScheme();
+
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000,i=4096 , algorithm=SCRAM-SHA-256-PLUS";
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setSSLSession(Mockito.mock(SSLSession.class));
+
+        Assertions.assertThrows(MalformedChallengeException.class, () -> authscheme.processChallenge(authChallenge, context));
+
+    }
+
+    @Test
+    void testScramAuthenticationErrorNonce() throws Exception {
+
+        final ScramScheme authscheme = new ScramScheme();
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setSSLSession(Mockito.mock(SSLSession.class));
+        context.setServerProof("BI1UFV2y4dtE2BeHo6AjPUsRQzND31TfzGYbUWN73uI=");
+
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, m=ext1, i= 4096, algorithm=SCRAM-SHA-256-PLUS";
+        final AuthChallenge authChallenge = parse(challenge);
+
+
+        Assertions.assertThrows(MalformedChallengeException.class, () -> authscheme.processChallenge(authChallenge, context));
+
+    }
+
+    @Test
+    void testScramAuthenticationExtension() throws Exception {
+
+        final int nonceLength = 256 / 8;
+        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
+        doAnswer(invocation -> {
+            final byte[] nonceBytes = invocation.getArgument(0);
+            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
+            final byte[] generatedBytes = new byte[nonceLength];
+            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
+            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
+            return fixedBytes;
+        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+
+        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, m=ext1, s=salt_value, i= 4096, algorithm=SCRAM-SHA-256-PLUS";
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final SSLSession mockSession = mock(SSLSession.class);
+        final java.security.cert.X509Certificate mockCert = mock(X509Certificate.class);
+        when(mockSession.getPeerCertificates()).thenReturn(new X509Certificate[]{mockCert});
+        when(mockCert.getSigAlgName()).thenReturn("SHA256withRSA");
+        final byte[] exampleCertBytes = "mocked-cert-encoded".getBytes(StandardCharsets.UTF_8);
+        when(mockCert.getEncoded()).thenReturn(exampleCertBytes);
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setSSLSession(mockSession);
+
+        // Setting the TLS Unique value for channel binding
+        final byte[] tlsUniqueMock = "mocked-tls-unique-value".getBytes(StandardCharsets.UTF_8);
+        context.setTlsUnique(tlsUniqueMock);
+        context.setChannelBindingType("tls-unique");
+
+        // Set server proof to pass validation
+        context.setServerProof("5zv82UxYxYrDCv2CIy+eCCT2lpQHDLimSzSy38KlNWQ=");
+
+        Assertions.assertThrows(MalformedChallengeException.class, () -> authscheme.processChallenge(authChallenge, context));
+
+
     }
 }
