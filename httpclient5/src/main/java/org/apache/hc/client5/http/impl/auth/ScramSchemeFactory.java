@@ -55,10 +55,10 @@ import org.apache.hc.core5.http.protocol.HttpContext;
  * respective variants.
  * </p>
  *
- * @since 5.5
  * @see ScramScheme
  * @see AuthSchemeFactory
  * @see <a href="https://tools.ietf.org/html/rfc5802">RFC 5802: Salted Challenge Response Authentication Mechanism (SCRAM)</a>
+ * @since 5.5
  */
 @Contract(threading = ThreadingBehavior.STATELESS)
 public class ScramSchemeFactory implements AuthSchemeFactory {
@@ -99,7 +99,7 @@ public class ScramSchemeFactory implements AuthSchemeFactory {
      *                This may contain additional parameters or attributes used in the
      *                authentication process.
      * @return An instance of {@link ScramScheme} that can be used for SCRAM-based
-     *         authentication.
+     * authentication.
      */
     @Override
     public AuthScheme create(final HttpContext context) {
