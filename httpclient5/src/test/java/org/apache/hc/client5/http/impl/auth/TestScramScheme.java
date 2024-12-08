@@ -103,7 +103,7 @@ class TestScramScheme {
         final AuthChallenge authChallenge = parse(challenge);
 
         final HttpClientContext context = HttpClientContext.create();
-        context.setServerProof("fdgNw/69mkQAGimN+xwBEhhUXjnUBK65LZQ7ODT1YaA=");
+        context.setServerProof("7fdeb57dbd37dbdd76ef469deb5e1cd38dbdeb877b7f6e34dfde3bf5ce9fdfdd1c7b4db5f5def6e39d7a6fad7a6def1d");
         authscheme.processChallenge(authChallenge, context);
 
         Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));

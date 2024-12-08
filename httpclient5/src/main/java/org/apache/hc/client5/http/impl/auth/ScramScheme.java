@@ -68,6 +68,7 @@ import org.apache.hc.core5.http.NameValuePair;
 import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.util.Args;
 import org.apache.hc.core5.util.CharArrayBuffer;
+import org.apache.hc.core5.util.TextUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -514,6 +515,10 @@ public class ScramScheme implements AuthScheme, Serializable {
             this.state = ScramState.FAILED;
             throw new AuthenticationException("Invalid server proof encoding: unable to decode base64 string.", e);
         }
+
+        System.out.println("Expected signature (hex): " + TextUtils.toHexString(expectedServerSignature));
+        System.out.println("Decoded server proof (hex): " + TextUtils.toHexString(decodedServerProof));
+
 
         if (!signatureAreEquals(expectedServerSignature, decodedServerProof)) {
             this.state = ScramState.FAILED;
