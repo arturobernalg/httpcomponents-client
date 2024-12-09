@@ -27,28 +27,6 @@
 
 package org.apache.hc.client5.http.impl.auth;
 
-import java.io.Serializable;
-import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.StandardCharsets;
-import java.security.InvalidKeyException;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.security.Principal;
-import java.security.SecureRandom;
-import java.security.cert.CertificateEncodingException;
-import java.security.cert.X509Certificate;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import javax.net.ssl.SSLPeerUnverifiedException;
-import javax.net.ssl.SSLSession;
-
 import org.apache.hc.client5.http.auth.AuthChallenge;
 import org.apache.hc.client5.http.auth.AuthScheme;
 import org.apache.hc.client5.http.auth.AuthScope;
@@ -71,6 +49,27 @@ import org.apache.hc.core5.util.CharArrayBuffer;
 import org.apache.hc.core5.util.TextUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import javax.net.ssl.SSLPeerUnverifiedException;
+import javax.net.ssl.SSLSession;
+import java.io.Serializable;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.InvalidKeyException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.Principal;
+import java.security.SecureRandom;
+import java.security.cert.CertificateEncodingException;
+import java.security.cert.X509Certificate;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * <p>SCRAM (Salted Challenge Response Authentication Mechanism) is an authentication scheme as described in
@@ -110,20 +109,13 @@ import org.slf4j.LoggerFactory;
  * secure TLS sessions are used. Implementors should ensure that usernames and passwords are UTF-8 encoded and
  * properly normalized to prevent issues with Unicode representation differences.</p>
  *
+ * @since 5.5
  * @see <a href="https://tools.ietf.org/html/rfc5802">RFC 5802 - SCRAM: Salted Challenge Response Authentication Mechanism</a>
  * @see <a href="https://tools.ietf.org/html/rfc7677">RFC 7677 - SCRAM-SHA-256 and SCRAM-SHA-256-PLUS</a>
- * @since 5.5
  */
 public class ScramScheme implements AuthScheme, Serializable {
 
     private static final Logger LOG = LoggerFactory.getLogger(ScramScheme.class);
-    /**
-     * Hexadecimal characters used for nonce formatting.
-     */
-    private static final char[] HEXADECIMAL = {
-            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd',
-            'e', 'f'
-    };
 
     /**
      * Serialization version UID for this class.
@@ -146,11 +138,6 @@ public class ScramScheme implements AuthScheme, Serializable {
     private String clientNonce;
 
     /**
-     * Server-provided nonce used in the SCRAM authentication.
-     */
-    private String serverNonce;
-
-    /**
      * Salt value for the user's credentials, obtained from the server challenge.
      */
     private String salt;
@@ -159,16 +146,6 @@ public class ScramScheme implements AuthScheme, Serializable {
      * The iteration count used in the PBKDF2 calculation, as specified in the server challenge.
      */
     private int iterationCount;
-
-    /**
-     * The derived salted password calculated based on the user's password, salt, and iteration count.
-     */
-    private byte[] saltedPassword;
-
-    /**
-     * The client key derived from the salted password, used for signing.
-     */
-    private byte[] clientKey;
 
     /**
      * The stored key derived from the client key, used to validate the server.
@@ -198,7 +175,7 @@ public class ScramScheme implements AuthScheme, Serializable {
     /**
      * Buffer for storing the bare part of the client-first-message.
      */
-    //private final ByteArrayBuilder clientFirstMessageBare;
+    private final ByteArrayBuilder clientFirstMessageBare;
 
     /**
      * Buffer for storing the server-first-message.
@@ -225,18 +202,17 @@ public class ScramScheme implements AuthScheme, Serializable {
      * This constructor is intended for testing purposes only and should not be used in production.
      *
      * @param secureRandom The {@link SecureRandom} instance used to generate the client nonce.
-     *                     This constructor is provided for testing purposes and allows deterministic
-     *                     generation of nonces. Using a fixed source of randomness may compromise security in
-     *                     production systems. Therefore, this constructor should not be used in any production code.
+     * This constructor is provided for testing purposes and allows deterministic
+     * generation of nonces. Using a fixed source of randomness may compromise security in
+     * production systems. Therefore, this constructor should not be used in any production code.
      */
     @Internal
     ScramScheme(final SecureRandom secureRandom) {
-        super();
         this.paramMap = new HashMap<>();
         this.secureRandom = secureRandom;
         this.state = ScramState.INITIAL;
         buffer = new ByteArrayBuilder(128);
-        //clientFirstMessageBare = new ByteArrayBuilder(128);
+        clientFirstMessageBare = new ByteArrayBuilder(128);
         serverFirstMessage = new ByteArrayBuilder(128);
     }
 
@@ -280,7 +256,7 @@ public class ScramScheme implements AuthScheme, Serializable {
         final String algorithm = this.paramMap.get("algorithm");
         mechanism = ScramMechanism.fromString(algorithm);
         salt = paramMap.get("s");
-        serverNonce = paramMap.get("r");
+        final String serverNonce = paramMap.get("r");
 
         try {
             iterationCount = Integer.parseInt(paramMap.get("i"));
@@ -295,14 +271,14 @@ public class ScramScheme implements AuthScheme, Serializable {
 
         generateClientNonce(mechanism);
 
-        if (!validateServerNonce(serverNonce, clientNonce)) {
+        if (salt == null || !validateServerNonce(serverNonce, clientNonce)) {
             this.state = ScramState.FAILED;
-            throw new MalformedChallengeException("Invalid SCRAM challenge parameters: Invalid server nonce");
+            throw new MalformedChallengeException("Invalid SCRAM challenge parameters: Invalid salt or server nonce");
         }
 
         if (paramMap.containsKey("m")) {
             this.state = ScramState.FAILED;
-            throw new MalformedChallengeException("Reserved attribute 'm' is not allowed");
+            throw new MalformedChallengeException("Reserved attribute 'm' is not allowed as per RFC 5802");
         }
 
         serverFirstMessage.append("r=").append(serverNonce).append(",s=").append(salt).append(",i=").append(String.valueOf(iterationCount));
@@ -310,6 +286,7 @@ public class ScramScheme implements AuthScheme, Serializable {
         this.state = ScramState.SERVER_FIRST_RECEIVED;
         this.complete = true;
     }
+
 
 
     @Override
@@ -368,20 +345,15 @@ public class ScramScheme implements AuthScheme, Serializable {
             throw new AuthenticationException("User credentials not set");
         }
 
-        String username = credentials.getUserName();
-        String password = new String(credentials.getUserPassword());
-
-        if ( username == null || username.isEmpty()) {
-            throw new AuthenticationException("Username cannot be null or empty. Please provide a valid username.");
+        final String username;
+        final String password;
+        try {
+            username = SaslPrep.INSTANCE.prepAsQueryString(credentials.getUserName());
+            password = SaslPrep.INSTANCE.prepAsStoredString(new String(credentials.getUserPassword()));
+        } catch (final IllegalArgumentException e) {
+            this.state = ScramState.FAILED;
+            throw new AuthenticationException("Invalid character in user credential after SASLprep: " + e.getMessage());
         }
-
-        if (password.isEmpty()) {
-            throw new AuthenticationException("Password cannot be null or empty. Please provide a valid password.");
-        }
-
-        username = SaslPrep.INSTANCE.prepAsQueryString(credentials.getUserName());
-        password = SaslPrep.INSTANCE.prepAsStoredString(new String(credentials.getUserPassword()));
-
 
         if (buffer == null) {
             buffer = new ByteArrayBuilder(128);
@@ -389,27 +361,30 @@ public class ScramScheme implements AuthScheme, Serializable {
             buffer.reset();
         }
 
-        //clientFirstMessageBare.reset();
-        buffer.append("n=").append(username).append(",r=").append(clientNonce);
+        clientFirstMessageBare.reset();
+        clientFirstMessageBare.append("n=").append(username).append(",r=").append(clientNonce);
 
         // GS2 Header Validation
-        final byte[] clientFirstMessageBytes = buffer.toByteArray();
+        final byte[] clientFirstMessageBytes = clientFirstMessageBare.toByteArray();
         if (clientFirstMessageBytes.length == 0) {
             this.state = ScramState.FAILED;
             throw new AuthenticationException("Client-first message is empty, GS2 header missing.");
         }
 
         final byte gs2HeaderByte = clientFirstMessageBytes[0];
-        if (gs2HeaderByte != 'n' && gs2HeaderByte != 'y' && gs2HeaderByte != 'p') {
+        if (gs2HeaderByte != 'y' && gs2HeaderByte != 'p') {
             this.state = ScramState.FAILED;
-            throw new AuthenticationException("Invalid GS2 header in client-first message: must start with 'n', 'y', or 'p'");
+            throw new AuthenticationException("Invalid GS2 header in client-first message: must start with  'y', or 'p'");
         }
 
-        //buffer.append(clientFirstMessageBare.toByteArray());
+        buffer.append(clientFirstMessageBare.toByteArray());
 
+        // Include 'c', 'r', 'p' in the final message
         final HttpClientContext clientContext = HttpClientContext.cast(context);
+        final byte[] clientKey;
         try {
-            saltedPassword = calculateHi(password.getBytes(StandardCharsets.UTF_8), Base64.decodeBase64(salt), iterationCount, mechanism.getHmacFunction());
+            final byte[] saltedPassword = calculateHi(password.getBytes(StandardCharsets.UTF_8), Base64.decodeBase64(salt),
+                    iterationCount, mechanism.getHmacFunction());
             clientKey = hmac(saltedPassword, "Client Key", mechanism.getHmacFunction());
             final MessageDigest digester = createMessageDigest(mechanism.getHashFunction());
             storedKey = digester.digest(clientKey);
@@ -459,13 +434,10 @@ public class ScramScheme implements AuthScheme, Serializable {
                     throw new AuthenticationException("Unsupported channel binding type: " + channelBindingType);
             }
         } else {
-            buffer.append(",c=").append(Base64.encodeBase64String("n,".getBytes(StandardCharsets.UTF_8)));
+            buffer.append(",c=").append(Base64.encodeBase64String("n,,".getBytes(StandardCharsets.UTF_8)));
         }
 
-
-        buffer.append(",r=").append(serverNonce);
-
-        final String authMessage = new String(buffer.append(",").append(new String(serverFirstMessage.toByteArray())).append(",").toByteArray());
+        final String authMessage = new String(clientFirstMessageBare.toByteArray()) + "," + new String(serverFirstMessage.toByteArray()) + "," + new String(buffer.toByteArray());
         final byte[] clientSignature = hmac(storedKey, authMessage, mechanism.getHmacFunction());
         final byte[] clientProof = xor(clientKey, clientSignature);
 
@@ -478,6 +450,10 @@ public class ScramScheme implements AuthScheme, Serializable {
 
         final String serverProof = clientContext.getServerProof();
         if (serverProof == null) {
+            throw new AuthenticationException("Server proof not available in context for validation");
+        }
+
+        if (!serverProof.matches("[0-9a-fA-F]+")) {
             throw new AuthenticationException("Server proof not available in context for validation");
         }
 
@@ -494,7 +470,7 @@ public class ScramScheme implements AuthScheme, Serializable {
      *
      * @param serverProof The server proof value received from the server during authentication. Must not be {@code null}.
      * @param authMessage The authentication message constructed from the client and server messages.
-     * @param mechanism   The SCRAM mechanism being used, which determines the hash and HMAC functions.
+     * @param mechanism The SCRAM mechanism being used, which determines the hash and HMAC functions.
      * @throws AuthenticationException if the server proof validation fails, meaning the server's proof cannot be verified.
      */
     private void validateServerProof(final String serverProof, final String authMessage, final ScramMechanism mechanism)
@@ -508,19 +484,10 @@ public class ScramScheme implements AuthScheme, Serializable {
             throw new AuthenticationException("Failed to compute expected server signature: " + e.getMessage(), e);
         }
 
-        final byte[] decodedServerProof;
-        try {
-            decodedServerProof = Base64.decodeBase64(serverProof);
-        } catch (final IllegalArgumentException e) {
-            this.state = ScramState.FAILED;
-            throw new AuthenticationException("Invalid server proof encoding: unable to decode base64 string.", e);
-        }
 
-        System.out.println("Expected signature (hex): " + TextUtils.toHexString(expectedServerSignature));
-        System.out.println("Decoded server proof (hex): " + TextUtils.toHexString(decodedServerProof));
+        final byte[] serverProofBytes = hexStringToByteArray(serverProof);
 
-
-        if (!signatureAreEquals(expectedServerSignature, decodedServerProof)) {
+        if (!signatureAreEquals(serverProofBytes,expectedServerSignature)) {
             this.state = ScramState.FAILED;
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Server proof validation failed. The provided server signature does not match the expected signature. Expected: {}, Received: {}",
@@ -544,7 +511,7 @@ public class ScramScheme implements AuthScheme, Serializable {
      * @param a the first byte array to compare, may be null
      * @param b the second byte array to compare, may be null
      * @return {@code true} if both byte arrays are non-null, of the same length, and contain
-     * the same elements in the same order; {@code false} otherwise
+     *         the same elements in the same order; {@code false} otherwise
      */
     private boolean signatureAreEquals(final byte[] a, final byte[] b) {
         if (a == null || b == null || a.length != b.length) {
@@ -558,6 +525,18 @@ public class ScramScheme implements AuthScheme, Serializable {
     }
 
 
+    private static byte[] hexStringToByteArray(final String hex) {
+        final int length = hex.length();
+        final byte[] data = new byte[length / 2];
+        for (int i = 0; i < length; i += 2) {
+            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
+                    + Character.digit(hex.charAt(i+1), 16));
+        }
+        return data;
+    }
+
+
+
     /**
      * Generates a new client nonce using the provided {@link SecureRandom} instance.
      * The client nonce is used in the SCRAM authentication process to introduce entropy and prevent replay attacks.
@@ -568,14 +547,14 @@ public class ScramScheme implements AuthScheme, Serializable {
     private void generateClientNonce(final ScramMechanism mechanism) {
         final byte[] nonceBytes = new byte[mechanism.getKeyLength() / 8];
         secureRandom.nextBytes(nonceBytes);
-        this.clientNonce = formatHex(nonceBytes);
+        this.clientNonce = DigestScheme.formatHex(nonceBytes);
     }
 
 
     /**
      * Initializes a {@link Mac} instance for the given key and algorithm.
      *
-     * @param key       The key used to initialize the {@link Mac} instance.
+     * @param key The key used to initialize the {@link Mac} instance.
      * @param algorithm The algorithm name used for the {@link Mac} instance (e.g., "HmacSHA256").
      * @return An initialized {@link Mac} instance.
      * @throws UnsupportedDigestAlgorithmException if the given algorithm or key is not supported.
@@ -600,8 +579,8 @@ public class ScramScheme implements AuthScheme, Serializable {
     /**
      * Generates an HMAC value using the given key, message, and algorithm.
      *
-     * @param key       The key used to compute the HMAC.
-     * @param message   The message to be signed.
+     * @param key The key used to compute the HMAC.
+     * @param message The message to be signed.
      * @param algorithm The HMAC algorithm name (e.g., "HmacSHA256").
      * @return A byte array representing the HMAC value.
      */
@@ -613,8 +592,8 @@ public class ScramScheme implements AuthScheme, Serializable {
     /**
      * Generates an HMAC value using the given key and message.
      *
-     * @param key       The key used to compute the HMAC.
-     * @param message   The message to be signed.
+     * @param key The key used to compute the HMAC.
+     * @param message The message to be signed.
      * @param algorithm The HMAC algorithm name (e.g., "HmacSHA256").
      * @return A byte array representing the HMAC value.
      * @since 5.5
@@ -666,24 +645,6 @@ public class ScramScheme implements AuthScheme, Serializable {
         return result;
     }
 
-
-    /**
-     * Formats the given byte array into a hexadecimal string representation.
-     *
-     * @param binaryData The input byte array.
-     * @return A hexadecimal string representation of the input byte array.
-     */
-    private static String formatHex(final byte[] binaryData) {
-        final int n = binaryData.length;
-        final char[] buffer = new char[n * 2];
-        for (int i = 0; i < n; i++) {
-            final int low = binaryData[i] & 0x0f;
-            final int high = (binaryData[i] & 0xf0) >> 4;
-            buffer[i * 2] = HEXADECIMAL[high];
-            buffer[(i * 2) + 1] = HEXADECIMAL[low];
-        }
-        return new String(buffer);
-    }
 
     /**
      * Normalizes a given signature algorithm name by converting it to a consistent format.
@@ -779,7 +740,7 @@ public class ScramScheme implements AuthScheme, Serializable {
      * @param sslSession The SSL session from which to obtain the server certificate.
      * @return A byte array representing the server's endpoint digest.
      * @throws CertificateEncodingException if an encoding issue occurs while accessing the server certificate.
-     * @throws SSLPeerUnverifiedException   if the SSL peer cannot be verified.
+     * @throws SSLPeerUnverifiedException if the SSL peer cannot be verified.
      */
     private byte[] computeTlsServerEndPoint(final SSLSession sslSession)
             throws CertificateEncodingException, SSLPeerUnverifiedException {
@@ -808,18 +769,19 @@ public class ScramScheme implements AuthScheme, Serializable {
     /**
      * Represents different SCRAM mechanisms that are supported.
      * This enumeration includes variants such as SCRAM-SHA-1, SCRAM-SHA-256, and their "-PLUS" extensions for channel binding.
+     *
      */
     private enum ScramMechanism {
-        SCRAM_SHA_1("SCRAM-SHA-1", "SHA-1", "HmacSHA1", 160, 4096),
-        SCRAM_SHA_1_PLUS("SCRAM-SHA-1-PLUS", "SHA-1", "HmacSHA1", 160, 4096),
-        SCRAM_SHA_224("SCRAM-SHA-224", "SHA-224", "HmacSHA224", 224, 4096),
-        SCRAM_SHA_224_PLUS("SCRAM-SHA-224-PLUS", "SHA-224", "HmacSHA224", 224, 4096),
-        SCRAM_SHA_256("SCRAM-SHA-256", "SHA-256", "HmacSHA256", 256, 4096),
-        SCRAM_SHA_256_PLUS("SCRAM-SHA-256-PLUS", "SHA-256", "HmacSHA256", 256, 4096),
-        SCRAM_SHA_384("SCRAM-SHA-384", "SHA-384", "HmacSHA384", 384, 4096),
-        SCRAM_SHA_384_PLUS("SCRAM-SHA-384-PLUS", "SHA-384", "HmacSHA384", 384, 4096),
-        SCRAM_SHA_512("SCRAM-SHA-512", "SHA-512", "HmacSHA512", 512, 10000),
-        SCRAM_SHA_512_PLUS("SCRAM-SHA-512-PLUS", "SHA-512", "HmacSHA512", 512, 10000);
+        SCRAM_SHA_1("SCRAM-SHA-1","SHA-1","HmacSHA1", 160,4096),
+        SCRAM_SHA_1_PLUS("SCRAM-SHA-1-PLUS","SHA-1","HmacSHA1",160,4096),
+        SCRAM_SHA_224("SCRAM-SHA-224","SHA-224","HmacSHA224",224,4096),
+        SCRAM_SHA_224_PLUS("SCRAM-SHA-224-PLUS","SHA-224","HmacSHA224",224, 4096),
+        SCRAM_SHA_256("SCRAM-SHA-256","SHA-256","HmacSHA256",256,4096),
+        SCRAM_SHA_256_PLUS("SCRAM-SHA-256-PLUS","SHA-256","HmacSHA256",256, 4096),
+        SCRAM_SHA_384("SCRAM-SHA-384","SHA-384","HmacSHA384",384,4096),
+        SCRAM_SHA_384_PLUS("SCRAM-SHA-384-PLUS","SHA-384","HmacSHA384",384, 4096),
+        SCRAM_SHA_512("SCRAM-SHA-512","SHA-512","HmacSHA512",512,10000),
+        SCRAM_SHA_512_PLUS("SCRAM-SHA-512-PLUS","SHA-512","HmacSHA512",512,10000);
 
         private final String schemeName;
         private final String hashFunction;
@@ -941,6 +903,8 @@ public class ScramScheme implements AuthScheme, Serializable {
     }
 
 
+
+
     /**
      * Represents the current state of the SCRAM authentication process.
      * The state transitions are used to enforce the proper order of the
@@ -958,6 +922,7 @@ public class ScramScheme implements AuthScheme, Serializable {
      * </ul>
      * The state mechanism is crucial to maintaining the correct flow and preventing
      * unintended or out-of-sequence operations, which can lead to authentication failures.
+     *
      */
     private enum ScramState {
         INITIAL,             // Initial state before any message is sent.
