@@ -46,7 +46,6 @@ import org.apache.hc.core5.http.NameValuePair;
 import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.util.Args;
 import org.apache.hc.core5.util.CharArrayBuffer;
-import org.apache.hc.core5.util.TextUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,7 +55,6 @@ import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.InvalidKeyException;
 import java.security.MessageDigest;
@@ -362,9 +360,15 @@ public class ScramScheme implements AuthScheme, Serializable {
         }
 
         clientFirstMessageBare.reset();
+
+        // Add GS2 Header first
+        final String gs2Header = mechanism.isPlus() ? "p=tls-server-end-point,," : "n,,";
+        clientFirstMessageBare.append(gs2Header);
+
+        // Append username and client nonce
         clientFirstMessageBare.append("n=").append(username).append(",r=").append(clientNonce);
 
-        // GS2 Header Validation
+        // Validate the GS2 header
         final byte[] clientFirstMessageBytes = clientFirstMessageBare.toByteArray();
         if (clientFirstMessageBytes.length == 0) {
             this.state = ScramState.FAILED;
@@ -372,32 +376,19 @@ public class ScramScheme implements AuthScheme, Serializable {
         }
 
         final byte gs2HeaderByte = clientFirstMessageBytes[0];
-        if (gs2HeaderByte != 'y' && gs2HeaderByte != 'p') {
+        if (gs2HeaderByte != 'n' && gs2HeaderByte != 'y' && gs2HeaderByte != 'p') {
             this.state = ScramState.FAILED;
-            throw new AuthenticationException("Invalid GS2 header in client-first message: must start with  'y', or 'p'");
+            throw new AuthenticationException("Invalid GS2 header in client-first message: must start with 'y', 'n', or 'p'");
         }
 
-        buffer.append(clientFirstMessageBare.toByteArray());
-
-        // Include 'c', 'r', 'p' in the final message
-        final HttpClientContext clientContext = HttpClientContext.cast(context);
-        final byte[] clientKey;
-        try {
-            final byte[] saltedPassword = calculateHi(password.getBytes(StandardCharsets.UTF_8), Base64.decodeBase64(salt),
-                    iterationCount, mechanism.getHmacFunction());
-            clientKey = hmac(saltedPassword, "Client Key", mechanism.getHmacFunction());
-            final MessageDigest digester = createMessageDigest(mechanism.getHashFunction());
-            storedKey = digester.digest(clientKey);
-        } catch (final Exception e) {
-            this.state = ScramState.FAILED;
-            throw new AuthenticationException("Error computing client keys for SCRAM-PLUS mechanism");
-        }
-
+        // Construct c= (Base64-encoded GS2 header + channel binding data)
+        final String channelBinding;
         if (mechanism.isPlus()) {
+            final HttpClientContext clientContext = HttpClientContext.cast(context);
             final SSLSession sslSession = clientContext.getSSLSession();
             if (sslSession == null) {
                 this.state = ScramState.FAILED;
-                throw new AuthenticationException("TLS session not available in context for SCRAM-PLUS mechanism");
+                throw new AuthenticationException("TLS session not available for SCRAM-PLUS mechanism");
             }
 
             final String channelBindingType = clientContext.getChannelBindingType();
@@ -413,10 +404,9 @@ public class ScramScheme implements AuthScheme, Serializable {
                         tlsServerEndPoint = computeTlsServerEndPoint(sslSession);
                     } catch (final CertificateEncodingException | SSLPeerUnverifiedException e) {
                         this.state = ScramState.FAILED;
-                        throw new AuthenticationException("Server proof not available in context for validation");
+                        throw new AuthenticationException("Failed to compute tls-server-end-point: " + e.getMessage(), e);
                     }
-                    buffer.append(",c=").append(Base64.encodeBase64String("p=tls-server-end-point,".getBytes(StandardCharsets.UTF_8)))
-                            .append(Base64.encodeBase64String(tlsServerEndPoint));
+                    channelBinding = Base64.encodeBase64String(("p=tls-server-end-point,," + new String(tlsServerEndPoint, StandardCharsets.UTF_8)).getBytes(StandardCharsets.UTF_8));
                     break;
 
                 case "tls-unique":
@@ -425,8 +415,7 @@ public class ScramScheme implements AuthScheme, Serializable {
                         this.state = ScramState.FAILED;
                         throw new AuthenticationException("tlsUnique value not available in context for SCRAM-PLUS mechanism");
                     }
-                    buffer.append(",c=").append(Base64.encodeBase64String("p=tls-unique,".getBytes(StandardCharsets.UTF_8)))
-                            .append(Base64.encodeBase64String(tlsUnique));
+                    channelBinding = Base64.encodeBase64String(("p=tls-unique,," + new String(tlsUnique, StandardCharsets.UTF_8)).getBytes(StandardCharsets.UTF_8));
                     break;
 
                 default:
@@ -434,27 +423,46 @@ public class ScramScheme implements AuthScheme, Serializable {
                     throw new AuthenticationException("Unsupported channel binding type: " + channelBindingType);
             }
         } else {
-            buffer.append(",c=").append(Base64.encodeBase64String("n,,".getBytes(StandardCharsets.UTF_8)));
+            channelBinding = Base64.encodeBase64String("n,,".getBytes(StandardCharsets.UTF_8));
         }
 
-        final String authMessage = new String(clientFirstMessageBare.toByteArray()) + "," + new String(serverFirstMessage.toByteArray()) + "," + new String(buffer.toByteArray());
+        // Build authMessage
+        final String serverNonce = paramMap.get("r");
+        final String authMessage = new String(clientFirstMessageBare.toByteArray()) + "," +
+                "r=" + serverNonce + ",s=" + paramMap.get("s") + ",i=" + paramMap.get("i") + "," +
+                "c=" + channelBinding;
+
+        // Compute client proof
+        final byte[] clientKey;
+        final byte[] saltedPassword;
+        try {
+            saltedPassword = calculateHi(password.getBytes(StandardCharsets.UTF_8), Base64.decodeBase64(salt),
+                    iterationCount, mechanism.getHmacFunction());
+            clientKey = hmac(saltedPassword, "Client Key", mechanism.getHmacFunction());
+            final MessageDigest digester = createMessageDigest(mechanism.getHashFunction());
+            storedKey = digester.digest(clientKey);
+        } catch (final Exception e) {
+            this.state = ScramState.FAILED;
+            throw new AuthenticationException("Error computing client keys for SCRAM mechanism", e);
+        }
+
         final byte[] clientSignature = hmac(storedKey, authMessage, mechanism.getHmacFunction());
         final byte[] clientProof = xor(clientKey, clientSignature);
 
-        buffer.append(",p=").append(Base64.encodeBase64String(clientProof));
-
+        // Construct final response
         final CharArrayBuffer responseBuffer = new CharArrayBuffer(128);
-        responseBuffer.append(StandardAuthScheme.SCRAM);
+        responseBuffer.append(StandardAuthScheme.SCRAM); // Add mechanism name (e.g., SCRAM-SHA-256)
         responseBuffer.append(" ");
-        responseBuffer.append(new String(buffer.toByteArray()));
+        responseBuffer.append("c=");
+        responseBuffer.append(channelBinding); // Add c=
+        responseBuffer.append(",r=");
+        responseBuffer.append(serverNonce); // Add r=
+        responseBuffer.append(",p=");
+        responseBuffer.append(Base64.encodeBase64String(clientProof)); // Add p=
 
-        final String serverProof = clientContext.getServerProof();
-        if (serverProof == null) {
-            throw new AuthenticationException("Server proof not available in context for validation");
-        }
-
-        if (!serverProof.matches("[0-9a-fA-F]+")) {
-            throw new AuthenticationException("Server proof not available in context for validation");
+        final String serverProof = HttpClientContext.cast(context).getServerProof();
+        if (serverProof == null || !serverProof.matches("[0-9a-fA-F]+")) {
+            throw new AuthenticationException("Server proof not available or invalid in context for validation");
         }
 
         validateServerProof(serverProof, authMessage, mechanism);
@@ -462,6 +470,7 @@ public class ScramScheme implements AuthScheme, Serializable {
 
         return new String(responseBuffer.toCharArray());
     }
+
 
 
     /**
@@ -524,13 +533,11 @@ public class ScramScheme implements AuthScheme, Serializable {
         return result == 0;
     }
 
-
     private static byte[] hexStringToByteArray(final String hex) {
         final int length = hex.length();
         final byte[] data = new byte[length / 2];
         for (int i = 0; i < length; i += 2) {
-            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
-                    + Character.digit(hex.charAt(i+1), 16));
+            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4) + Character.digit(hex.charAt(i + 1), 16));
         }
         return data;
     }
@@ -644,6 +651,18 @@ public class ScramScheme implements AuthScheme, Serializable {
         }
         return result;
     }
+    /**
+     * Computes the ServerKey for SCRAM authentication.
+     *
+     * @param saltedPassword The salted password derived from the client's password and server-provided salt.
+     * @param mechanism The SCRAM mechanism being used (e.g., SCRAM-SHA-256).
+     * @return The ServerKey as a byte array.
+     */
+    private byte[] computeServerKey(final byte[] saltedPassword, final ScramMechanism mechanism) {
+        return hmac(saltedPassword, "Server Key", mechanism.getHmacFunction());
+    }
+
+
 
 
     /**
