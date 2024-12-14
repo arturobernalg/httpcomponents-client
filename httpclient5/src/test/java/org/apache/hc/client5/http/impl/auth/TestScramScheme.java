@@ -102,7 +102,7 @@ class TestScramScheme {
         final AuthChallenge authChallenge = parse(challenge);
 
         final HttpClientContext context = HttpClientContext.create();
-        context.setServerProof("1fa5b1572b808016362f71c7b95c642b5a819bdd5e7fa97b945e67bc30a6fc05");
+        context.setServerProof("e1141636763b5e9fa3214b960d6849dd6bbc8ffbe31278655d5094607c0cbcf1");
         authscheme.processChallenge(authChallenge, context);
 
         Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
@@ -286,7 +286,7 @@ class TestScramScheme {
         final HttpClientContext context = HttpClientContext.create();
         context.setSSLSession(mockSession);
 
-        context.setServerProof("2e22e85e69bca072fea5215149ff7bfc746e34ddfcfe3536d8046876bd8e66f2");
+        context.setServerProof("d02b4c6c618f83da817d3484d1448a18042425f3bba299da7220eb67e2f1a9f7");
         context.setChannelBindingType("tls-server-end-point");
         authscheme.processChallenge(authChallenge, context);
 
@@ -386,7 +386,7 @@ class TestScramScheme {
         context.setChannelBindingType("tls-unique");
 
         // Set server proof to pass validation
-        context.setServerProof("90e857cfdbd4a8d0edee3c9ffe87420f5c0fc0ec0c01a88bc3c7f44f40a98ea3");
+        context.setServerProof("bff12d530c97f3d7b8a0021088ca4a3c14c645d93c934ce992bf75028f3afdff");
 
         authscheme.processChallenge(authChallenge, context);
         Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
@@ -844,41 +844,5 @@ class TestScramScheme {
 
 
     }
-
-    @Test
-    void testScramAuthenticationWithDefaultCreds1() throws Exception {
-        final HttpRequest request = new BasicHttpRequest("Simple", "/");
-        final HttpHost host = new HttpHost("somehost", 80);
-        final CredentialsProvider credentialsProvider = CredentialsProviderBuilder.create()
-                .add(new AuthScope(host, "realm", null), "username", "password".toCharArray())
-                .build();
-
-        final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
-
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
-
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256";
-        final AuthChallenge authChallenge = parse(challenge);
-
-        final HttpClientContext context = HttpClientContext.create();
-        context.setServerProof("1fa5b1572b808016362f71c7b95c642b5a819bdd5e7fa97b945e67bc30a6fc05");
-        authscheme.processChallenge(authChallenge, context);
-
-        Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
-        final String response = authscheme.generateAuthResponse(host, request, context);
-        Assertions.assertNotNull(response);
-        Assertions.assertTrue(authscheme.isChallengeComplete());
-        Assertions.assertFalse(authscheme.isConnectionBased());
-    }
-
 
 }

@@ -36,11 +36,12 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 
 import org.apache.hc.client5.http.impl.ScramException;
+import org.conscrypt.Internal;
 
+@Internal
+class SaslPrep {
 
-public class SaslPrep {
-
-    public static SaslPrep INSTANCE = new SaslPrep();
+     static SaslPrep INSTANCE = new SaslPrep();
 
     private static class CharClass {
         private final List<Integer> tupleStart = new ArrayList<>();
