@@ -27,47 +27,45 @@
 
 package org.apache.hc.client5.http.impl.auth;
 
-import org.apache.hc.client5.http.auth.AuthChallenge;
-import org.apache.hc.client5.http.auth.AuthScheme;
-import org.apache.hc.client5.http.auth.AuthScope;
-import org.apache.hc.client5.http.auth.AuthenticationException;
-import org.apache.hc.client5.http.auth.ChallengeType;
-import org.apache.hc.client5.http.auth.CredentialsProvider;
-import org.apache.hc.client5.http.auth.MalformedChallengeException;
-import org.apache.hc.client5.http.auth.StandardAuthScheme;
-import org.apache.hc.client5.http.impl.ScramException;
-import org.apache.hc.client5.http.protocol.HttpClientContext;
-import org.apache.hc.core5.http.HttpHost;
-import org.apache.hc.core5.http.HttpRequest;
-import org.apache.hc.core5.http.ParseException;
-import org.apache.hc.core5.http.message.BasicHttpRequest;
-import org.apache.hc.core5.http.message.ParserCursor;
-import org.apache.hc.core5.util.CharArrayBuffer;
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
-
-import javax.net.ssl.SSLSession;
-import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
-import java.util.List;
-
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-class TestScramScheme {
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
+import java.util.HashMap;
+import java.util.Map;
 
-    private static AuthChallenge parse(final String s) throws ParseException {
-        final CharArrayBuffer buffer = new CharArrayBuffer(s.length());
-        buffer.append(s);
-        final ParserCursor cursor = new ParserCursor(0, buffer.length());
-        final List<AuthChallenge> authChallenges = AuthChallengeParser.INSTANCE.parse(ChallengeType.TARGET, buffer, cursor);
-        Assertions.assertEquals(1, authChallenges.size());
-        return authChallenges.get(0);
-    }
+import javax.net.ssl.SSLSession;
+
+import org.apache.hc.client5.http.auth.AuthChallenge;
+import org.apache.hc.client5.http.auth.AuthScheme;
+import org.apache.hc.client5.http.auth.AuthScope;
+import org.apache.hc.client5.http.auth.AuthenticationException;
+import org.apache.hc.client5.http.auth.BasicUserPrincipal;
+import org.apache.hc.client5.http.auth.ClientKeyServerKeyCredentials;
+import org.apache.hc.client5.http.auth.CredentialsProvider;
+import org.apache.hc.client5.http.auth.MalformedChallengeException;
+import org.apache.hc.client5.http.auth.SaltedPasswordCredentials;
+import org.apache.hc.client5.http.auth.StandardAuthScheme;
+import org.apache.hc.client5.http.impl.ScramException;
+import org.apache.hc.client5.http.protocol.HttpClientContext;
+import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.HttpRequest;
+import org.apache.hc.core5.http.config.RegistryBuilder;
+import org.apache.hc.core5.http.message.BasicHttpRequest;
+import org.apache.hc.core5.http.protocol.HttpContext;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+
+class TestScramScheme extends AbstractAuthTest {
+
+
+    final SecureRandom MOCK_SECURE_RANDOM = mock(SecureRandom.class);
 
     @Test
     void testScramAuthenticationEmptyChallenge() throws Exception {
@@ -86,23 +84,16 @@ class TestScramScheme {
                 .build();
 
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        fixNonce(new byte[nonceLength]);
+
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256";
         final AuthChallenge authChallenge = parse(challenge);
 
         final HttpClientContext context = HttpClientContext.create();
-        context.setServerProof("e1141636763b5e9fa3214b960d6849dd6bbc8ffbe31278655d5094607c0cbcf1");
+        context.setServerProof("543add26a1a6ea149cb38e02cecf90fb8934b4d84810ce485f9d94fe2bd35c81");
         authscheme.processChallenge(authChallenge, context);
 
         Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
@@ -120,17 +111,9 @@ class TestScramScheme {
                 .add(new AuthScope(host, "realm", null), "username", "password".toCharArray())
                 .build();
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256";
         final AuthChallenge authChallenge = parse(challenge);
@@ -147,12 +130,12 @@ class TestScramScheme {
 
     @Test
     void testScramAuthenticationInvalidChallengeParameters() throws Exception {
-        final ScramScheme authscheme = new ScramScheme();
+        final ScramScheme authScheme = new ScramScheme();
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
         final AuthChallenge authChallenge = parse(challenge);
         Assertions.assertThrows(MalformedChallengeException.class, () ->
-                authscheme.processChallenge(authChallenge, null));
+                authScheme.processChallenge(authChallenge, null));
     }
 
     @Test
@@ -164,17 +147,9 @@ class TestScramScheme {
                 .add(new AuthScope(host, "realm", null), "invalid:username", "password".toCharArray())
                 .build();
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
         final AuthChallenge authChallenge = parse(challenge);
@@ -192,17 +167,9 @@ class TestScramScheme {
                 .add(new AuthScope(host, "realm", null), "username", "password".toCharArray())
                 .build();
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
@@ -225,17 +192,9 @@ class TestScramScheme {
                 .add(new AuthScope(host, "realm", null), "username", "password".toCharArray())
                 .build();
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
@@ -259,17 +218,9 @@ class TestScramScheme {
 
         final int nonceLength = 256 / 8;
 
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
@@ -286,7 +237,7 @@ class TestScramScheme {
         final HttpClientContext context = HttpClientContext.create();
         context.setSSLSession(mockSession);
 
-        context.setServerProof("d02b4c6c618f83da817d3484d1448a18042425f3bba299da7220eb67e2f1a9f7");
+        context.setServerProof("9a4826112c7bd1dba2ea92cb98543da1f568d41d5c1350bef0e1e6a4fd414454");
         context.setChannelBindingType("tls-server-end-point");
         authscheme.processChallenge(authChallenge, context);
 
@@ -296,7 +247,6 @@ class TestScramScheme {
         Assertions.assertTrue(authscheme.isChallengeComplete());
         Assertions.assertFalse(authscheme.isConnectionBased());
     }
-
 
 
     @Test
@@ -309,18 +259,10 @@ class TestScramScheme {
 
         final int nonceLength = 256 / 8;
 
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
@@ -354,17 +296,9 @@ class TestScramScheme {
                 .add(new AuthScope(host, "realm", null), "username", "password".toCharArray())
                 .build();
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
@@ -386,7 +320,7 @@ class TestScramScheme {
         context.setChannelBindingType("tls-unique");
 
         // Set server proof to pass validation
-        context.setServerProof("bff12d530c97f3d7b8a0021088ca4a3c14c645d93c934ce992bf75028f3afdff");
+        context.setServerProof("534ab04ce5ee33e6990ea62cdf203163d4f3da9d971775d12cbd6593699890a5");
 
         authscheme.processChallenge(authChallenge, context);
         Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
@@ -410,18 +344,10 @@ class TestScramScheme {
                 .build();
 
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
@@ -459,17 +385,9 @@ class TestScramScheme {
                 .build();
 
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm1\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256";
         final AuthChallenge authChallenge = parse(challenge);
 
@@ -478,10 +396,9 @@ class TestScramScheme {
         authscheme.processChallenge(authChallenge, context);
 
         Assertions.assertFalse(authscheme.isResponseReady(host, credentialsProvider, context));
-        Assertions.assertNull(authscheme.getPrincipal());
+        assertNull(authscheme.getPrincipal());
 
     }
-
 
     @Test
     void testScramAuthenticationScramPlusMechanismNullSSL() throws Exception {
@@ -491,17 +408,9 @@ class TestScramScheme {
                 .add(new AuthScope(host, "realm", null), "username", "password".toCharArray())
                 .build();
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
@@ -526,22 +435,13 @@ class TestScramScheme {
                 .build();
 
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256-PLUS";
         final AuthChallenge authChallenge = parse(challenge);
 
-        // Mock the SSLSession, X509Certificate, and tlsUnique
         final SSLSession mockSession = mock(SSLSession.class);
         final java.security.cert.X509Certificate mockCert = mock(X509Certificate.class);
         when(mockSession.getPeerCertificates()).thenReturn(new X509Certificate[]{mockCert});
@@ -573,17 +473,9 @@ class TestScramScheme {
                 .add(new AuthScope(host, "realm", null), "username", "password".toCharArray())
                 .build();
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=" + "salt_value" + ", i=" + "4096, algorithm=SCRAM-SHA-256";
         final AuthChallenge authChallenge = parse(challenge);
@@ -605,17 +497,9 @@ class TestScramScheme {
                 .add(new AuthScope(host, "realm", null), "username\u05D0", "password".toCharArray())
                 .build();
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         // Keep the challenge itself standard as we want to focus on credentials validation
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
@@ -641,17 +525,9 @@ class TestScramScheme {
                 .build();
 
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
 
@@ -678,17 +554,9 @@ class TestScramScheme {
                 .build();
 
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
 
@@ -714,17 +582,9 @@ class TestScramScheme {
                 .build();
 
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
 
         final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
 
@@ -806,20 +666,50 @@ class TestScramScheme {
     @Test
     void testScramAuthenticationExtension() throws Exception {
 
+        final HttpRequest request = new BasicHttpRequest("Simple", "/");
+        final HttpHost host = new HttpHost("somehost", 80);
+        final CredentialsProvider credentialsProvider = CredentialsProviderBuilder.create()
+                .add(new AuthScope(host, "realm", null), "username", "password".toCharArray())
+                .build();
         final int nonceLength = 256 / 8;
-        final SecureRandom mockSecureRandom = mock(SecureRandom.class);
-        doAnswer(invocation -> {
-            final byte[] nonceBytes = invocation.getArgument(0);
-            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
-            final byte[] generatedBytes = new byte[nonceLength];
-            System.arraycopy(fixedBytes, 0, generatedBytes, 0, Math.min(generatedBytes.length, fixedBytes.length));
-            System.arraycopy(generatedBytes, 0, nonceBytes, 0, generatedBytes.length);
-            return fixedBytes;
-        }).when(mockSecureRandom).nextBytes(any(byte[].class));
+        fixNonce(new byte[nonceLength]);
 
-        final ScramScheme authscheme = new ScramScheme(mockSecureRandom);
 
-        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, m=ext1, s=salt_value, i= 4096, algorithm=SCRAM-SHA-256-PLUS";
+        // Inner class to handle extensions for testing
+        class TestExtension implements ScramExtension {
+            private final Map<String, String> expectedValues = new HashMap<>();
+
+            {
+                expectedValues.put("totp", "123456");
+                expectedValues.put("mockExtension", null);
+                expectedValues.put("someOtherExt", "val");
+            }
+
+            @Override
+            public boolean process(final String name, final String value, final HttpContext context) {
+                final String expectedValue = expectedValues.get(name);
+                if (expectedValue != null) {
+                    Assertions.assertEquals(expectedValue, value, "Extension value does not match expected");
+                    return true;
+                }
+                // For any other extension, just return true to simulate handling
+                return true;
+            }
+
+            @Override
+            public boolean supports(final String name) {
+                return expectedValues.containsKey(name);
+            }
+        }
+
+        // Use the test extension in a registry
+        final RegistryBuilder<ScramExtension> registryBuilder = RegistryBuilder.create();
+        registryBuilder.register("totp", new TestExtension());
+        registryBuilder.register("mockExtension", new TestExtension());
+        registryBuilder.register("someOtherExt", new TestExtension());
+
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, registryBuilder.build());
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c756500000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256, ext=totp=123456,mockExtension,someOtherExt=val,ext1, m=ext1";
         final AuthChallenge authChallenge = parse(challenge);
 
         final SSLSession mockSession = mock(SSLSession.class);
@@ -838,11 +728,223 @@ class TestScramScheme {
         context.setChannelBindingType("tls-unique");
 
         // Set server proof to pass validation
-        context.setServerProof("5zv82UxYxYrDCv2CIy+eCCT2lpQHDLimSzSy38KlNWQ=");
+        context.setServerProof("543add26a1a6ea149cb38e02cecf90fb8934b4d84810ce485f9d94fe2bd35c81");
 
+        // Process the challenge which includes parsing extensions
+        authscheme.processChallenge(authChallenge, context);
+
+        Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
+        Assertions.assertThrows(AuthenticationException.class, () -> authscheme.generateAuthResponse(host, request, context));
+    }
+
+
+    @Test
+    void testParseMandatoryExtensions() throws Exception {
+        final HttpHost host = new HttpHost("somehost", 80);
+        final CredentialsProvider credentialsProvider = CredentialsProviderBuilder.create()
+                .add(new AuthScope(host, "realm", null), "username", "password".toCharArray())
+                .build();
+
+        final int nonceLength = 256 / 8;
+        fixNonce(new byte[nonceLength]);
+
+        // Inner class to handle extensions for testing
+        class TestExtension implements ScramExtension {
+            private final Map<String, String> expectedValues = new HashMap<>();
+
+            {
+                expectedValues.put("totp", "123456");
+                expectedValues.put("mockExtension", null);
+                expectedValues.put("someOtherExt", "val");
+            }
+
+            @Override
+            public boolean process(final String name, final String value, final HttpContext context) {
+                final String expectedValue = expectedValues.get(name);
+                if (expectedValue != null) {
+                    Assertions.assertEquals(expectedValue, value, "Extension value does not match expected");
+                    return true;
+                }
+                // For any other extension, just return true to simulate handling
+                return true;
+            }
+
+            @Override
+            public boolean supports(final String name) {
+                return expectedValues.containsKey(name);
+            }
+        }
+
+        // Use the test extension in a registry
+        final RegistryBuilder<ScramExtension> registryBuilder = RegistryBuilder.create();
+        registryBuilder.register("totp", new TestExtension());
+        registryBuilder.register("mockExtension", new TestExtension());
+        registryBuilder.register("someOtherExt", new TestExtension());
+
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, registryBuilder.build());
+
+        // Challenge with extensions
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256, m=noneHere ,ext=totp=123456,mockExtension,someOtherExt=val";
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setServerProof("543add26a1a6ea149cb38e02cecf90fb8934b4d84810ce485f9d94fe2bd35c81");
+        Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
         Assertions.assertThrows(MalformedChallengeException.class, () -> authscheme.processChallenge(authChallenge, context));
 
+    }
 
+
+    @Test
+        void testScramMandatoryMultipleMandatoryExtensions() throws Exception {
+
+        final HttpRequest request = new BasicHttpRequest("Simple", "/");
+        final HttpHost host = new HttpHost("somehost", 80);
+        final CredentialsProvider credentialsProvider = CredentialsProviderBuilder.create()
+                .add(new AuthScope(host, "realm", null), "username", "password".toCharArray())
+                .build();
+        final int nonceLength = 256 / 8;
+        fixNonce(new byte[nonceLength]);
+
+
+        // Inner class to handle extensions for testing
+        class TestExtension implements ScramExtension {
+            private final Map<String, String> expectedValues = new HashMap<>();
+
+            {
+                expectedValues.put("totp", "123456");
+                expectedValues.put("mockExtension", null);
+                expectedValues.put("someOtherExt", "val");
+            }
+
+            @Override
+            public boolean process(final String name, final String value, final HttpContext context) {
+                final String expectedValue = expectedValues.get(name);
+                if (expectedValue != null) {
+                    Assertions.assertEquals(expectedValue, value, "Extension value does not match expected");
+                    return true;
+                }
+                // For any other extension, just return true to simulate handling
+                return true;
+            }
+
+            @Override
+            public boolean supports(final String name) {
+                return expectedValues.containsKey(name);
+            }
+        }
+
+        // Use the test extension in a registry
+        final RegistryBuilder<ScramExtension> registryBuilder = RegistryBuilder.create();
+        registryBuilder.register("totp", new TestExtension());
+        registryBuilder.register("mockExtension", new TestExtension());
+        registryBuilder.register("someOtherExt", new TestExtension());
+
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, registryBuilder.build());
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c756500000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256, m=ext1,totp, ext=totp=123456,mockExtension,someOtherExt=val,ext1 ";
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final SSLSession mockSession = mock(SSLSession.class);
+        final java.security.cert.X509Certificate mockCert = mock(X509Certificate.class);
+        when(mockSession.getPeerCertificates()).thenReturn(new X509Certificate[]{mockCert});
+        when(mockCert.getSigAlgName()).thenReturn("SHA256withRSA");
+        final byte[] exampleCertBytes = "mocked-cert-encoded".getBytes(StandardCharsets.UTF_8);
+        when(mockCert.getEncoded()).thenReturn(exampleCertBytes);
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setSSLSession(mockSession);
+
+        // Setting the TLS Unique value for channel binding
+        final byte[] tlsUniqueMock = "mocked-tls-unique-value".getBytes(StandardCharsets.UTF_8);
+        context.setTlsUnique(tlsUniqueMock);
+        context.setChannelBindingType("tls-unique");
+
+        // Set server proof to pass validation
+        context.setServerProof("543add26a1a6ea149cb38e02cecf90fb8934b4d84810ce485f9d94fe2bd35c81");
+
+        // Process the challenge which includes parsing extensions
+        authscheme.processChallenge(authChallenge, context);
+
+        Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
+        Assertions.assertThrows(AuthenticationException.class, () -> authscheme.generateAuthResponse(host, request, context));
+    }
+
+
+    @Test
+    void testScramAuthenticationWithClientKeyServerKeyCredentials() throws Exception {
+        final HttpRequest request = new BasicHttpRequest("Simple", "/");
+        final HttpHost host = new HttpHost("somehost", 80);
+
+        // Simulate having pre-computed ClientKey and ServerKey
+        final byte[] mockClientKey = "mockClientKey".getBytes(StandardCharsets.UTF_8);
+        final byte[] mockServerKey = "mockServerKey".getBytes(StandardCharsets.UTF_8);
+
+        final CredentialsProvider credentialsProvider = CredentialsProviderBuilder.create()
+                .add(new AuthScope(host, "realm", null), new ClientKeyServerKeyCredentials(new BasicUserPrincipal("username"), mockClientKey, mockServerKey))
+                .build();
+
+        final int nonceLength = 256 / 8;
+        fixNonce(new byte[nonceLength]);
+
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
+
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final HttpClientContext context = HttpClientContext.create();
+        // Note: Here you might need to adjust the server proof based on how you calculate it with ClientKey/ServerKey
+        context.setServerProof("767fbecd3e3428df0cbdf38131a1d934e7eac7641c54cdb7da528187b086be61");
+        authscheme.processChallenge(authChallenge, context);
+
+        Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
+        final String response = authscheme.generateAuthResponse(host, request, context);
+        Assertions.assertNotNull(response);
+        Assertions.assertTrue(authscheme.isChallengeComplete());
+        Assertions.assertFalse(authscheme.isConnectionBased());
+    }
+
+
+    @Test
+    void testScramAuthenticationWithSaltedPasswordCredentials() throws Exception {
+        final HttpRequest request = new BasicHttpRequest("Simple", "/");
+        final HttpHost host = new HttpHost("somehost", 80);
+
+        // Simulate having a pre-computed SaltedPassword
+        final byte[] mockSaltedPassword = "mockSaltedPassword".getBytes(StandardCharsets.UTF_8);
+
+        final CredentialsProvider credentialsProvider = CredentialsProviderBuilder.create()
+                .add(new AuthScope(host, "realm", null), new SaltedPasswordCredentials(new BasicUserPrincipal("username"), mockSaltedPassword))
+                .build();
+
+        final int nonceLength = 256 / 8;
+        fixNonce(new byte[nonceLength]);
+
+        final ScramScheme authscheme = new ScramScheme(MOCK_SECURE_RANDOM, RegistryBuilder.<ScramExtension>create().build());
+
+        final String challenge = StandardAuthScheme.SCRAM + " realm=\"realm\", r=66697865645f6e6f6e63655f76616c7565000000000000000000000000000000, s=salt_value, i=4096, algorithm=SCRAM-SHA-256";
+        final AuthChallenge authChallenge = parse(challenge);
+
+        final HttpClientContext context = HttpClientContext.create();
+        // Note: Adjust the server proof based on how you calculate it with the SaltedPassword
+        context.setServerProof("f05339fd8b4a10ff0e6463f073226f44c8e02a4713141e695f2d7b829718bc7b");
+        authscheme.processChallenge(authChallenge, context);
+
+        Assertions.assertTrue(authscheme.isResponseReady(host, credentialsProvider, context));
+        final String response = authscheme.generateAuthResponse(host, request, context);
+        Assertions.assertNotNull(response);
+        Assertions.assertTrue(authscheme.isChallengeComplete());
+        Assertions.assertFalse(authscheme.isConnectionBased());
+    }
+
+
+    private void fixNonce(final byte[] nonceLength) {
+        doAnswer(invocation -> {
+            final byte[] nonceBytes = invocation.getArgument(0);
+            final byte[] fixedBytes = "fixed_nonce_value".getBytes(StandardCharsets.US_ASCII);
+            System.arraycopy(fixedBytes, 0, nonceLength, 0, Math.min(nonceLength.length, fixedBytes.length));
+            System.arraycopy(nonceLength, 0, nonceBytes, 0, nonceLength.length);
+            return fixedBytes;
+        }).when(MOCK_SECURE_RANDOM).nextBytes(any(byte[].class));
     }
 
 }

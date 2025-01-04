@@ -34,14 +34,12 @@ import java.io.ObjectOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 import org.apache.hc.client5.http.auth.AuthChallenge;
 import org.apache.hc.client5.http.auth.AuthScheme;
 import org.apache.hc.client5.http.auth.AuthScope;
 import org.apache.hc.client5.http.auth.AuthenticationException;
-import org.apache.hc.client5.http.auth.ChallengeType;
 import org.apache.hc.client5.http.auth.CredentialsProvider;
 import org.apache.hc.client5.http.auth.MalformedChallengeException;
 import org.apache.hc.client5.http.auth.StandardAuthScheme;
@@ -51,30 +49,19 @@ import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HeaderElement;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpRequest;
-import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.http.io.entity.InputStreamEntity;
 import org.apache.hc.core5.http.io.entity.StringEntity;
 import org.apache.hc.core5.http.message.BasicClassicHttpRequest;
 import org.apache.hc.core5.http.message.BasicHeaderValueParser;
 import org.apache.hc.core5.http.message.BasicHttpRequest;
 import org.apache.hc.core5.http.message.ParserCursor;
-import org.apache.hc.core5.util.CharArrayBuffer;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 /**
  * Test Methods for DigestScheme Authentication.
  */
-class TestDigestScheme {
-
-    private static AuthChallenge parse(final String s) throws ParseException {
-        final CharArrayBuffer buffer = new CharArrayBuffer(s.length());
-        buffer.append(s);
-        final ParserCursor cursor = new ParserCursor(0, buffer.length());
-        final List<AuthChallenge> authChallenges = AuthChallengeParser.INSTANCE.parse(ChallengeType.TARGET, buffer, cursor);
-        Assertions.assertEquals(1, authChallenges.size());
-        return authChallenges.get(0);
-    }
+class TestDigestScheme extends AbstractAuthTest {
 
     @Test
     void testDigestAuthenticationEmptyChallenge1() throws Exception {

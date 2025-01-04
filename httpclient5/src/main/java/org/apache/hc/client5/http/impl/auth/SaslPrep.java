@@ -38,10 +38,29 @@ import java.util.TreeMap;
 import org.apache.hc.client5.http.impl.ScramException;
 import org.conscrypt.Internal;
 
+/**
+ * Utility class implementing SASLprep normalization for SCRAM authentication, as defined in
+ * <a href="https://tools.ietf.org/html/rfc4013">RFC 4013</a>.
+ * <p>
+ * This implementation prepares user-supplied strings (e.g., usernames and passwords) for use
+ * in authentication mechanisms to ensure consistent and secure representation.
+ * </p>
+ * <p>
+ * The SASLprep computation in this class is adapted from the open-source implementation
+ * available at:
+ * <a href="https://github.com/ogrebgr/scram-sasl/blob/master/lib/src/main/java/com/bolyartech/scram_sasl/common/StringPrep.java">
+ * github.com/ogrebgr/scram-sasl</a>.
+ * </p>
+ *
+ * <h2>Usage</h2>
+ * <p>This class is intended for internal use only and should not be relied upon by external components.</p>
+ *
+ * @since 5.5
+ */
 @Internal
 class SaslPrep {
 
-     static SaslPrep INSTANCE = new SaslPrep();
+    static SaslPrep INSTANCE = new SaslPrep();
 
     private static class CharClass {
         private final List<Integer> tupleStart = new ArrayList<>();
@@ -108,7 +127,7 @@ class SaslPrep {
             }
         }
 
-         private boolean isCharInClass(final int c) {
+        private boolean isCharInClass(final int c) {
             final int pos = Collections.binarySearch(tupleStart, c);
 
             if (pos >= 0) {
