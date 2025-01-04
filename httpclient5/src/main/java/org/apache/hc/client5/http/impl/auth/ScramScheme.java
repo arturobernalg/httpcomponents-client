@@ -27,32 +27,6 @@
 
 package org.apache.hc.client5.http.impl.auth;
 
-import org.apache.hc.client5.http.auth.AuthChallenge;
-import org.apache.hc.client5.http.auth.AuthScheme;
-import org.apache.hc.client5.http.auth.AuthScope;
-import org.apache.hc.client5.http.auth.AuthenticationException;
-import org.apache.hc.client5.http.auth.Credentials;
-import org.apache.hc.client5.http.auth.CredentialsProvider;
-import org.apache.hc.client5.http.auth.MalformedChallengeException;
-import org.apache.hc.client5.http.auth.StandardAuthScheme;
-import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
-import org.apache.hc.client5.http.protocol.HttpClientContext;
-import org.apache.hc.client5.http.utils.Base64;
-import org.apache.hc.client5.http.utils.ByteArrayBuilder;
-import org.apache.hc.core5.annotation.Internal;
-import org.apache.hc.core5.http.HttpHost;
-import org.apache.hc.core5.http.HttpRequest;
-import org.apache.hc.core5.http.NameValuePair;
-import org.apache.hc.core5.http.protocol.HttpContext;
-import org.apache.hc.core5.util.Args;
-import org.apache.hc.core5.util.CharArrayBuffer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import javax.net.ssl.SSLPeerUnverifiedException;
-import javax.net.ssl.SSLSession;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -63,34 +37,82 @@ import java.security.Principal;
 import java.security.SecureRandom;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import javax.net.ssl.SSLPeerUnverifiedException;
+import javax.net.ssl.SSLSession;
+
+import org.apache.hc.client5.http.auth.AuthChallenge;
+import org.apache.hc.client5.http.auth.AuthScheme;
+import org.apache.hc.client5.http.auth.AuthScope;
+import org.apache.hc.client5.http.auth.AuthenticationException;
+import org.apache.hc.client5.http.auth.ClientKeyServerKeyCredentials;
+import org.apache.hc.client5.http.auth.Credentials;
+import org.apache.hc.client5.http.auth.CredentialsProvider;
+import org.apache.hc.client5.http.auth.MalformedChallengeException;
+import org.apache.hc.client5.http.auth.SaltedPasswordCredentials;
+import org.apache.hc.client5.http.auth.StandardAuthScheme;
+import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
+import org.apache.hc.client5.http.protocol.HttpClientContext;
+import org.apache.hc.client5.http.utils.Base64;
+import org.apache.hc.client5.http.utils.ByteArrayBuilder;
+import org.apache.hc.core5.annotation.Internal;
+import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.HttpRequest;
+import org.apache.hc.core5.http.NameValuePair;
+import org.apache.hc.core5.http.config.Lookup;
+import org.apache.hc.core5.http.config.RegistryBuilder;
+import org.apache.hc.core5.http.message.BasicNameValuePair;
+import org.apache.hc.core5.http.protocol.HttpContext;
+import org.apache.hc.core5.util.Args;
+import org.apache.hc.core5.util.CharArrayBuffer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * <p>SCRAM (Salted Challenge Response Authentication Mechanism) is an authentication scheme as described in
- * <a href="https://tools.ietf.org/html/rfc5802">RFC 5802</a> and <a href="https://tools.ietf.org/html/rfc7677">RFC 7677</a>.
- * This implementation specifically supports SCRAM-SHA-1, SCRAM-SHA-256, SCRAM-SHA-512, and their respective channel-binding
- * versions known as SCRAM-PLUS (e.g., SCRAM-SHA-256-PLUS).</p>
+ * <p>SCRAM (Salted Challenge Response Authentication Mechanism) is a secure authentication scheme designed for
+ * robust password-based authentication. This implementation supports various SCRAM mechanisms such as SCRAM-SHA-1,
+ * SCRAM-SHA-256, SCRAM-SHA-512, and their respective channel-binding variants (e.g., SCRAM-SHA-256-PLUS).</p>
  *
- * <p>This class provides an implementation of the {@link AuthScheme} interface that can be used for authenticating
- * HTTP requests in a secure manner. SCRAM is particularly useful for mitigating dictionary attacks and other
- * weaknesses inherent in basic authentication schemes.</p>
+ * <p>This class provides an implementation of the {@link AuthScheme} interface, enabling the generation of client
+ * authentication responses to server-provided challenges. It ensures secure hashing, HMAC-based integrity checks,
+ * and optional channel binding for enhanced protection against attacks like MitM (Man-in-the-Middle).</p>
  *
  * <h2>Usage</h2>
- * <p>Instances of {@code ScramScheme} should be used to generate SCRAM client authentication responses to
- * server-provided challenges. It uses a secure random value for client nonce generation, computes client and server
- * proofs, and ensures channel integrity with support for SCRAM-PLUS mechanisms like {@code tls-unique} or
- * {@code tls-server-end-point}.</p>
+ * <p>Instances of {@code ScramScheme} generate client authentication responses, manage the state of the SCRAM
+ * authentication exchange, and validate server responses. Channel binding is supported for mechanisms like
+ * {@code tls-unique} or {@code tls-server-end-point} when applicable.</p>
+ *
+ * <h2>Extensions</h2>
+ * <p>SCRAM extensions provide additional flexibility and functionality during authentication. Extensions are
+ * communicated through key-value pairs in the challenge and processed using registered {@link ScramExtension}
+ * implementations. Extensions can add features like one-time passwords or other custom mechanisms.</p>
+ * <p>Examples of extensions:</p>
+ * <ul>
+ *   <li>{@code ext=totp=123456} - A time-based one-time password.</li>
+ *   <li>{@code ext=mockExtension} - A custom extension without a value.</li>
+ *   <li>{@code ext=someOtherExt=val} - A custom extension with a specific value.</li>
+ * </ul>
+ *
+ * <p>To handle extensions, implement the {@link ScramExtension} interface and register them using the
+ * {@link RegistryBuilder}.</p>
  *
  * <h2>Thread Safety</h2>
- * <p>This class is not thread-safe. Each instance of {@code ScramScheme} should be used with a single thread of execution.
- * For concurrent usage, create separate instances for each thread.</p>
+ * <p>This class is not thread-safe. Each instance of {@code ScramScheme} should be used in a single thread of execution.
+ * For concurrent usage, create separate instances per thread.</p>
  *
  * <h2>Supported Mechanisms</h2>
- * <p>SCRAM mechanisms supported by this implementation are:
+ * <p>Supported SCRAM mechanisms include:
  * <ul>
  *   <li>SCRAM-SHA-1</li>
  *   <li>SCRAM-SHA-256</li>
@@ -98,19 +120,17 @@ import java.util.Map;
  *   <li>SCRAM-SHA-256-PLUS</li>
  *   <li>SCRAM-SHA-512-PLUS</li>
  * </ul>
- * These mechanisms allow for secure password-based authentication with salted hashing and optionally use
- * channel-binding information to prevent Man-in-the-Middle (MitM) attacks.</p>
+ * These mechanisms provide secure password-based authentication with salted hashing and optional channel-binding
+ * for enhanced security.</p>
  *
  * <h2>Important Considerations</h2>
- * <p>The SCRAM scheme requires the client to hash and HMAC the password multiple times, making it computationally
- * infeasible for attackers to reverse-engineer the password. Channel-binding is optional but recommended where
- * secure TLS sessions are used. Implementors should ensure that usernames and passwords are UTF-8 encoded and
- * properly normalized to prevent issues with Unicode representation differences.</p>
+ * <p>The SCRAM scheme uses iterative hashing and HMAC-based computations to secure credentials, making it highly
+ * resistant to attacks. Implementors should ensure proper UTF-8 encoding and normalization of usernames and passwords
+ * to prevent issues with differing Unicode representations.</p>
  *
  * @since 5.5
- * @see <a href="https://tools.ietf.org/html/rfc5802">RFC 5802 - SCRAM: Salted Challenge Response Authentication Mechanism</a>
- * @see <a href="https://tools.ietf.org/html/rfc7677">RFC 7677 - SCRAM-SHA-256 and SCRAM-SHA-256-PLUS</a>
  */
+
 public class ScramScheme implements AuthScheme, Serializable {
 
     private static final Logger LOG = LoggerFactory.getLogger(ScramScheme.class);
@@ -124,11 +144,6 @@ public class ScramScheme implements AuthScheme, Serializable {
      * Map to store the SCRAM challenge parameters.
      */
     private final Map<String, String> paramMap;
-
-    /**
-     * Buffer used for building authentication messages.
-     */
-    private transient ByteArrayBuilder buffer;
 
     /**
      * Client-generated nonce used in the SCRAM authentication.
@@ -168,12 +183,12 @@ public class ScramScheme implements AuthScheme, Serializable {
     /**
      * User's credentials (username and password) used for SCRAM authentication.
      */
-    private UsernamePasswordCredentials credentials;
+    private Credentials credentials;
 
     /**
      * Buffer for storing the bare part of the client-first-message.
      */
-    private final ByteArrayBuilder clientFirstMessageBare;
+    private transient ByteArrayBuilder clientFirstMessage;
 
     /**
      * Buffer for storing the server-first-message.
@@ -194,23 +209,43 @@ public class ScramScheme implements AuthScheme, Serializable {
      */
     private ScramState state;
 
+    private final Lookup<ScramExtension> extensionRegistry;
+
+    List<NameValuePair> extensions = new ArrayList<>();
+    List<NameValuePair> mandatoryExtensions = new ArrayList<>();
+    private static final Set<String> RESERVED_KEYWORDS;
+
+    static {
+        final Set<String> keywords = new HashSet<>();
+        keywords.add("realm");
+        keywords.add("algorithm");
+        keywords.add("nonce");
+        keywords.add("ext");
+        keywords.add("i");
+        keywords.add("s");
+        keywords.add("c");
+        keywords.add("v");
+        keywords.add("r");
+        keywords.add("p");
+        RESERVED_KEYWORDS = Collections.unmodifiableSet(keywords);
+    }
+
 
     /**
      * Internal constructor that allows the use of a custom {@link SecureRandom} instance.
      * This constructor is intended for testing purposes only and should not be used in production.
      *
      * @param secureRandom The {@link SecureRandom} instance used to generate the client nonce.
-     * This constructor is provided for testing purposes and allows deterministic
-     * generation of nonces. Using a fixed source of randomness may compromise security in
-     * production systems. Therefore, this constructor should not be used in any production code.
+     *                     This constructor is provided for testing purposes and allows deterministic
+     *                     generation of nonces. Using a fixed source of randomness may compromise security in
+     *                     production systems. Therefore, this constructor should not be used in any production code.
      */
     @Internal
-    ScramScheme(final SecureRandom secureRandom) {
+    ScramScheme(final SecureRandom secureRandom, final Lookup<ScramExtension> extensionRegistry) {
+        this.extensionRegistry = extensionRegistry;
         this.paramMap = new HashMap<>();
         this.secureRandom = secureRandom;
         this.state = ScramState.INITIAL;
-        buffer = new ByteArrayBuilder(128);
-        clientFirstMessageBare = new ByteArrayBuilder(128);
         serverFirstMessage = new ByteArrayBuilder(128);
     }
 
@@ -223,8 +258,21 @@ public class ScramScheme implements AuthScheme, Serializable {
      * replay attacks and ensuring confidentiality.
      * </p>
      */
+    public ScramScheme(final Lookup<ScramExtension> extensionRegistry) {
+        this(new SecureRandom(), extensionRegistry);
+    }
+
+    /**
+     * Default constructor that initializes the SCRAM scheme using a secure, system-provided
+     * {@link SecureRandom} instance. This constructor should be used for production use cases.
+     * <p>
+     * The {@link SecureRandom} instance used here ensures that all generated nonces are
+     * truly random and secure, making the SCRAM authentication process robust against
+     * replay attacks and ensuring confidentiality.
+     * </p>
+     */
     public ScramScheme() {
-        this(new SecureRandom());
+        this(new SecureRandom(), RegistryBuilder.<ScramExtension>create().build());
     }
 
 
@@ -236,12 +284,71 @@ public class ScramScheme implements AuthScheme, Serializable {
         }
 
         this.paramMap.clear();
+
         final List<NameValuePair> params = authChallenge.getParams();
+
         if (params != null) {
-            for (final NameValuePair param : params) {
-                this.paramMap.put(param.getName().toLowerCase(Locale.ROOT), param.getValue());
+            for (int i = 0; i < params.size(); i++) {
+                final NameValuePair param = params.get(i);
+                final String paramName = param.getName().toLowerCase(Locale.ROOT);
+                final String paramValue = param.getValue().toLowerCase(Locale.ROOT);
+
+                if ("m".equals(paramName)) {
+                    // Parse mandatory extensions
+                    mandatoryExtensions.add(new BasicNameValuePair(param.getValue(), null));
+
+                    // Continue iterating until next reserved keyword
+                    for (int j = i + 1; j < params.size(); j++) {
+                        final NameValuePair nextParam = params.get(j);
+                        final String nextName = nextParam.getName().toLowerCase(Locale.ROOT);
+
+                        if (RESERVED_KEYWORDS.contains(nextName)) {
+                            break;
+                        }
+
+                        mandatoryExtensions.add(new BasicNameValuePair(nextParam.getName(), null));
+                        i = j;  // Advance outer loop to skip already parsed entries
+                    }
+                } else if ("ext".equals(paramName)) {
+                    // Parse optional extensions
+                    final String[] extList = param.getValue().split(",");
+                    for (final String ext : extList) {
+                        final String[] keyValue = ext.split("=", 2);
+                        if (keyValue.length == 2) {
+                            extensions.add(new BasicNameValuePair(keyValue[0].trim(), keyValue[1].trim()));
+                        } else {
+                            extensions.add(new BasicNameValuePair(keyValue[0].trim(), null));
+                        }
+                    }
+
+                    // Continue iterating for more extensions until a reserved keyword is found
+                    for (int j = i + 1; j < params.size(); j++) {
+                        final NameValuePair nextParam = params.get(j);
+                        final String nextName = nextParam.getName().toLowerCase(Locale.ROOT);
+
+                        if (RESERVED_KEYWORDS.contains(nextName)) {
+                            break;
+                        }
+                        extensions.add(nextParam);
+                        i = j;
+                    }
+                } else {
+                    this.paramMap.put(paramName, paramValue);
+                }
             }
         }
+
+        // Validate mandatory extensions
+        if (!mandatoryExtensions.isEmpty()) {
+            for (final NameValuePair mandatory : mandatoryExtensions) {
+                final String mandatoryName = mandatory.getName();
+                if (extensions.stream().noneMatch(ext -> ext.getName().equalsIgnoreCase(mandatoryName))) {
+                    this.state = ScramState.FAILED;
+                    throw new MalformedChallengeException("Mandatory extension '" + mandatoryName + "' not supported.");
+                }
+            }
+        }
+
         if (this.paramMap.isEmpty()) {
             throw new MalformedChallengeException("Missing SCRAM auth parameters");
         }
@@ -260,7 +367,7 @@ public class ScramScheme implements AuthScheme, Serializable {
             iterationCount = Integer.parseInt(paramMap.get("i"));
             if (iterationCount < mechanism.getIterationCount()) {
                 this.state = ScramState.FAILED;
-                throw new MalformedChallengeException("Iteration count too low. Must be at least 4096.");
+                throw new MalformedChallengeException("Iteration count too low.");
             }
         } catch (final NumberFormatException e) {
             this.state = ScramState.FAILED;
@@ -274,17 +381,11 @@ public class ScramScheme implements AuthScheme, Serializable {
             throw new MalformedChallengeException("Invalid SCRAM challenge parameters: Invalid salt or server nonce");
         }
 
-        if (paramMap.containsKey("m")) {
-            this.state = ScramState.FAILED;
-            throw new MalformedChallengeException("Reserved attribute 'm' is not allowed as per RFC 5802");
-        }
-
         serverFirstMessage.append("r=").append(serverNonce).append(",s=").append(salt).append(",i=").append(String.valueOf(iterationCount));
 
         this.state = ScramState.SERVER_FIRST_RECEIVED;
         this.complete = true;
     }
-
 
 
     @Override
@@ -298,20 +399,28 @@ public class ScramScheme implements AuthScheme, Serializable {
     }
 
     @Override
-    public boolean isResponseReady(final HttpHost host, final CredentialsProvider credentialsProvider,
-                                   final HttpContext context)
-            throws AuthenticationException {
+    public boolean isResponseReady(final HttpHost host, final CredentialsProvider credentialsProvider, final HttpContext context) throws AuthenticationException {
         Args.notNull(host, "Auth host");
         Args.notNull(credentialsProvider, "CredentialsProvider");
 
         final HttpClientContext clientContext = HttpClientContext.cast(context);
         final AuthScope authScope = new AuthScope(host, getRealm(), getName());
         final Credentials credentials = credentialsProvider.getCredentials(authScope, clientContext);
-        if (credentials instanceof UsernamePasswordCredentials) {
-            this.credentials = (UsernamePasswordCredentials) credentials;
-            return true;
+
+        if (credentials != null) {
+            if (credentials instanceof UsernamePasswordCredentials) {
+                this.credentials = credentials;
+                return true;
+            } else if (credentials instanceof ClientKeyServerKeyCredentials) {
+                this.credentials = credentials;
+                return true;
+            } else if (credentials instanceof SaltedPasswordCredentials) {
+                this.credentials = credentials;
+                return true;
+            }
         }
 
+        // No credentials found
         this.credentials = null;
         return false;
     }
@@ -344,32 +453,75 @@ public class ScramScheme implements AuthScheme, Serializable {
         }
 
         final String username;
-        final String password;
-        try {
-            username = SaslPrep.INSTANCE.prepAsQueryString(credentials.getUserName());
-            password = SaslPrep.INSTANCE.prepAsStoredString(new String(credentials.getUserPassword()));
-        } catch (final IllegalArgumentException e) {
-            this.state = ScramState.FAILED;
-            throw new AuthenticationException("Invalid character in user credential after SASLprep: " + e.getMessage());
-        }
+        final byte[] clientKey;
+        final byte[] saltedPassword;
 
-        if (buffer == null) {
-            buffer = new ByteArrayBuilder(128);
+        if (credentials instanceof UsernamePasswordCredentials) {
+            // Traditional username and password
+            final UsernamePasswordCredentials upCredentials = (UsernamePasswordCredentials) credentials;
+            try {
+                username = SaslPrep.INSTANCE.prepAsQueryString(upCredentials.getUserName());
+                final String password = SaslPrep.INSTANCE.prepAsStoredString(new String(upCredentials.getUserPassword()));
+                saltedPassword = calculateHi(password.getBytes(StandardCharsets.UTF_8), Base64.decodeBase64(salt), iterationCount, mechanism.getHmacFunction());
+                clientKey = hmac(saltedPassword, "Client Key", mechanism.getHmacFunction());
+                final MessageDigest digester = createMessageDigest(mechanism.getHashFunction());
+                storedKey = digester.digest(clientKey);
+            } catch (final IllegalArgumentException e) {
+                this.state = ScramState.FAILED;
+                throw new AuthenticationException("Error preparing credentials: " + e.getMessage(), e);
+            }
+        } else if (credentials instanceof ClientKeyServerKeyCredentials) {
+            final ClientKeyServerKeyCredentials csCredentials = (ClientKeyServerKeyCredentials) credentials;
+            username = csCredentials.getUserPrincipal().getName();
+            clientKey = csCredentials.getClientKey();
+            storedKey = computeStoredKeyFromClientKey(clientKey);
+        } else if (credentials instanceof SaltedPasswordCredentials) {
+            final SaltedPasswordCredentials spCredentials = (SaltedPasswordCredentials) credentials;
+            username = spCredentials.getUserPrincipal().getName();
+            saltedPassword = spCredentials.getSaltedPassword();
+            clientKey = hmac(saltedPassword, "Client Key", mechanism.getHmacFunction());
+            final MessageDigest digester = createMessageDigest(mechanism.getHashFunction());
+            storedKey = digester.digest(clientKey);
         } else {
-            buffer.reset();
+            this.state = ScramState.FAILED;
+            throw new AuthenticationException("Unsupported credential type for SCRAM: " + credentials.getClass().getName());
         }
 
-        clientFirstMessageBare.reset();
+        if (clientFirstMessage == null) {
+            clientFirstMessage = new ByteArrayBuilder(128);
+        } else {
+            clientFirstMessage.reset();
+        }
 
-        // Add GS2 Header first
-        final String gs2Header = mechanism.isPlus() ? "p=tls-server-end-point,," : "n,,";
-        clientFirstMessageBare.append(gs2Header);
+        // Determine GS2 header based on channel binding availability
+        final String gs2Header;
+        final HttpClientContext clientContext = HttpClientContext.cast(context);
+        final SSLSession sslSession = clientContext.getSSLSession();
 
-        // Append username and client nonce
-        clientFirstMessageBare.append("n=").append(username).append(",r=").append(clientNonce);
+        if (mechanism.isPlus()) {
+            if (sslSession != null) {
+                final String channelBindingType = clientContext.getChannelBindingType();
+                if (channelBindingType != null) {
+                    // If channel binding is actually used, set the correct type
+                    gs2Header = "p=" + channelBindingType + ",,";
+                } else {
+                    // If channel binding is supported but not used (no type set)
+                    gs2Header = "y,,";
+                }
+            } else {
+                // If no TLS session but mechanism is PLUS, fallback to 'y,,' indicating support without binding
+                //gs2Header = "y,,";
+                throw new AuthenticationException("Channel binding required but no TLS session available");
+            }
+        } else {
+            // Non-PLUS mechanism, no channel binding
+            gs2Header = "n,,";
+        }
 
-        // Validate the GS2 header
-        final byte[] clientFirstMessageBytes = clientFirstMessageBare.toByteArray();
+        clientFirstMessage.append(gs2Header);
+        clientFirstMessage.append("n=").append(username).append(",r=").append(clientNonce);
+
+        final byte[] clientFirstMessageBytes = clientFirstMessage.toByteArray();
         if (clientFirstMessageBytes.length == 0) {
             this.state = ScramState.FAILED;
             throw new AuthenticationException("Client-first message is empty, GS2 header missing.");
@@ -384,43 +536,41 @@ public class ScramScheme implements AuthScheme, Serializable {
         // Construct c= (Base64-encoded GS2 header + channel binding data)
         final String channelBinding;
         if (mechanism.isPlus()) {
-            final HttpClientContext clientContext = HttpClientContext.cast(context);
-            final SSLSession sslSession = clientContext.getSSLSession();
-            if (sslSession == null) {
-                this.state = ScramState.FAILED;
-                throw new AuthenticationException("TLS session not available for SCRAM-PLUS mechanism");
-            }
-
-            final String channelBindingType = clientContext.getChannelBindingType();
-            if (channelBindingType == null) {
-                this.state = ScramState.FAILED;
-                throw new AuthenticationException("Channel binding type not set in context for SCRAM-PLUS mechanism");
-            }
-
-            switch (channelBindingType) {
-                case "tls-server-end-point":
-                    final byte[] tlsServerEndPoint;
-                    try {
-                        tlsServerEndPoint = computeTlsServerEndPoint(sslSession);
-                    } catch (final CertificateEncodingException | SSLPeerUnverifiedException e) {
-                        this.state = ScramState.FAILED;
-                        throw new AuthenticationException("Failed to compute tls-server-end-point: " + e.getMessage(), e);
-                    }
-                    channelBinding = Base64.encodeBase64String(("p=tls-server-end-point,," + new String(tlsServerEndPoint, StandardCharsets.UTF_8)).getBytes(StandardCharsets.UTF_8));
-                    break;
-
-                case "tls-unique":
-                    final byte[] tlsUnique = clientContext.getTlsUnique();
-                    if (tlsUnique == null) {
-                        this.state = ScramState.FAILED;
-                        throw new AuthenticationException("tlsUnique value not available in context for SCRAM-PLUS mechanism");
-                    }
-                    channelBinding = Base64.encodeBase64String(("p=tls-unique,," + new String(tlsUnique, StandardCharsets.UTF_8)).getBytes(StandardCharsets.UTF_8));
-                    break;
-
-                default:
+            if (sslSession != null) {
+                final String channelBindingType = clientContext.getChannelBindingType();
+                if (channelBindingType == null) {
                     this.state = ScramState.FAILED;
-                    throw new AuthenticationException("Unsupported channel binding type: " + channelBindingType);
+                    throw new AuthenticationException("Channel binding type not set in context for SCRAM-PLUS mechanism");
+                }
+
+                switch (channelBindingType) {
+                    case "tls-server-end-point":
+                        final byte[] tlsServerEndPoint;
+                        try {
+                            tlsServerEndPoint = computeTlsServerEndPoint(sslSession);
+                        } catch (final CertificateEncodingException | SSLPeerUnverifiedException e) {
+                            this.state = ScramState.FAILED;
+                            throw new AuthenticationException("Failed to compute tls-server-end-point: " + e.getMessage(), e);
+                        }
+                        channelBinding = Base64.encodeBase64String((gs2Header + new String(tlsServerEndPoint, StandardCharsets.UTF_8)).getBytes(StandardCharsets.UTF_8));
+                        break;
+
+                    case "tls-unique":
+                        final byte[] tlsUnique = clientContext.getTlsUnique();
+                        if (tlsUnique == null) {
+                            this.state = ScramState.FAILED;
+                            throw new AuthenticationException("tlsUnique value not available in context for SCRAM-PLUS mechanism");
+                        }
+                        channelBinding = Base64.encodeBase64String((gs2Header + new String(tlsUnique, StandardCharsets.UTF_8)).getBytes(StandardCharsets.UTF_8));
+                        break;
+
+                    default:
+                        this.state = ScramState.FAILED;
+                        throw new AuthenticationException("Unsupported channel binding type: " + channelBindingType);
+                }
+            } else {
+                // If no TLS session but mechanism was originally PLUS, we use 'y,,' for the header
+                channelBinding = Base64.encodeBase64String("y,,".getBytes(StandardCharsets.UTF_8));
             }
         } else {
             channelBinding = Base64.encodeBase64String("n,,".getBytes(StandardCharsets.UTF_8));
@@ -428,30 +578,15 @@ public class ScramScheme implements AuthScheme, Serializable {
 
         // Build authMessage
         final String serverNonce = paramMap.get("r");
-        final String authMessage = new String(clientFirstMessageBare.toByteArray()) + "," +
-                "r=" + serverNonce + ",s=" + paramMap.get("s") + ",i=" + paramMap.get("i") + "," +
-                "c=" + channelBinding;
+        final String authMessage = new String(clientFirstMessageBytes) + "," + "r=" + serverNonce + ",s=" + paramMap.get("s") + ",i=" + paramMap.get("i") + "," + "c=" + channelBinding;
 
         // Compute client proof
-        final byte[] clientKey;
-        final byte[] saltedPassword;
-        try {
-            saltedPassword = calculateHi(password.getBytes(StandardCharsets.UTF_8), Base64.decodeBase64(salt),
-                    iterationCount, mechanism.getHmacFunction());
-            clientKey = hmac(saltedPassword, "Client Key", mechanism.getHmacFunction());
-            final MessageDigest digester = createMessageDigest(mechanism.getHashFunction());
-            storedKey = digester.digest(clientKey);
-        } catch (final Exception e) {
-            this.state = ScramState.FAILED;
-            throw new AuthenticationException("Error computing client keys for SCRAM mechanism", e);
-        }
-
         final byte[] clientSignature = hmac(storedKey, authMessage, mechanism.getHmacFunction());
         final byte[] clientProof = xor(clientKey, clientSignature);
 
         // Construct final response
         final CharArrayBuffer responseBuffer = new CharArrayBuffer(128);
-        responseBuffer.append(StandardAuthScheme.SCRAM); // Add mechanism name (e.g., SCRAM-SHA-256)
+        responseBuffer.append(mechanism.getSchemeName()); // Add mechanism name (e.g., SCRAM-SHA-256)
         responseBuffer.append(" ");
         responseBuffer.append("c=");
         responseBuffer.append(channelBinding); // Add c=
@@ -465,12 +600,54 @@ public class ScramScheme implements AuthScheme, Serializable {
             throw new AuthenticationException("Server proof not available or invalid in context for validation");
         }
 
+        if (this.extensions != null) {
+            for (final NameValuePair ext : this.extensions) {
+                final String extName = ext.getName();
+                final String extValue = ext.getValue();
+                if (!handleExtension(extName, extValue, context)) {
+                    if (LOG.isWarnEnabled()) {
+                        LOG.warn("Unhandled extension: {}", extName);
+                    }
+                }
+            }
+        }
+
+
         validateServerProof(serverProof, authMessage, mechanism);
         this.state = ScramState.CLIENT_PROOF_SENT;
 
         return new String(responseBuffer.toCharArray());
     }
 
+    /**
+     * Handles an extension during the SCRAM authentication process. This method performs the following:
+     *
+     * <p>Extensions are additional attributes sent in the SCRAM challenge that may enhance or modify the authentication process.
+     * Extensions can have a name-value pair format (e.g., "totp=123456") or be name-only (e.g., "mockExtension").</p>
+     *
+     * @param name    The name of the extension to be processed. Must not be {@code null}.
+     * @param value   The value of the extension, or {@code null} if the extension does not have a value.
+     * @param context The {@link HttpContext} in which the extension is being processed. Must not be {@code null}.
+     * @return {@code true} if the extension was successfully processed, {@code false} otherwise.
+     * @throws AuthenticationException if there is an error while processing the extension or a mandatory extension is not supported.
+     */
+    private boolean handleExtension(final String name, final String value, final HttpContext context) throws AuthenticationException {
+        final ScramExtension extension = extensionRegistry.lookup(name.toLowerCase(Locale.ROOT));
+        if (extension != null) {
+            if (!extension.process(name, value, context)) {
+                if (LOG.isWarnEnabled()) {
+                    LOG.warn("SCRAM extension '{}' failed processing", name);
+                }
+                return false;
+            }
+            return true;
+        }
+
+        if (LOG.isWarnEnabled()) {
+            LOG.warn("Unsupported SCRAM extension: {}", name);
+        }
+        return false;
+    }
 
 
     /**
@@ -479,11 +656,10 @@ public class ScramScheme implements AuthScheme, Serializable {
      *
      * @param serverProof The server proof value received from the server during authentication. Must not be {@code null}.
      * @param authMessage The authentication message constructed from the client and server messages.
-     * @param mechanism The SCRAM mechanism being used, which determines the hash and HMAC functions.
+     * @param mechanism   The SCRAM mechanism being used, which determines the hash and HMAC functions.
      * @throws AuthenticationException if the server proof validation fails, meaning the server's proof cannot be verified.
      */
-    private void validateServerProof(final String serverProof, final String authMessage, final ScramMechanism mechanism)
-            throws AuthenticationException {
+    private void validateServerProof(final String serverProof, final String authMessage, final ScramMechanism mechanism) throws AuthenticationException {
 
         final byte[] expectedServerSignature;
         try {
@@ -493,14 +669,12 @@ public class ScramScheme implements AuthScheme, Serializable {
             throw new AuthenticationException("Failed to compute expected server signature: " + e.getMessage(), e);
         }
 
-
         final byte[] serverProofBytes = hexStringToByteArray(serverProof);
 
-        if (!signatureAreEquals(serverProofBytes,expectedServerSignature)) {
+        if (!signatureAreEquals(serverProofBytes, expectedServerSignature)) {
             this.state = ScramState.FAILED;
             if (LOG.isDebugEnabled()) {
-                LOG.debug("Server proof validation failed. The provided server signature does not match the expected signature. Expected: {}, Received: {}",
-                        Base64.encodeBase64String(expectedServerSignature), serverProof);
+                LOG.debug("Server proof validation failed. The provided server signature does not match the expected signature. Expected: {}, Received: {}", Base64.encodeBase64String(expectedServerSignature), serverProof);
             }
             throw new AuthenticationException("Server proof validation failed. The provided server signature does not match the expected signature.");
         }
@@ -520,7 +694,7 @@ public class ScramScheme implements AuthScheme, Serializable {
      * @param a the first byte array to compare, may be null
      * @param b the second byte array to compare, may be null
      * @return {@code true} if both byte arrays are non-null, of the same length, and contain
-     *         the same elements in the same order; {@code false} otherwise
+     * the same elements in the same order; {@code false} otherwise
      */
     private boolean signatureAreEquals(final byte[] a, final byte[] b) {
         if (a == null || b == null || a.length != b.length) {
@@ -543,7 +717,6 @@ public class ScramScheme implements AuthScheme, Serializable {
     }
 
 
-
     /**
      * Generates a new client nonce using the provided {@link SecureRandom} instance.
      * The client nonce is used in the SCRAM authentication process to introduce entropy and prevent replay attacks.
@@ -561,7 +734,7 @@ public class ScramScheme implements AuthScheme, Serializable {
     /**
      * Initializes a {@link Mac} instance for the given key and algorithm.
      *
-     * @param key The key used to initialize the {@link Mac} instance.
+     * @param key       The key used to initialize the {@link Mac} instance.
      * @param algorithm The algorithm name used for the {@link Mac} instance (e.g., "HmacSHA256").
      * @return An initialized {@link Mac} instance.
      * @throws UnsupportedDigestAlgorithmException if the given algorithm or key is not supported.
@@ -574,8 +747,7 @@ public class ScramScheme implements AuthScheme, Serializable {
             mac.init(new SecretKeySpec(key, algorithm));
         } catch (final NoSuchAlgorithmException e) {
             this.state = ScramState.FAILED;
-            throw new UnsupportedDigestAlgorithmException(
-                    "Unsupported algorithm in HTTP SCRAM authentication: " + algorithm);
+            throw new UnsupportedDigestAlgorithmException("Unsupported algorithm in HTTP SCRAM authentication: " + algorithm);
         } catch (final InvalidKeyException e) {
             this.state = ScramState.FAILED;
             throw new UnsupportedDigestAlgorithmException("Invalid key used for SCRAM authentication: " + e.getMessage(), e);
@@ -586,8 +758,8 @@ public class ScramScheme implements AuthScheme, Serializable {
     /**
      * Generates an HMAC value using the given key, message, and algorithm.
      *
-     * @param key The key used to compute the HMAC.
-     * @param message The message to be signed.
+     * @param key       The key used to compute the HMAC.
+     * @param message   The message to be signed.
      * @param algorithm The HMAC algorithm name (e.g., "HmacSHA256").
      * @return A byte array representing the HMAC value.
      */
@@ -599,8 +771,8 @@ public class ScramScheme implements AuthScheme, Serializable {
     /**
      * Generates an HMAC value using the given key and message.
      *
-     * @param key The key used to compute the HMAC.
-     * @param message The message to be signed.
+     * @param key       The key used to compute the HMAC.
+     * @param message   The message to be signed.
      * @param algorithm The HMAC algorithm name (e.g., "HmacSHA256").
      * @return A byte array representing the HMAC value.
      * @since 5.5
@@ -636,6 +808,11 @@ public class ScramScheme implements AuthScheme, Serializable {
         return result;
     }
 
+    private byte[] computeStoredKeyFromClientKey(final byte[] clientKey) {
+        final MessageDigest digester = createMessageDigest(mechanism.getHashFunction());
+        return digester.digest(clientKey);
+    }
+
 
     /**
      * Performs a byte-wise XOR operation on two byte arrays.
@@ -651,19 +828,6 @@ public class ScramScheme implements AuthScheme, Serializable {
         }
         return result;
     }
-    /**
-     * Computes the ServerKey for SCRAM authentication.
-     *
-     * @param saltedPassword The salted password derived from the client's password and server-provided salt.
-     * @param mechanism The SCRAM mechanism being used (e.g., SCRAM-SHA-256).
-     * @return The ServerKey as a byte array.
-     */
-    private byte[] computeServerKey(final byte[] saltedPassword, final ScramMechanism mechanism) {
-        return hmac(saltedPassword, "Server Key", mechanism.getHmacFunction());
-    }
-
-
-
 
     /**
      * Normalizes a given signature algorithm name by converting it to a consistent format.
@@ -714,14 +878,12 @@ public class ScramScheme implements AuthScheme, Serializable {
      * @return A {@link MessageDigest} instance for the specified algorithm.
      * @throws UnsupportedDigestAlgorithmException if the specified algorithm is not supported.
      */
-    private MessageDigest createMessageDigest(final String alg)
-            throws UnsupportedDigestAlgorithmException {
+    private MessageDigest createMessageDigest(final String alg) throws UnsupportedDigestAlgorithmException {
         try {
             return MessageDigest.getInstance(alg);
         } catch (final Exception e) {
             this.state = ScramState.FAILED;
-            throw new UnsupportedDigestAlgorithmException(
-                    "Unsupported algorithm in HTTP SCRAM authentication: " + alg);
+            throw new UnsupportedDigestAlgorithmException("Unsupported algorithm in HTTP SCRAM authentication: " + alg);
         }
     }
 
@@ -759,10 +921,9 @@ public class ScramScheme implements AuthScheme, Serializable {
      * @param sslSession The SSL session from which to obtain the server certificate.
      * @return A byte array representing the server's endpoint digest.
      * @throws CertificateEncodingException if an encoding issue occurs while accessing the server certificate.
-     * @throws SSLPeerUnverifiedException if the SSL peer cannot be verified.
+     * @throws SSLPeerUnverifiedException   if the SSL peer cannot be verified.
      */
-    private byte[] computeTlsServerEndPoint(final SSLSession sslSession)
-            throws CertificateEncodingException, SSLPeerUnverifiedException {
+    private byte[] computeTlsServerEndPoint(final SSLSession sslSession) throws CertificateEncodingException, SSLPeerUnverifiedException {
         final X509Certificate serverCert = (X509Certificate) sslSession.getPeerCertificates()[0];
         final String normalizedAlgorithm = normalizeAlgorithmName(serverCert.getSigAlgName());
         final ScramMechanism mechanism = ScramMechanism.fromDigestAlgorithm(normalizedAlgorithm);
@@ -788,19 +949,9 @@ public class ScramScheme implements AuthScheme, Serializable {
     /**
      * Represents different SCRAM mechanisms that are supported.
      * This enumeration includes variants such as SCRAM-SHA-1, SCRAM-SHA-256, and their "-PLUS" extensions for channel binding.
-     *
      */
     private enum ScramMechanism {
-        SCRAM_SHA_1("SCRAM-SHA-1","SHA-1","HmacSHA1", 160,4096),
-        SCRAM_SHA_1_PLUS("SCRAM-SHA-1-PLUS","SHA-1","HmacSHA1",160,4096),
-        SCRAM_SHA_224("SCRAM-SHA-224","SHA-224","HmacSHA224",224,4096),
-        SCRAM_SHA_224_PLUS("SCRAM-SHA-224-PLUS","SHA-224","HmacSHA224",224, 4096),
-        SCRAM_SHA_256("SCRAM-SHA-256","SHA-256","HmacSHA256",256,4096),
-        SCRAM_SHA_256_PLUS("SCRAM-SHA-256-PLUS","SHA-256","HmacSHA256",256, 4096),
-        SCRAM_SHA_384("SCRAM-SHA-384","SHA-384","HmacSHA384",384,4096),
-        SCRAM_SHA_384_PLUS("SCRAM-SHA-384-PLUS","SHA-384","HmacSHA384",384, 4096),
-        SCRAM_SHA_512("SCRAM-SHA-512","SHA-512","HmacSHA512",512,10000),
-        SCRAM_SHA_512_PLUS("SCRAM-SHA-512-PLUS","SHA-512","HmacSHA512",512,10000);
+        SCRAM_SHA_1("SCRAM-SHA-1", "SHA-1", "HmacSHA1", 160, 4096), SCRAM_SHA_1_PLUS("SCRAM-SHA-1-PLUS", "SHA-1", "HmacSHA1", 160, 4096), SCRAM_SHA_224("SCRAM-SHA-224", "SHA-224", "HmacSHA224", 224, 4096), SCRAM_SHA_224_PLUS("SCRAM-SHA-224-PLUS", "SHA-224", "HmacSHA224", 224, 4096), SCRAM_SHA_256("SCRAM-SHA-256", "SHA-256", "HmacSHA256", 256, 4096), SCRAM_SHA_256_PLUS("SCRAM-SHA-256-PLUS", "SHA-256", "HmacSHA256", 256, 4096), SCRAM_SHA_384("SCRAM-SHA-384", "SHA-384", "HmacSHA384", 384, 4096), SCRAM_SHA_384_PLUS("SCRAM-SHA-384-PLUS", "SHA-384", "HmacSHA384", 384, 4096), SCRAM_SHA_512("SCRAM-SHA-512", "SHA-512", "HmacSHA512", 512, 10000), SCRAM_SHA_512_PLUS("SCRAM-SHA-512-PLUS", "SHA-512", "HmacSHA512", 512, 10000);
 
         private final String schemeName;
         private final String hashFunction;
@@ -816,8 +967,8 @@ public class ScramScheme implements AuthScheme, Serializable {
         // Static block to populate cache maps
         static {
             for (final ScramMechanism mechanism : ScramMechanism.values()) {
-                SCHEME_NAME_CACHE.put(mechanism.schemeName.toLowerCase(), mechanism);
-                DIGEST_ALGORITHM_CACHE.put(mechanism.hashFunction.toLowerCase(), mechanism);
+                SCHEME_NAME_CACHE.put(mechanism.schemeName.toLowerCase(Locale.ROOT), mechanism);
+                DIGEST_ALGORITHM_CACHE.put(mechanism.hashFunction.toLowerCase(Locale.ROOT), mechanism);
             }
         }
 
@@ -895,7 +1046,7 @@ public class ScramScheme implements AuthScheme, Serializable {
             if (schemeName == null || schemeName.isEmpty()) {
                 throw new UnsupportedDigestAlgorithmException("SCRAM mechanism name must not be null or empty");
             }
-            final ScramMechanism mechanism = SCHEME_NAME_CACHE.get(schemeName.toLowerCase());
+            final ScramMechanism mechanism = SCHEME_NAME_CACHE.get(schemeName.toLowerCase(Locale.ROOT));
             if (mechanism == null) {
                 throw new UnsupportedDigestAlgorithmException("Unsupported algorithm: " + schemeName);
             }
@@ -913,15 +1064,13 @@ public class ScramScheme implements AuthScheme, Serializable {
             if (digestAlgorithm == null || digestAlgorithm.isEmpty()) {
                 throw new UnsupportedDigestAlgorithmException("Digest algorithm name must not be null or empty");
             }
-            final ScramMechanism mechanism = DIGEST_ALGORITHM_CACHE.get(digestAlgorithm.toLowerCase());
+            final ScramMechanism mechanism = DIGEST_ALGORITHM_CACHE.get(digestAlgorithm.toLowerCase(Locale.ROOT));
             if (mechanism == null) {
                 throw new UnsupportedDigestAlgorithmException("Unsupported digest algorithm: " + digestAlgorithm);
             }
             return mechanism;
         }
     }
-
-
 
 
     /**
@@ -941,7 +1090,6 @@ public class ScramScheme implements AuthScheme, Serializable {
      * </ul>
      * The state mechanism is crucial to maintaining the correct flow and preventing
      * unintended or out-of-sequence operations, which can lead to authentication failures.
-     *
      */
     private enum ScramState {
         INITIAL,             // Initial state before any message is sent.

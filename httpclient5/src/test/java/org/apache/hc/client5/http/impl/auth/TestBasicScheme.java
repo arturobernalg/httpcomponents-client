@@ -28,39 +28,25 @@ package org.apache.hc.client5.http.impl.auth;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
-import java.util.List;
 
 import org.apache.hc.client5.http.auth.AuthChallenge;
 import org.apache.hc.client5.http.auth.AuthScheme;
 import org.apache.hc.client5.http.auth.AuthScope;
 import org.apache.hc.client5.http.auth.AuthenticationException;
-import org.apache.hc.client5.http.auth.ChallengeType;
 import org.apache.hc.client5.http.auth.CredentialsProvider;
 import org.apache.hc.client5.http.auth.StandardAuthScheme;
 import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpRequest;
-import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.http.message.BasicHttpRequest;
-import org.apache.hc.core5.http.message.ParserCursor;
-import org.apache.hc.core5.util.CharArrayBuffer;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 /**
  * Basic authentication test cases.
  */
-class TestBasicScheme {
+class TestBasicScheme extends AbstractAuthTest {
     private static final Base64.Encoder BASE64_ENC = Base64.getEncoder();
-
-    private static AuthChallenge parse(final String s) throws ParseException {
-        final CharArrayBuffer buffer = new CharArrayBuffer(s.length());
-        buffer.append(s);
-        final ParserCursor cursor = new ParserCursor(0, buffer.length());
-        final List<AuthChallenge> authChallenges = AuthChallengeParser.INSTANCE.parse(ChallengeType.TARGET, buffer, cursor);
-        Assertions.assertEquals(1, authChallenges.size());
-        return authChallenges.get(0);
-    }
 
     @Test
     void testBasicAuthenticationEmptyChallenge() throws Exception {

@@ -220,44 +220,123 @@ public class HttpClientContext extends HttpCoreContext {
     private String nextNonce;
 
 
+    /**
+     * The TLS unique channel binding data.
+     * <p>
+     * This value represents the unique data extracted from a TLS session as part of the
+     * channel binding process for SCRAM-PLUS mechanisms (e.g., {@code tls-unique}).
+     * It is used to verify the integrity of the secure channel and prevent Man-in-the-Middle
+     * (MITM) attacks during the SCRAM authentication process.
+     * </p>
+     *
+     * @since 5.5
+     */
     private byte[] tlsUnique;
 
+    /**
+     * The server proof received during the SCRAM authentication exchange.
+     * <p>
+     * This value is a cryptographic signature provided by the server to prove possession
+     * of the shared secret. The client verifies this value against the expected server
+     * signature to ensure the authenticity of the server and the integrity of the exchange.
+     * </p>
+     *
+     * @since 5.5
+     */
     private String serverProof;
 
+    /**
+     * The type of channel binding used during SCRAM-PLUS authentication.
+     * <p>
+     * This field indicates the specific channel binding type, such as {@code tls-unique} or
+     * {@code tls-server-end-point}. Channel binding ensures that the authentication process
+     * is bound to the secure TLS channel, mitigating certain types of MITM attacks.
+     * </p>
+     *
+     * @since 5.5
+     */
     private String channelBindingType;
 
+
+    /**
+     * Gets the channel binding type used during SCRAM-PLUS authentication.
+     *
+     * @return The channel binding type, such as {@code tls-unique} or {@code tls-server-end-point}.
+     * @since 5.5
+     */
     public String getChannelBindingType() {
         return channelBindingType;
     }
 
+    /**
+     * Sets the channel binding type for SCRAM-PLUS authentication.
+     *
+     * @param channelBindingType The channel binding type to set.
+     * @since 5.5
+     */
     public void setChannelBindingType(final String channelBindingType) {
         this.channelBindingType = channelBindingType;
     }
 
+    /**
+     * Constructs an {@link HttpClientContext} instance by wrapping an existing {@link HttpContext}.
+     *
+     * @param context The existing HTTP context to wrap.
+     * @since 5.5
+     */
     public HttpClientContext(final HttpContext context) {
         super(context);
     }
 
+    /**
+     * Constructs a default {@link HttpClientContext} instance.
+     *
+     * @since 5.5
+     */
     public HttpClientContext() {
         super();
     }
 
-
+    /**
+     * Gets the TLS unique channel binding data.
+     *
+     * @return The TLS unique data as a byte array, or {@code null} if not set.
+     * @since 5.5
+     */
     public byte[] getTlsUnique() {
         return tlsUnique;
     }
 
+    /**
+     * Sets the TLS unique channel binding data.
+     *
+     * @param tlsUnique The TLS unique data to set.
+     * @since 5.5
+     */
     public void setTlsUnique(final byte[] tlsUnique) {
         this.tlsUnique = tlsUnique;
     }
 
+    /**
+     * Gets the server proof used during SCRAM authentication.
+     *
+     * @return The server proof as a {@link String}, or {@code null} if not set.
+     * @since 5.5
+     */
     public String getServerProof() {
         return serverProof;
     }
 
+    /**
+     * Sets the server proof for SCRAM authentication.
+     *
+     * @param serverProof The server proof to set.
+     * @since 5.5
+     */
     public void setServerProof(final String serverProof) {
         this.serverProof = serverProof;
     }
+
 
     /**
      * Represents current route used to execute message exchanges.
