@@ -27,12 +27,14 @@
 
 package org.apache.hc.client5.http.entity.mime;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.NameValuePair;
 import org.apache.hc.core5.http.message.BasicNameValuePair;
+import org.apache.hc.core5.net.PercentCodec;
 import org.apache.hc.core5.util.Args;
 import org.apache.hc.core5.util.Asserts;
 
@@ -46,6 +48,7 @@ public class FormBodyPartBuilder {
     private String name;
     private ContentBody body;
     private final Header header;
+    private HttpMultipartMode mode;
 
     public static FormBodyPartBuilder create(final String name, final ContentBody body) {
         return new FormBodyPartBuilder(name, body);
@@ -96,10 +99,59 @@ public class FormBodyPartBuilder {
         return this;
     }
 
+    /**
+     * Sets the multipart mode for this builder, determining how filenames are encoded in the
+     * {@code Content-Disposition} header. The mode affects whether the {@code filename*} parameter
+     * is included for non-ISO-8859-1 filenames.
+     * <p>
+     * In {@link HttpMultipartMode#LEGACY} mode, only the {@code filename} parameter is included
+     * with the raw value, mimicking pre-RFC 7578 behavior. In {@link HttpMultipartMode#STRICT}
+     * or {@link HttpMultipartMode#EXTENDED} modes, the {@code filename*} parameter is added
+     * with RFC 5987 encoding for filenames containing non-ISO-8859-1 characters.
+     * </p>
+     * <p>
+     * If {@code mode} is {@code null}, it defaults to {@link HttpMultipartMode#STRICT}.
+     * </p>
+     *
+     * @param mode the {@link HttpMultipartMode} to use, or {@code null} for default behavior
+     * @return this builder instance for method chaining
+     * @since 5.5
+     */
+    public FormBodyPartBuilder setMode(final HttpMultipartMode mode) {
+        this.mode = mode != null ? mode : HttpMultipartMode.STRICT;
+        return this;
+    }
+
     public FormBodyPartBuilder removeFields(final String name) {
         Args.notNull(name, "Field name");
         this.header.removeFields(name);
         return this;
+    }
+
+    /**
+     * Determines whether the given string can be encoded in ISO-8859-1 without loss of data.
+     * This is used to decide whether the {@code filename} parameter can be used as-is or if
+     * the {@code filename*} parameter is needed for non-ISO-8859-1 characters.
+     *
+     * @param input the string to check, must not be {@code null}
+     * @return {@code true} if the string can be encoded in ISO-8859-1, {@code false} otherwise
+     * @since 5.5
+     */
+    private static boolean canEncodeToISO8859_1(final String input) {
+        return StandardCharsets.ISO_8859_1.newEncoder().canEncode(input);
+    }
+
+    /**
+     * Encodes the given filename according to RFC 5987, prefixing it with {@code UTF-8''} and
+     * applying percent-encoding to non-ASCII characters. This is used for the {@code filename*}
+     * parameter in the {@code Content-Disposition} header when non-ISO-8859-1 characters are present.
+     *
+     * @param filename the filename to encode, must not be {@code null}
+     * @return the RFC 5987-encoded string, e.g., {@code UTF-8''example%20text}
+     * @since 5.5
+     */
+    private static String encodeRFC5987(final String filename) {
+        return "UTF-8''" + PercentCodec.RFC5987.encode(filename);
     }
 
     public FormBodyPart build() {
@@ -114,7 +166,12 @@ public class FormBodyPartBuilder {
             final List<NameValuePair> fieldParameters = new ArrayList<>();
             fieldParameters.add(new BasicNameValuePair(MimeConsts.FIELD_PARAM_NAME, this.name));
             if (this.body.getFilename() != null) {
-                fieldParameters.add(new BasicNameValuePair(MimeConsts.FIELD_PARAM_FILENAME, this.body.getFilename()));
+                final String filename = this.body.getFilename();
+                fieldParameters.add(new BasicNameValuePair(MimeConsts.FIELD_PARAM_FILENAME, filename));
+                // Add filename* only if non-ISO-8859-1 and not in LEGACY mode
+                if (mode != HttpMultipartMode.LEGACY && !canEncodeToISO8859_1(filename)) {
+                    fieldParameters.add(new BasicNameValuePair(MimeConsts.FIELD_PARAM_FILENAME_START, encodeRFC5987(filename)));
+                }
             }
             headerCopy.addField(new MimeField(MimeConsts.CONTENT_DISPOSITION, "form-data", fieldParameters));
         }
