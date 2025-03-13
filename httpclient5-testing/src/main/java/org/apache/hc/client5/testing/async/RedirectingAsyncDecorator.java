@@ -34,6 +34,7 @@ import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.apache.hc.client5.http.utils.URIUtils;
 import org.apache.hc.client5.testing.redirect.Redirect;
 import org.apache.hc.client5.testing.redirect.RedirectResolver;
 import org.apache.hc.core5.http.EntityDetails;
@@ -41,6 +42,7 @@ import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HeaderElements;
 import org.apache.hc.core5.http.HttpException;
 import org.apache.hc.core5.http.HttpHeaders;
+import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpRequest;
 import org.apache.hc.core5.http.HttpResponse;
 import org.apache.hc.core5.http.ProtocolException;
@@ -97,6 +99,19 @@ public class RedirectingAsyncDecorator implements AsyncServerExchangeHandler {
                               final HttpContext context) throws HttpException, IOException {
         final Redirect redirect = resolveRedirect(request);
         if (redirect != null) {
+            HttpHost requestHost = null;
+            HttpHost redirectHost = null;
+            try {
+                requestHost = URIUtils.extractHost(request.getUri());
+                redirectHost = URIUtils.extractHost(URI.create(redirect.location));
+            } catch (final Exception ignored) {
+            }
+
+            if (requestHost != null && redirectHost != null && !requestHost.equals(redirectHost)) {
+                request.removeHeaders(HttpHeaders.AUTHORIZATION);
+                request.removeHeaders(HttpHeaders.COOKIE);
+            }
+
             responseChannel.sendResponse(createRedirectResponse(redirect), null, context);
             redirecting.set(true);
         } else {

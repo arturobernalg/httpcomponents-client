@@ -38,6 +38,7 @@ import org.apache.hc.core5.annotation.ThreadingBehavior;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpException;
 import org.apache.hc.core5.http.HttpHeaders;
+import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpRequest;
 import org.apache.hc.core5.http.HttpResponse;
 import org.apache.hc.core5.http.HttpStatus;
@@ -106,6 +107,18 @@ public class DefaultRedirectStrategy implements RedirectStrategy {
             }
         } catch (final URISyntaxException ex) {
             throw new ProtocolException(ex.getMessage(), ex);
+        }
+
+        try {
+            final HttpHost extractHostRequest = URIUtils.extractHost(request.getUri());
+            final HttpHost extractHostUri = URIUtils.extractHost(uri);
+            if (extractHostRequest != null && extractHostUri != null && !extractHostRequest.equals(extractHostUri)) {
+                request.removeHeaders(HttpHeaders.AUTHORIZATION);
+                request.removeHeaders(HttpHeaders.COOKIE);
+            }
+        } catch (final URISyntaxException e) {
+            throw new ProtocolException(e.getMessage(), e);
+
         }
 
         return uri;

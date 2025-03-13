@@ -249,4 +249,21 @@ class TestDefaultRedirectStrategy {
         Assertions.assertEquals(URI.create("http://localhost/foo;bar=baz"), locationURI);
     }
 
+
+    @Test
+    void testAuthorizationHeaderStrippedOnCrossOriginRedirect() throws Exception {
+        final DefaultRedirectStrategy redirectStrategy = new DefaultRedirectStrategy();
+        final HttpClientContext context = HttpClientContext.create();
+        final HttpGet httpget = new HttpGet("http://source.com/");
+        httpget.addHeader(HttpHeaders.AUTHORIZATION, "Bearer test-token");
+
+        final HttpResponse response = new BasicHttpResponse(HttpStatus.SC_MOVED_TEMPORARILY, "Redirect");
+        response.setHeader(HttpHeaders.LOCATION, "http://destination.com/");
+
+        final URI locationUri = redirectStrategy.getLocationURI(httpget, response, context);
+
+        Assertions.assertEquals(URI.create("http://destination.com/"), locationUri);
+        Assertions.assertNull(httpget.getFirstHeader(HttpHeaders.AUTHORIZATION));
+    }
+
 }
