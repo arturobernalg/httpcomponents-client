@@ -199,4 +199,18 @@ public interface ExecRuntime {
      */
     ExecRuntime fork(CancellableDependency cancellableAware);
 
+    /**
+     * Determines whether the current endpoint is potentially stale.
+     * A potentially stale endpoint is one that has been idle beyond the configured
+     * validation period but has not yet been confirmed as actually stale (e.g., half-closed).
+     * This method is used to decide whether additional protocol mechanisms, such as
+     * Expect: 100-continue, should be applied to verify the connection's viability.
+     *
+     * @return {@code true} if the endpoint is potentially stale, {@code false} otherwise.
+     * @since 5.5
+     */
+    default boolean isEndpointPotentiallyStale() {
+        return false;
+    }
+
 }

@@ -31,7 +31,6 @@ import java.io.IOException;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -305,10 +304,25 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
         return new LeaseRequest() {
 
             @Override
-            public ConnectionEndpoint get(
-                    final Timeout timeout) throws InterruptedException, ExecutionException, TimeoutException {
+            public ConnectionEndpoint get(final Timeout timeout) throws ExecutionException {
                 try {
-                    return new InternalConnectionEndpoint(route, getConnection(route, state));
+                    final ManagedHttpClientConnection conn = getConnection(route, state);
+                    boolean isPotentiallyStale = false;
+                    final TimeValue timeValue = connectionConfig.getValidateAfterInactivity() != null ?
+                            connectionConfig.getValidateAfterInactivity() : TimeValue.ofSeconds(2);
+                    if (TimeValue.isNonNegative(timeValue)) {
+                        final Deadline deadline = Deadline.calculate(updated, timeValue);
+                        if (deadline.isExpired() && conn != null && conn.isOpen()) {
+                            try {
+                                if (!conn.isStale()) {
+                                    isPotentiallyStale = true;
+                                }
+                            } catch (final IOException ignore) {
+                                // Ignore
+                            }
+                        }
+                    }
+                    return new InternalConnectionEndpoint(route, conn, isPotentiallyStale);
                 } catch (final IOException ex) {
                     throw new ExecutionException(ex.getMessage(), ex);
                 }
@@ -594,10 +608,12 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
 
         private final HttpRoute route;
         private final AtomicReference<ManagedHttpClientConnection> connRef;
+        private final boolean isPotentiallyStale;
 
-        public InternalConnectionEndpoint(final HttpRoute route, final ManagedHttpClientConnection conn) {
+        public InternalConnectionEndpoint(final HttpRoute route, final ManagedHttpClientConnection conn, final boolean isPotentiallyStale) {
             this.route = route;
             this.connRef = new AtomicReference<>(conn);
+            this.isPotentiallyStale = isPotentiallyStale;
         }
 
         @Override
@@ -701,6 +717,11 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
                 return new EndpointInfo(connection.getProtocolVersion(), connection.getSSLSession());
             }
             return null;
+        }
+
+        @Override
+        public boolean isPotentiallyStale() {
+            return this.isPotentiallyStale;
         }
 
     }
