@@ -309,4 +309,10 @@ class InternalExecRuntime implements ExecRuntime, Cancellable {
         return new InternalExecRuntime(log, manager, requestExecutor, cancellableDependency);
     }
 
+    @Override
+    public boolean isEndpointPotentiallyStale() {
+        final ConnectionEndpoint endpoint = endpointRef.get();
+        return endpoint != null && endpoint.isPotentiallyStale();
+    }
+
 }

@@ -120,4 +120,17 @@ public abstract class ConnectionEndpoint implements ModalCloseable {
 
     }
 
+    /**
+     * Determines whether this connection endpoint is potentially stale.
+     * A potentially stale endpoint is one that has been idle beyond the configured
+     * validation period but has not yet been confirmed as actually stale (e.g., half-closed).
+     * This status can influence protocol behavior, such as triggering Expect: 100-continue
+     * to verify the connection before sending a request body.
+     *
+     * @return {@code true} if the endpoint is potentially stale, {@code false} otherwise.
+     */
+    public boolean isPotentiallyStale() {
+        return false;
+    }
+
 }

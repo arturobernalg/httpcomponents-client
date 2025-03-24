@@ -64,12 +64,14 @@ public class RequestConfig implements Cloneable {
     private final boolean hardCancellationEnabled;
     private final boolean protocolUpgradeEnabled;
 
+    private final boolean expectContinueOnStaleEnabled;
+
     /**
      * Intended for CDI compatibility
     */
     protected RequestConfig() {
         this(false, null, null, false, false, 0, false, null, null,
-                DEFAULT_CONNECTION_REQUEST_TIMEOUT, null, null, DEFAULT_CONN_KEEP_ALIVE, false, false, false);
+                DEFAULT_CONNECTION_REQUEST_TIMEOUT, null, null, DEFAULT_CONN_KEEP_ALIVE, false, false, false, false);
     }
 
     RequestConfig(
@@ -88,7 +90,8 @@ public class RequestConfig implements Cloneable {
             final TimeValue connectionKeepAlive,
             final boolean contentCompressionEnabled,
             final boolean hardCancellationEnabled,
-            final boolean protocolUpgradeEnabled) {
+            final boolean protocolUpgradeEnabled,
+            final boolean expectContinueOnStaleEnabled) {
         super();
         this.expectContinueEnabled = expectContinueEnabled;
         this.proxy = proxy;
@@ -106,6 +109,7 @@ public class RequestConfig implements Cloneable {
         this.contentCompressionEnabled = contentCompressionEnabled;
         this.hardCancellationEnabled = hardCancellationEnabled;
         this.protocolUpgradeEnabled = protocolUpgradeEnabled;
+        this.expectContinueOnStaleEnabled = expectContinueOnStaleEnabled;
     }
 
     /**
@@ -227,6 +231,23 @@ public class RequestConfig implements Cloneable {
         return protocolUpgradeEnabled;
     }
 
+    /**
+     * Determines whether the Expect: 100-continue handshake is enabled for potentially stale connections.
+     * When this property is {@code true}, the client adds the Expect: 100-continue header to requests with
+     * an entity when the connection is deemed potentially stale, allowing the server to validate the
+     * connection before the request body is sent. This is particularly relevant for non-idempotent
+     * requests, such as POST, to ensure connection viability. If {@code false}, the header is not added
+     * based on connection staleness, though it may still be added if {@link #isExpectContinueEnabled()}
+     * returns {@code true}. The default value is {@code false}.
+     *
+     * @return {@code true} if Expect: 100-continue is enabled for potentially stale connections,
+     *         {@code false} otherwise.
+     * @since 5.5
+     */
+    public boolean isExpectContinueOnStaleEnabled() {
+        return expectContinueOnStaleEnabled;
+    }
+
     @Override
     protected RequestConfig clone() throws CloneNotSupportedException {
         return (RequestConfig) super.clone();
@@ -252,6 +273,7 @@ public class RequestConfig implements Cloneable {
         builder.append(", contentCompressionEnabled=").append(contentCompressionEnabled);
         builder.append(", hardCancellationEnabled=").append(hardCancellationEnabled);
         builder.append(", protocolUpgradeEnabled=").append(protocolUpgradeEnabled);
+        builder.append(", expectContinueOnStaleEnabled=").append(expectContinueOnStaleEnabled);
         builder.append("]");
         return builder.toString();
     }
@@ -277,7 +299,8 @@ public class RequestConfig implements Cloneable {
             .setConnectionKeepAlive(config.getConnectionKeepAlive())
             .setContentCompressionEnabled(config.isContentCompressionEnabled())
             .setHardCancellationEnabled(config.isHardCancellationEnabled())
-            .setProtocolUpgradeEnabled(config.isProtocolUpgradeEnabled());
+            .setProtocolUpgradeEnabled(config.isProtocolUpgradeEnabled())
+            .setExpectContinueOnStaleEnabled(config.isExpectContinueOnStaleEnabled());
     }
 
     public static class Builder {
@@ -298,6 +321,7 @@ public class RequestConfig implements Cloneable {
         private boolean contentCompressionEnabled;
         private boolean hardCancellationEnabled;
         private boolean protocolUpgradeEnabled;
+        private boolean expectContinueOnStaleEnabled;
 
         Builder() {
             super();
@@ -629,6 +653,26 @@ public class RequestConfig implements Cloneable {
             return this;
         }
 
+        /**
+         * Sets whether to enable the Expect: 100-continue handshake for potentially stale connections.
+         * When enabled, this option instructs the client to add the Expect: 100-continue header to requests
+         * with an entity when the connection is deemed potentially stale, allowing the server to validate
+         * the connection before the request body is sent. This is particularly useful for non-idempotent
+         * requests, such as POST, to avoid sending large payloads over connections that may no longer be
+         * viable. If set to {@code false}, the header will not be added based on connection staleness,
+         * though it may still be added if {@link #setExpectContinueEnabled(boolean)} is set to {@code true}.
+         * The default value is {@code false}.
+         *
+         * @param expectContinueOnStaleEnabled {@code true} to enable Expect: 100-continue for potentially
+         *                                     stale connections, {@code false} to disable it.
+         * @return this Builder instance for method chaining.
+         * @since 5.5
+         */
+        public Builder setExpectContinueOnStaleEnabled(final boolean expectContinueOnStaleEnabled) {
+            this.expectContinueOnStaleEnabled = expectContinueOnStaleEnabled;
+            return this;
+        }
+
         public RequestConfig build() {
             return new RequestConfig(
                     expectContinueEnabled,
@@ -646,7 +690,8 @@ public class RequestConfig implements Cloneable {
                     connectionKeepAlive != null ? connectionKeepAlive : DEFAULT_CONN_KEEP_ALIVE,
                     contentCompressionEnabled,
                     hardCancellationEnabled,
-                    protocolUpgradeEnabled);
+                    protocolUpgradeEnabled,
+                    expectContinueOnStaleEnabled);
         }
 
     }

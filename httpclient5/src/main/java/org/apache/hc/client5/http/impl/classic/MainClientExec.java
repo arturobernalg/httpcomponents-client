@@ -36,6 +36,7 @@ import org.apache.hc.client5.http.UserTokenHandler;
 import org.apache.hc.client5.http.classic.ExecChain;
 import org.apache.hc.client5.http.classic.ExecChainHandler;
 import org.apache.hc.client5.http.classic.ExecRuntime;
+import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.impl.ConnectionShutdownException;
 import org.apache.hc.client5.http.impl.ProtocolSwitchStrategy;
 import org.apache.hc.client5.http.io.HttpClientConnectionManager;
@@ -46,9 +47,12 @@ import org.apache.hc.core5.annotation.ThreadingBehavior;
 import org.apache.hc.core5.http.ClassicHttpRequest;
 import org.apache.hc.core5.http.ClassicHttpResponse;
 import org.apache.hc.core5.http.ConnectionReuseStrategy;
+import org.apache.hc.core5.http.HeaderElements;
 import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.HttpException;
+import org.apache.hc.core5.http.HttpHeaders;
 import org.apache.hc.core5.http.HttpStatus;
+import org.apache.hc.core5.http.Method;
 import org.apache.hc.core5.http.ProtocolException;
 import org.apache.hc.core5.http.ProtocolVersion;
 import org.apache.hc.core5.http.protocol.HttpProcessor;
@@ -114,6 +118,22 @@ public final class MainClientExec implements ExecChainHandler {
             // Run request protocol interceptors
             context.setRoute(route);
             context.setRequest(request);
+
+            final RequestConfig config = context.getRequestConfig();
+            if (request.getEntity() != null && !Method.isIdempotent(request.getMethod())) {
+                final boolean isPotentiallyStale = execRuntime.isEndpointPotentiallyStale();
+                if (config != null && config.isExpectContinueOnStaleEnabled() && isPotentiallyStale) {
+                    request.setHeader(HttpHeaders.EXPECT, HeaderElements.CONTINUE);
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("{} added Expect: 100-continue due to potentially stale connection", exchangeId);
+                    }
+                } else if (config != null && config.isExpectContinueEnabled()) {
+                    request.setHeader(HttpHeaders.EXPECT, HeaderElements.CONTINUE);
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("{} added Expect: 100-continue (always enabled)", exchangeId);
+                    }
+                }
+            }
 
             httpProcessor.process(request, request.getEntity(), context);
 

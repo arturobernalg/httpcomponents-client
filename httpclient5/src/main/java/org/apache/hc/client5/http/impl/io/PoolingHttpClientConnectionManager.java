@@ -360,6 +360,7 @@ public class PoolingHttpClientConnectionManager
                                 }
                             }
                         }
+                        boolean isPotentiallyStale = false;
                         if (poolEntry.hasConnection()) {
                             final TimeValue timeValue = resolveValidateAfterInactivity(connectionConfig);
                             if (TimeValue.isNonNegative(timeValue)) {
@@ -377,6 +378,8 @@ public class PoolingHttpClientConnectionManager
                                             LOG.debug("{} connection {} is stale", id, ConnPoolSupport.getId(conn));
                                         }
                                         poolEntry.discardConnection(CloseMode.IMMEDIATE);
+                                    } else {
+                                        isPotentiallyStale = true;
                                     }
                                 }
                             }
@@ -386,8 +389,9 @@ public class PoolingHttpClientConnectionManager
                             conn.activate();
                         } else {
                             poolEntry.assignConnection(connFactory.createConnection(null));
+                            isPotentiallyStale = false;
                         }
-                        this.endpoint = new InternalConnectionEndpoint(poolEntry);
+                        this.endpoint = new InternalConnectionEndpoint(poolEntry, isPotentiallyStale);
                         if (LOG.isDebugEnabled()) {
                             LOG.debug("{} acquired {}", id, ConnPoolSupport.getId(endpoint));
                         }
@@ -693,16 +697,22 @@ public class PoolingHttpClientConnectionManager
 
         private final AtomicReference<PoolEntry<HttpRoute, ManagedHttpClientConnection>> poolEntryRef;
         private final String id;
+        private final boolean isPotentiallyStale;
 
         InternalConnectionEndpoint(
-                final PoolEntry<HttpRoute, ManagedHttpClientConnection> poolEntry) {
+                final PoolEntry<HttpRoute, ManagedHttpClientConnection> poolEntry, final boolean isPotentiallyStale) {
             this.poolEntryRef = new AtomicReference<>(poolEntry);
             this.id = INCREMENTING_ID.getNextId();
+            this.isPotentiallyStale = isPotentiallyStale;
         }
 
         @Override
         public String getId() {
             return id;
+        }
+
+        public boolean isPotentiallyStale() {
+            return isPotentiallyStale;
         }
 
         PoolEntry<HttpRoute, ManagedHttpClientConnection> getPoolEntry() {
