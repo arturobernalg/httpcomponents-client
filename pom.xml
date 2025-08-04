@@ -216,11 +216,37 @@
         <artifactId>zstd-jni</artifactId>
         <version>${zstd.jni.version}</version>
       </dependency>
+
+      <dependency>
+        <groupId>io.micrometer</groupId>
+        <artifactId>micrometer-observation</artifactId>
+        <version>1.15.2</version>
+      </dependency>
+      <!-- Optional add-ons chosen by the user -->
+      <dependency>
+        <groupId>io.micrometer</groupId>
+        <artifactId>micrometer-registry-prometheus</artifactId>
+        <version>1.15.2</version>
+        <scope>runtime</scope>
+      </dependency>
+      <dependency>
+        <groupId>io.micrometer</groupId>
+        <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        <version>1.5.2</version>
+        <scope>runtime</scope>
+      </dependency>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-sdk</artifactId>
+        <version>1.52.0</version>
+        <scope>runtime</scope>
+      </dependency>
     </dependencies>
   </dependencyManagement>
 
   <modules>
     <module>httpclient5</module>
+    <module>httpclient5-observation</module>
     <module>httpclient5-fluent</module>
     <module>httpclient5-cache</module>
     <module>httpclient5-testing</module>
