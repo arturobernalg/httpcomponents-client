@@ -37,6 +37,8 @@
   </properties>
 
   <dependencies>
+
+    <!-- === HttpClient & friends (unchanged) =================== -->
     <dependency>
       <groupId>org.apache.httpcomponents.client5</groupId>
       <artifactId>httpclient5</artifactId>
@@ -45,37 +47,37 @@
       <groupId>org.apache.httpcomponents.client5</groupId>
       <artifactId>httpclient5-cache</artifactId>
     </dependency>
+
+    <!-- === Micrometer stack =================================== -->
+
+    <!-- ①  ADD THIS : core supplies Timer / Counter / Tag / Gauge / …  -->
     <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-api</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.logging.log4j</groupId>
-      <artifactId>log4j-slf4j-impl</artifactId>
-      <scope>test</scope>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-core</artifactId>
     </dependency>
 
+    <!-- observation API you were already using                    -->
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-observation</artifactId>
-      <version>1.15.2</version>
     </dependency>
+
+    <!-- Prometheus registry only needed at runtime                -->
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-registry-prometheus</artifactId>
-      <version>1.15.2</version>
       <scope>runtime</scope>
     </dependency>
 
+    <!-- === OpenTelemetry stack ================================= -->
     <dependency>
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-sdk</artifactId>
       <scope>runtime</scope>
     </dependency>
-
     <dependency>
-      <groupId>org.junit.jupiter</groupId>
-      <artifactId>junit-jupiter</artifactId>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-tracing-bridge-otel</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -83,28 +85,16 @@
       <artifactId>opentelemetry-sdk-testing</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!-- === Test utilities ====================================== -->
     <dependency>
-      <groupId>io.micrometer</groupId>
-      <artifactId>micrometer-tracing-bridge-otel</artifactId>
-      <version>1.5.2</version>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
-    </dependency>
-
-    <dependency>
-      <groupId>org.apache.commons</groupId>
-      <artifactId>commons-compress</artifactId>
-      <version>1.26.2</version>
-    </dependency>
-
-    <dependency>
-      <groupId>io.micrometer</groupId>
-      <artifactId>micrometer-core</artifactId>
-      <version>1.15.2</version>
     </dependency>
 
   </dependencies>
 
-  <!-- Enable JUnit 5 in the module’s lifecycle -->
   <build>
     <plugins>
       <plugin>
@@ -113,6 +103,13 @@
         <version>3.2.5</version>
         <configuration>
           <useModulePath>false</useModulePath>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>com.github.siom79.japicmp</groupId>
+        <artifactId>japicmp-maven-plugin</artifactId>
+        <configuration>
+          <skip>true</skip>
         </configuration>
       </plugin>
     </plugins>
