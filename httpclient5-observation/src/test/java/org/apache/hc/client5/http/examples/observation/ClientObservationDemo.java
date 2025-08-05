@@ -1,3 +1,29 @@
+/*
+ * ====================================================================
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ * ====================================================================
+ *
+ * This software consists of voluntary contributions made by many
+ * individuals on behalf of the Apache Software Foundation.  For more
+ * information on the Apache Software Foundation, please see
+ * <http://www.apache.org/>.
+ *
+ */
 package org.apache.hc.client5.http.examples.observation;
 
 import java.net.URI;
@@ -18,7 +44,7 @@ import org.apache.hc.client5.http.impl.cache.CachingHttpClientBuilder;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
-import org.apache.hc.client5.http.observation.impl.HttpClientObservationSupport;
+import org.apache.hc.client5.http.observation.HttpClientObservationSupport;
 import org.apache.hc.core5.http.ClassicHttpResponse;
 import org.apache.hc.core5.http.io.support.ClassicRequestBuilder;
 import org.apache.hc.core5.http.message.StatusLine;
@@ -39,14 +65,13 @@ public final class ClientObservationDemo {
 
         /* ---------- CLASSIC client ---------- */
         final HttpClientBuilder cb = HttpClients.custom();
-        HttpClientObservationSupport.enable(cb, registry);
+        HttpClientObservationSupport.enable(cb, registry);   // classic overload
         try (final CloseableHttpClient classic = cb.build()) {
 
             final ClassicHttpResponse res = classic.executeOpen(
                     null,
                     ClassicRequestBuilder.get(URL1).build(),
-                    null
-            );
+                    null);
             System.out.println("[classic]        " + new StatusLine(res));
             res.close();
         }
@@ -59,22 +84,22 @@ public final class ClientObservationDemo {
             final ClassicHttpResponse res = cached.executeOpen(
                     null,
                     ClassicRequestBuilder.get(URL2).build(),
-                    null
-            );
+                    null);
             System.out.println("[classic-cache]  " + new StatusLine(res));
             res.close();
         }
 
         /* ---------- ASYNC client ---------- */
         final HttpAsyncClientBuilder ab = HttpAsyncClients.custom();
-        HttpClientObservationSupport.enable(ab, registry);
+        HttpClientObservationSupport.enable(ab, registry);   // async overload
 
         try (final CloseableHttpAsyncClient async = ab.build()) {
             async.start();
 
             final SimpleHttpRequest req = SimpleRequestBuilder.get(URL1).build();
             final Future<SimpleHttpResponse> fut = async.execute(req, null, null);
-            System.out.println("[async]          " + fut.get(10, TimeUnit.SECONDS).getCode());
+            System.out.println("[async]          "
+                    + fut.get(10, TimeUnit.SECONDS).getCode());
 
             async.close(CloseMode.GRACEFUL);
         }

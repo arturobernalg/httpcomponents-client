@@ -48,7 +48,7 @@ import org.apache.hc.core5.http.nio.AsyncEntityProducer;
  *
  * @since 5.6
  */
-final class ObservationAsyncExecInterceptor implements AsyncExecChainHandler {
+public final class ObservationAsyncExecInterceptor implements AsyncExecChainHandler {
 
     private final ObservationRegistry registry;
 
@@ -57,7 +57,7 @@ final class ObservationAsyncExecInterceptor implements AsyncExecChainHandler {
      *
      * @param registry the observation registry
      */
-    ObservationAsyncExecInterceptor(final ObservationRegistry registry) {
+    public ObservationAsyncExecInterceptor(final ObservationRegistry registry) {
         this.registry = registry;
     }
 
