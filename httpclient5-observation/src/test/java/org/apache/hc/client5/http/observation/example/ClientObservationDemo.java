@@ -24,7 +24,7 @@
  * <http://www.apache.org/>.
  *
  */
-package org.apache.hc.client5.http.example;
+package org.apache.hc.client5.http.observation.example;
 
 import java.net.URI;
 import java.util.concurrent.Future;

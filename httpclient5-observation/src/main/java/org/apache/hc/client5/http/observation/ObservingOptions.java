@@ -32,16 +32,42 @@ import java.util.function.Predicate;
 import io.micrometer.observation.ObservationPredicate;
 import org.apache.hc.core5.util.Args;
 
+/**
+ * Immutable container with all user–tunable knobs for HttpClient
+ * metrics / tracing instrumentation.
+ *
+ * @since 5.6
+ */
 public final class ObservingOptions {
+
+    /* ------------------------------------------------------------------ */
+    /* What to measure                                                    */
+    /* ------------------------------------------------------------------ */
 
     public enum MetricSet { BASIC, IO, CONN_POOL, TLS, DNS }
 
+    /* ------------------------------------------------------------------ */
+    /* How many tags each metric/trace should get                         */
+    /* ------------------------------------------------------------------ */
+
     public enum TagLevel { LOW, EXTENDED }
+
+    /* ------------------------------------------------------------------ */
+    /* Fields (all public for GC-free reads in hot paths)                 */
+    /* ------------------------------------------------------------------ */
 
     public final EnumSet<MetricSet> metricSets;
     public final TagLevel tagLevel;
-    public final ObservationPredicate micrometerFilter;    // executed inside Micrometer
-    public final Predicate<String> spanSampling;           // cheap pre-filter on URI (or any predicate)
+    public final ObservationPredicate micrometerFilter;
+    public final Predicate<String> spanSampling;
+
+    /* Convenience – “everything on” ------------------------------------ */
+
+    public static EnumSet<MetricSet> allMetricSets() {
+        return EnumSet.allOf(MetricSet.class);
+    }
+
+    /* Builder ----------------------------------------------------------- */
 
     public static Builder builder() {
         return new Builder();
@@ -49,27 +75,27 @@ public final class ObservingOptions {
 
     public static final class Builder {
         private EnumSet<MetricSet> sets = EnumSet.of(MetricSet.BASIC);
-        private TagLevel tagLevel = TagLevel.LOW;
-        private ObservationPredicate micrometer = (n, c) -> true;
-        private Predicate<String> spanPred = uri -> true;
+        private TagLevel tag = TagLevel.LOW;
+        private ObservationPredicate obs = (n, c) -> true;
+        private Predicate<String> span = uri -> true;
 
-        public Builder metrics(final EnumSet<MetricSet> sets) {
-            this.sets = EnumSet.copyOf(sets);
+        public Builder metrics(final EnumSet<MetricSet> s) {
+            sets = EnumSet.copyOf(s);
             return this;
         }
 
-        public Builder tagLevel(final TagLevel l) {
-            this.tagLevel = Args.notNull(l, "Tag level");
+        public Builder tagLevel(final TagLevel t) {
+            tag = Args.notNull(t, "tag");
             return this;
         }
 
         public Builder micrometerFilter(final ObservationPredicate p) {
-            this.micrometer = Args.notNull(p, "predicate");
+            obs = Args.notNull(p, "pred");
             return this;
         }
 
         public Builder spanSampling(final Predicate<String> p) {
-            this.spanPred = Args.notNull(p, "span predicate");
+            span = Args.notNull(p, "pred");
             return this;
         }
 
@@ -78,12 +104,14 @@ public final class ObservingOptions {
         }
     }
 
+    /* Default – BASIC metrics, LOW tag level --------------------------- */
+
     public static final ObservingOptions DEFAULT = builder().build();
 
     private ObservingOptions(final Builder b) {
-        this.metricSets = b.sets;
-        this.tagLevel = b.tagLevel;
-        this.micrometerFilter = b.micrometer;
-        this.spanSampling = b.spanPred;
+        metricSets = b.sets;
+        tagLevel = b.tag;
+        micrometerFilter = b.obs;
+        spanSampling = b.span;
     }
 }

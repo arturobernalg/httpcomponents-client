@@ -26,6 +26,7 @@
  */
 package org.apache.hc.client5.http.observation;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.observation.ObservationRegistry;
 import org.apache.hc.client5.http.impl.ChainElement;
@@ -34,105 +35,147 @@ import org.apache.hc.client5.http.impl.cache.CachingHttpAsyncClientBuilder;
 import org.apache.hc.client5.http.impl.cache.CachingHttpClientBuilder;
 import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.observation.binder.ConnPoolMeters;
+import org.apache.hc.client5.http.observation.binder.ConnPoolMetersAsync;
 import org.apache.hc.client5.http.observation.interceptors.AsyncIoByteCounterExec;
 import org.apache.hc.client5.http.observation.interceptors.AsyncTimerExec;
 import org.apache.hc.client5.http.observation.interceptors.IoByteCounterExec;
 import org.apache.hc.client5.http.observation.interceptors.TimerExec;
+import org.apache.hc.core5.util.Args;
 
+/**
+ * Static helper that wires Micrometer metrics / observations into all
+ * {@code HttpClientBuilder} variants (classic, caching, async).
+ * <p>
+ * <strong>Usage – classic example</strong>
+ * <pre>{@code
+ * ObservationRegistry observations = ObservationRegistry.create();
+ * HttpClientBuilder builder = HttpClients.custom();
+ * HttpClientObservationSupport.enable(builder, observations);
+ * CloseableHttpClient client = builder.build();
+ * }</pre>
+ *
+ * @since 5.6
+ */
 public final class HttpClientObservationSupport {
 
-    private static final String TIMER = "metric-timer";
-    private static final String IO = "metric-io";
+    private static final String TIMER_ID = "metric-timer";
+    private static final String IO_ID = "metric-io";
 
-    /* ------------ classic ------------ */
+    public static void enable(final HttpClientBuilder builder, final ObservationRegistry obsReg) {
 
-    public static void enable(final HttpClientBuilder b,
-                              final ObservationRegistry reg) {
-        enable(b, reg, ObservingOptions.DEFAULT);
+        enable(builder, obsReg, Metrics.globalRegistry, ObservingOptions.DEFAULT);
     }
 
-    public static void enable(final HttpClientBuilder b,
-                              final ObservationRegistry reg,
-                              final ObservingOptions opt) {
-        if (reg == null) {
-            return;
-        }
-
-        if (opt.metricSets.contains(ObservingOptions.MetricSet.BASIC)) {
-            b.addExecInterceptorFirst(TIMER, new TimerExec(reg, opt));
-        }
-        if (opt.metricSets.contains(ObservingOptions.MetricSet.IO)) {
-            b.addExecInterceptorFirst(IO, new IoByteCounterExec(reg, opt));
-        }
-        if (opt.metricSets.contains(ObservingOptions.MetricSet.CONN_POOL)) {
-            ConnPoolMeters.bindTo(b, Metrics.globalRegistry, opt);
-        }
+    public static void enable(final HttpClientBuilder builder, final ObservationRegistry obsReg, final ObservingOptions opts) {
+        enable(builder, obsReg, Metrics.globalRegistry, opts);
     }
 
-    /* ------ classic + cache ------ */
+    public static void enable(final HttpClientBuilder builder, final ObservationRegistry obsReg, final MeterRegistry meterReg,
+                              final ObservingOptions opts) {
 
-    public static void enable(final CachingHttpClientBuilder b,
-                              final ObservationRegistry reg,
-                              final ObservingOptions opt) {
-        if (reg == null) {
-            return;
-        }
+        Args.notNull(builder, "builder");
+        Args.notNull(meterReg, "meterRegistry");
 
-        if (opt.metricSets.contains(ObservingOptions.MetricSet.BASIC)) {
-            b.addExecInterceptorAfter(ChainElement.CACHING.name(), TIMER, new TimerExec(reg, opt));
+        final ObservingOptions o = opts != null ? opts : ObservingOptions.DEFAULT;
+
+        if (o.metricSets.contains(ObservingOptions.MetricSet.BASIC)) {
+            builder.addExecInterceptorFirst(TIMER_ID,
+                    new TimerExec(meterReg, o));
         }
-        if (opt.metricSets.contains(ObservingOptions.MetricSet.IO)) {
-            b.addExecInterceptorAfter(ChainElement.CACHING.name(), IO, new IoByteCounterExec(reg, opt));
+        if (o.metricSets.contains(ObservingOptions.MetricSet.IO)) {
+            builder.addExecInterceptorFirst(IO_ID,
+                    new IoByteCounterExec(meterReg, o));
         }
-        if (opt.metricSets.contains(ObservingOptions.MetricSet.CONN_POOL)) {
-            ConnPoolMeters.bindTo(b, Metrics.globalRegistry, opt);
+        if (o.metricSets.contains(ObservingOptions.MetricSet.CONN_POOL)) {
+            ConnPoolMeters.bindTo(builder, meterReg);
         }
     }
 
-    /* ------------ async ------------ */
 
-    public static void enable(final HttpAsyncClientBuilder b,
-                              final ObservationRegistry reg,
-                              final ObservingOptions opt) {
-        if (reg == null) {
-            return;
-        }
+    public static void enable(final CachingHttpClientBuilder builder, final ObservationRegistry obsReg) {
+        enable(builder, obsReg, Metrics.globalRegistry, ObservingOptions.DEFAULT);
+    }
 
-        if (opt.metricSets.contains(ObservingOptions.MetricSet.BASIC)) {
-            b.addExecInterceptorFirst(TIMER, new AsyncTimerExec(reg, opt));
+    public static void enable(final CachingHttpClientBuilder builder, final ObservationRegistry obsReg, final ObservingOptions opts) {
+        enable(builder, obsReg, Metrics.globalRegistry, opts);
+    }
+
+    public static void enable(final CachingHttpClientBuilder builder, final ObservationRegistry obsReg, final MeterRegistry meterReg,
+                              final ObservingOptions opts) {
+
+        Args.notNull(builder, "builder");
+        Args.notNull(meterReg, "meterRegistry");
+
+        final ObservingOptions o = opts != null ? opts : ObservingOptions.DEFAULT;
+
+        if (o.metricSets.contains(ObservingOptions.MetricSet.BASIC)) {
+            builder.addExecInterceptorAfter(ChainElement.CACHING.name(), TIMER_ID, new TimerExec(meterReg, o));
         }
-        if (opt.metricSets.contains(ObservingOptions.MetricSet.IO)) {
-            b.addExecInterceptorFirst(IO, new AsyncIoByteCounterExec(reg, opt));
+        if (o.metricSets.contains(ObservingOptions.MetricSet.IO)) {
+            builder.addExecInterceptorAfter(ChainElement.CACHING.name(), IO_ID, new IoByteCounterExec(meterReg, o));
+        }
+        if (o.metricSets.contains(ObservingOptions.MetricSet.CONN_POOL)) {
+            ConnPoolMeters.bindTo(builder, meterReg);
         }
     }
 
-    // in HttpClientObservationSupport.java
-    public static void enable(final HttpAsyncClientBuilder b,
-                              final ObservationRegistry reg) {
-        enable(b, reg, ObservingOptions.DEFAULT);
+
+    public static void enable(final HttpAsyncClientBuilder builder, final ObservationRegistry obsReg) {
+        enable(builder, obsReg, Metrics.globalRegistry, ObservingOptions.DEFAULT);
     }
 
-    public static void enable(final CachingHttpAsyncClientBuilder b,
-                              final ObservationRegistry reg) {
-        enable(b, reg, ObservingOptions.DEFAULT);
+    public static void enable(final HttpAsyncClientBuilder builder, final ObservationRegistry obsReg, final ObservingOptions opts) {
+        enable(builder, obsReg, Metrics.globalRegistry, opts);
     }
 
+    public static void enable(final HttpAsyncClientBuilder builder, final ObservationRegistry obsReg, final MeterRegistry meterReg,
+                              final ObservingOptions opts) {
 
-    public static void enable(final CachingHttpAsyncClientBuilder b,
-                              final ObservationRegistry reg,
-                              final ObservingOptions opt) {
-        if (reg == null) {
-            return;
-        }
+        Args.notNull(builder, "builder");
+        Args.notNull(meterReg, "meterRegistry");
 
-        if (opt.metricSets.contains(ObservingOptions.MetricSet.BASIC)) {
-            b.addExecInterceptorAfter(ChainElement.CACHING.name(), TIMER, new AsyncTimerExec(reg, opt));
+        final ObservingOptions o = opts != null ? opts : ObservingOptions.DEFAULT;
+
+        if (o.metricSets.contains(ObservingOptions.MetricSet.BASIC)) {
+            builder.addExecInterceptorFirst(TIMER_ID, new AsyncTimerExec(meterReg, o));
         }
-        if (opt.metricSets.contains(ObservingOptions.MetricSet.IO)) {
-            b.addExecInterceptorAfter(ChainElement.CACHING.name(), IO, new AsyncIoByteCounterExec(reg, opt));
+        if (o.metricSets.contains(ObservingOptions.MetricSet.IO)) {
+            builder.addExecInterceptorFirst(IO_ID, new AsyncIoByteCounterExec(meterReg, o));
+        }
+        if (o.metricSets.contains(ObservingOptions.MetricSet.CONN_POOL)) {
+            ConnPoolMetersAsync.bindTo(builder, meterReg);
         }
     }
 
+    public static void enable(final CachingHttpAsyncClientBuilder builder,
+                              final ObservationRegistry obsReg) {
+        enable(builder, obsReg, Metrics.globalRegistry, ObservingOptions.DEFAULT);
+    }
+
+    public static void enable(final CachingHttpAsyncClientBuilder builder, final ObservationRegistry obsReg,
+                              final ObservingOptions opts) {
+        enable(builder, obsReg, Metrics.globalRegistry, opts);
+    }
+
+    public static void enable(final CachingHttpAsyncClientBuilder builder, final ObservationRegistry obsReg, final MeterRegistry meterReg,
+                              final ObservingOptions opts) {
+
+        Args.notNull(builder, "builder");
+        Args.notNull(meterReg, "meterRegistry");
+
+        final ObservingOptions o = opts != null ? opts : ObservingOptions.DEFAULT;
+
+        if (o.metricSets.contains(ObservingOptions.MetricSet.BASIC)) {
+            builder.addExecInterceptorAfter(ChainElement.CACHING.name(), TIMER_ID, new AsyncTimerExec(meterReg, o));
+        }
+        if (o.metricSets.contains(ObservingOptions.MetricSet.IO)) {
+            builder.addExecInterceptorAfter(ChainElement.CACHING.name(), IO_ID, new AsyncIoByteCounterExec(meterReg, o));
+        }
+    }
+
+    /**
+     * No instantiation.
+     */
     private HttpClientObservationSupport() {
-    }   // no-instantiation
+    }
 }

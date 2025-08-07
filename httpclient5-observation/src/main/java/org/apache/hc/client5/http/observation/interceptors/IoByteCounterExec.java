@@ -31,28 +31,46 @@ import java.util.ArrayList;
 import java.util.List;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
-import io.micrometer.observation.ObservationRegistry;
 import org.apache.hc.client5.http.classic.ExecChain;
 import org.apache.hc.client5.http.classic.ExecChainHandler;
 import org.apache.hc.client5.http.observation.ObservingOptions;
 import org.apache.hc.core5.http.ClassicHttpRequest;
 import org.apache.hc.core5.http.ClassicHttpResponse;
+import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.HttpException;
-import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.util.Args;
 
+/**
+ * Counts request / response payload bytes for <b>classic</b> clients.
+ * <p>
+ * The counter names are
+ * {@code http.client.request.bytes} and {@code http.client.response.bytes}.
+ *
+ * @since 5.6
+ */
 public final class IoByteCounterExec implements ExecChainHandler {
 
-    private final Counter.Builder sentBuilder;
-    private final Counter.Builder recvBuilder;
+    private final MeterRegistry meterRegistry;
+    private final Counter.Builder reqBuilder;
+    private final Counter.Builder respBuilder;
     private final ObservingOptions opts;
 
-    public IoByteCounterExec(final ObservationRegistry reg, final ObservingOptions opts) {
-        this.opts = opts;
-        this.sentBuilder = Counter.builder("http.client.bytes_sent")
-                .tags("component", "httpclient");
-        this.recvBuilder = Counter.builder("http.client.bytes_received")
-                .tags("component", "httpclient");
+    public IoByteCounterExec(final MeterRegistry meterRegistry,
+                             final ObservingOptions opts) {
+        this.meterRegistry = Args.notNull(meterRegistry, "meterRegistry");
+        this.opts = Args.notNull(opts, "observingOptions");
+
+        this.reqBuilder = Counter.builder("http.client.request.bytes")
+                .baseUnit("bytes")
+                .description("HTTP request payload size")
+                .tag("component", "httpclient");
+
+        this.respBuilder = Counter.builder("http.client.response.bytes")
+                .baseUnit("bytes")
+                .description("HTTP response payload size")
+                .tag("component", "httpclient");
     }
 
     @Override
@@ -60,30 +78,51 @@ public final class IoByteCounterExec implements ExecChainHandler {
                                        final ExecChain.Scope scope,
                                        final ExecChain chain) throws IOException, HttpException {
 
-        final ClassicHttpResponse response = chain.proceed(request, scope);
-
-        final long sent = request.getEntity() != null ? request.getEntity().getContentLength() : 0;
-        final long recv = response.getEntity() != null ? response.getEntity().getContentLength() : 0;
-        if (response.getEntity() != null) {
-            EntityUtils.consume(response.getEntity());  // ensure CL known / free resources
+        if (!opts.spanSampling.test(request.getRequestUri())) {
+            return chain.proceed(request, scope);
         }
 
-        /* ---- build tag list without switch-expression ---- */
-        final List<Tag> tags = new ArrayList<>(3);
-        tags.add(Tag.of("method", request.getMethod()));
+        final long reqBytes = contentLength(request.getEntity());
+
+        ClassicHttpResponse response = null;
+        try {
+            response = chain.proceed(request, scope);
+            return response;
+        } finally {
+            final long respBytes = contentLength(response != null ? response.getEntity() : null);
+
+            final List<Tag> tags = buildTags(request.getMethod(),
+                    response != null ? response.getCode() : 599,
+                    scope);
+
+            if (reqBytes >= 0) {
+                reqBuilder.tags(tags).register(meterRegistry).increment(reqBytes);
+            }
+            if (respBytes >= 0) {
+                respBuilder.tags(tags).register(meterRegistry).increment(respBytes);
+            }
+        }
+    }
+
+    private static long contentLength(final HttpEntity entity) {
+        if (entity == null) {
+            return -1;
+        }
+        final long len = entity.getContentLength();
+        return len >= 0 ? len : -1;
+    }
+
+    private List<Tag> buildTags(final String method,
+                                final int status,
+                                final ExecChain.Scope scope) {
+        final List<Tag> tags = new ArrayList<Tag>(4);
+        tags.add(Tag.of("method", method));
+        tags.add(Tag.of("status", Integer.toString(status)));
+
         if (opts.tagLevel == ObservingOptions.TagLevel.EXTENDED) {
+            tags.add(Tag.of("protocol", scope.route.getTargetHost().getSchemeName()));
             tags.add(Tag.of("target", scope.route.getTargetHost().getHostName()));
         }
-        /* --------------------------------------------------- */
-
-        sentBuilder.tags(tags)
-                .register(io.micrometer.core.instrument.Metrics.globalRegistry)
-                .increment(sent);
-
-        recvBuilder.tags(tags)
-                .register(io.micrometer.core.instrument.Metrics.globalRegistry)
-                .increment(recv);
-
-        return response;
+        return tags;
     }
 }

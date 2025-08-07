@@ -32,39 +32,41 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Timer;
-import io.micrometer.observation.ObservationRegistry;
 import org.apache.hc.client5.http.classic.ExecChain;
 import org.apache.hc.client5.http.classic.ExecChainHandler;
 import org.apache.hc.client5.http.observation.ObservingOptions;
 import org.apache.hc.core5.http.ClassicHttpRequest;
 import org.apache.hc.core5.http.ClassicHttpResponse;
 import org.apache.hc.core5.http.HttpException;
+import org.apache.hc.core5.util.Args;
 
+/**
+ * Classic blocking interceptor that records a Micrometer {@link Timer}
+ * per request as well as a {@link Counter} for the response codes.
+ *
+ * @since 5.6
+ */
 public final class TimerExec implements ExecChainHandler {
 
-    private final Timer.Builder timerBuilder;
-    private final Counter.Builder counterBuilder;
-    private final ObservingOptions opts;
+    private final MeterRegistry registry;
+    private final ObservingOptions cfg;
 
-    public TimerExec(final ObservationRegistry reg, final ObservingOptions opts) {
-        this.opts = opts;
-        this.timerBuilder = Timer.builder("http.client.request")
-                .tags("component", "httpclient")
-                .publishPercentiles(0.9, 0.99);
-        this.counterBuilder = Counter.builder("http.client.response")
-                .tags("component", "httpclient");
+    public TimerExec(final MeterRegistry reg, final ObservingOptions cfg) {
+        this.registry = Args.notNull(reg, "registry");
+        this.cfg = Args.notNull(cfg, "config");
     }
 
     @Override
     public ClassicHttpResponse execute(final ClassicHttpRequest request,
                                        final ExecChain.Scope scope,
-                                       final ExecChain chain) throws IOException, HttpException {
+                                       final ExecChain chain)
+            throws IOException, HttpException {
 
-        if (!opts.spanSampling.test(request.getRequestUri())) {
-            // fast-path – tracing disabled for this URI
-            return chain.proceed(request, scope);
+        if (!cfg.spanSampling.test(request.getRequestUri())) {
+            return chain.proceed(request, scope);   // fast-path, nothing recorded
         }
 
         final long start = System.nanoTime();
@@ -73,26 +75,27 @@ public final class TimerExec implements ExecChainHandler {
             response = chain.proceed(request, scope);
             return response;
         } finally {
-            final long dur = System.nanoTime() - start;
+            final long durNanos = System.nanoTime() - start;
             final int status = response != null ? response.getCode() : 599;
 
-            /* ------- build tag list without switch-expression ------- */
             final List<Tag> tags = new ArrayList<>(4);
             tags.add(Tag.of("method", request.getMethod()));
             tags.add(Tag.of("status", Integer.toString(status)));
 
-            if (opts.tagLevel == ObservingOptions.TagLevel.EXTENDED) {
+            if (cfg.tagLevel == ObservingOptions.TagLevel.EXTENDED) {
                 tags.add(Tag.of("protocol", scope.route.getTargetHost().getSchemeName()));
                 tags.add(Tag.of("target", scope.route.getTargetHost().getHostName()));
             }
-            /* -------------------------------------------------------- */
 
-            timerBuilder.tags(tags)
-                    .register(io.micrometer.core.instrument.Metrics.globalRegistry)
-                    .record(dur, TimeUnit.NANOSECONDS);
+            Timer.builder("http.client.request")
+                    .tags(tags)
+                    .publishPercentiles(0.9, 0.99)
+                    .register(registry)
+                    .record(durNanos, TimeUnit.NANOSECONDS);
 
-            counterBuilder.tags(tags)
-                    .register(io.micrometer.core.instrument.Metrics.globalRegistry)
+            Counter.builder("http.client.response")
+                    .tags(tags)
+                    .register(registry)
                     .increment();
         }
     }

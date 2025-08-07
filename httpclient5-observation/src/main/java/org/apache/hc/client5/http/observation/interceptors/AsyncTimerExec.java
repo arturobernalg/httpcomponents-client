@@ -30,11 +30,12 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Timer;
-import io.micrometer.observation.ObservationRegistry;
 import org.apache.hc.client5.http.async.AsyncExecCallback;
 import org.apache.hc.client5.http.async.AsyncExecChain;
 import org.apache.hc.client5.http.async.AsyncExecChainHandler;
@@ -43,85 +44,94 @@ import org.apache.hc.core5.http.EntityDetails;
 import org.apache.hc.core5.http.HttpException;
 import org.apache.hc.core5.http.HttpRequest;
 import org.apache.hc.core5.http.HttpResponse;
-import org.apache.hc.core5.http.nio.AsyncDataConsumer;
-import org.apache.hc.core5.http.nio.AsyncEntityProducer;
+import org.apache.hc.core5.util.Args;
 
+/**
+ * Records request latency and result counter for <b>async</b> clients.
+ *
+ * @since 5.6
+ */
 public final class AsyncTimerExec implements AsyncExecChainHandler {
 
+    private final MeterRegistry meterRegistry;
     private final Timer.Builder timerBuilder;
     private final Counter.Builder counterBuilder;
     private final ObservingOptions opts;
 
-    public AsyncTimerExec(final ObservationRegistry reg, final ObservingOptions opts) {
-        this.opts = opts;
-        this.timerBuilder = Timer.builder("http.client.request").tags("component", "httpclient");
-        this.counterBuilder = Counter.builder("http.client.response").tags("component", "httpclient");
+    public AsyncTimerExec(final MeterRegistry meterRegistry,
+                          final ObservingOptions opts) {
+        this.meterRegistry = Args.notNull(meterRegistry, "meterRegistry");
+        this.opts = Args.notNull(opts, "observingOptions");
+
+        this.timerBuilder = Timer.builder("http.client.request")
+                .tag("component", "httpclient")
+                .publishPercentiles(0.9, 0.99);
+
+        this.counterBuilder = Counter.builder("http.client.response")
+                .tag("component", "httpclient");
     }
 
     @Override
     public void execute(final HttpRequest request,
-                        final AsyncEntityProducer entityProducer,
+                        final org.apache.hc.core5.http.nio.AsyncEntityProducer entityProducer,
                         final AsyncExecChain.Scope scope,
                         final AsyncExecChain chain,
-                        final AsyncExecCallback delegate) throws HttpException, IOException {
+                        final AsyncExecCallback callback) throws HttpException, IOException {
 
         if (!opts.spanSampling.test(request.getRequestUri())) {
-            chain.proceed(request, entityProducer, scope, delegate);
+            chain.proceed(request, entityProducer, scope, callback);
             return;
         }
 
-        final long started = System.nanoTime();
+        final long start = System.nanoTime();
+        final AtomicReference<HttpResponse> respRef = new AtomicReference<HttpResponse>();
 
-        chain.proceed(request, entityProducer, scope, new AsyncExecCallback() {
+        final AsyncExecCallback wrapped = new AsyncExecCallback() {
 
             @Override
-            public AsyncDataConsumer handleResponse(final HttpResponse response,
-                                                    final EntityDetails details)
-                    throws HttpException, IOException {
-                return delegate.handleResponse(response, details);
+            public org.apache.hc.core5.http.nio.AsyncDataConsumer handleResponse(
+                    final HttpResponse response, final EntityDetails entityDetails) throws HttpException, IOException {
+                respRef.set(response);
+                return callback.handleResponse(response, entityDetails);
             }
 
             @Override
-            public void handleInformationResponse(final HttpResponse info)
-                    throws HttpException, IOException {
-                delegate.handleInformationResponse(info);
+            public void handleInformationResponse(final HttpResponse response) throws HttpException, IOException {
+                callback.handleInformationResponse(response);
             }
 
             @Override
             public void completed() {
-                record(request, scope, 200, started);   // HTTP/2 trailer or unknown: assume OK
-                delegate.completed();
+                record(start, respRef.get());
+                callback.completed();
             }
 
             @Override
             public void failed(final Exception cause) {
-                record(request, scope, 599, started);
-                delegate.failed(cause);
+                record(start, respRef.get());
+                callback.failed(cause);
             }
-        });
-    }
 
-    private void record(final HttpRequest req,
-                        final AsyncExecChain.Scope scope,
-                        final int status,
-                        final long started) {
+            private void record(final long startNanos, final HttpResponse response) {
+                final long dur = System.nanoTime() - startNanos;
+                final int status = response != null ? response.getCode() : 599;
 
-        final long dur = System.nanoTime() - started;
+                final List<Tag> tags = new ArrayList<Tag>(4);
+                tags.add(Tag.of("method", request.getMethod()));
+                tags.add(Tag.of("status", Integer.toString(status)));
 
-        final List<Tag> tags = new ArrayList<>(4);
-        tags.add(Tag.of("method", req.getMethod()));
-        tags.add(Tag.of("status", Integer.toString(status)));
-        if (opts.tagLevel == ObservingOptions.TagLevel.EXTENDED) {
-            tags.add(Tag.of("protocol", scope.route.getTargetHost().getSchemeName()));
-            tags.add(Tag.of("target", scope.route.getTargetHost().getHostName()));
-        }
+                if (opts.tagLevel == ObservingOptions.TagLevel.EXTENDED) {
+                    tags.add(Tag.of("protocol", scope.route.getTargetHost().getSchemeName()));
+                    tags.add(Tag.of("target", scope.route.getTargetHost().getHostName()));
+                }
 
-        timerBuilder.tags(tags)
-                .register(io.micrometer.core.instrument.Metrics.globalRegistry)
-                .record(dur, TimeUnit.NANOSECONDS);
+                timerBuilder.tags(tags).register(meterRegistry)
+                        .record(dur, TimeUnit.NANOSECONDS);
 
-        counterBuilder.tags(tags)
-                .register(io.micrometer.core.instrument.Metrics.globalRegistry)
-                .increment();
+                counterBuilder.tags(tags).register(meterRegistry).increment();
+            }
+        };
+
+        chain.proceed(request, entityProducer, scope, wrapped);
     }
 }

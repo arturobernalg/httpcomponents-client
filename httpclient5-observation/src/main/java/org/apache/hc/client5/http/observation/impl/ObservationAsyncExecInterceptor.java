@@ -28,13 +28,13 @@
 package org.apache.hc.client5.http.observation.impl;
 
 import java.io.IOException;
-import java.util.concurrent.atomic.AtomicReference;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import org.apache.hc.client5.http.async.AsyncExecCallback;
 import org.apache.hc.client5.http.async.AsyncExecChain;
 import org.apache.hc.client5.http.async.AsyncExecChainHandler;
+import org.apache.hc.client5.http.observation.ObservingOptions;
 import org.apache.hc.core5.http.EntityDetails;
 import org.apache.hc.core5.http.HttpException;
 import org.apache.hc.core5.http.HttpRequest;
@@ -51,61 +51,61 @@ import org.apache.hc.core5.http.nio.AsyncEntityProducer;
 public final class ObservationAsyncExecInterceptor implements AsyncExecChainHandler {
 
     private final ObservationRegistry registry;
+    private final ObservingOptions opts;
 
-    /**
-     * Constructs a new instance with the given observation registry.
-     *
-     * @param registry the observation registry
-     */
-    public ObservationAsyncExecInterceptor(final ObservationRegistry registry) {
+    public ObservationAsyncExecInterceptor(final ObservationRegistry registry, final ObservingOptions opts) {
         this.registry = registry;
+        this.opts = opts;
     }
 
     @Override
-    public void execute(final HttpRequest request, final AsyncEntityProducer entityProducer,
-                        final AsyncExecChain.Scope scope, final AsyncExecChain chain,
-                        final AsyncExecCallback asyncExecCallback) throws HttpException, IOException {
-        final Observation observation = Observation
+    public void execute(final HttpRequest request, final AsyncEntityProducer entityProducer, final AsyncExecChain.Scope scope,
+                        final AsyncExecChain chain, final AsyncExecCallback callback) throws IOException, HttpException {
+
+        if (!opts.spanSampling.test(request.getRequestUri())) {
+            // observation disabled for this URI
+            chain.proceed(request, entityProducer, scope, callback);
+            return;
+        }
+
+        final Observation obs = Observation
                 .createNotStarted("http.client.request", registry)
                 .contextualName(request.getMethod() + " " + request.getRequestUri())
                 .lowCardinalityKeyValue("http.method", request.getMethod())
-                .lowCardinalityKeyValue("net.peer.name", scope.route.getTargetHost().getHostName())
+                .lowCardinalityKeyValue("net.peer.name",
+                        scope.route.getTargetHost().getHostName())
                 .start();
 
-        final AtomicReference<HttpResponse> responseRef = new AtomicReference<>();
-
-        final AsyncExecCallback wrappedCallback = new AsyncExecCallback() {
+        final AsyncExecCallback wrapped = new AsyncExecCallback() {
 
             @Override
-            public AsyncDataConsumer handleResponse(final HttpResponse response,
-                                                    final EntityDetails entityDetails) throws HttpException, IOException {
-                responseRef.set(response);
-                observation.lowCardinalityKeyValue("http.status_code", Integer.toString(response.getCode()));
-                return asyncExecCallback.handleResponse(response, entityDetails);
+            public AsyncDataConsumer handleResponse(final HttpResponse response, final EntityDetails entity)
+                    throws HttpException, IOException {
+
+                obs.lowCardinalityKeyValue("http.status_code",
+                        Integer.toString(response.getCode()));
+                return callback.handleResponse(response, entity);
             }
 
             @Override
             public void handleInformationResponse(final HttpResponse response) throws HttpException, IOException {
-                // Optional: handle informational responses if needed
-                asyncExecCallback.handleInformationResponse(response);
+                callback.handleInformationResponse(response);
             }
 
             @Override
             public void completed() {
-                observation.stop();
-                asyncExecCallback.completed();
+                obs.stop();
+                callback.completed();
             }
 
             @Override
             public void failed(final Exception cause) {
-                observation.error(cause);
-                observation.stop();
-                asyncExecCallback.failed(cause);
+                obs.error(cause);
+                obs.stop();
+                callback.failed(cause);
             }
-
         };
 
-        chain.proceed(request, entityProducer, scope, wrappedCallback);
+        chain.proceed(request, entityProducer, scope, wrapped);
     }
-
 }

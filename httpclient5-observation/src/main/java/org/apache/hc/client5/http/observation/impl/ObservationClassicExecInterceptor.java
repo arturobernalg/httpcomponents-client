@@ -46,9 +46,7 @@ public final class ObservationClassicExecInterceptor implements ExecChainHandler
     }
 
     @Override
-    public ClassicHttpResponse execute(final ClassicHttpRequest request,
-                                       final ExecChain.Scope scope,
-                                       final ExecChain chain)
+    public ClassicHttpResponse execute(final ClassicHttpRequest request, final ExecChain.Scope scope, final ExecChain chain)
             throws IOException, HttpException {
 
         final Observation obs;

@@ -27,6 +27,6 @@
 
 /**
  * Simple facade APIs for HttpClient based on the concept of
- * an observation interface.
+ * an observation binder interface.
  */
-package org.apache.hc.client5.http.observation.impl;
+package org.apache.hc.client5.http.observation.binder;

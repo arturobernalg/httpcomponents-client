@@ -24,27 +24,42 @@
  * <http://www.apache.org/>.
  *
  */
+
 package org.apache.hc.client5.http.observation.binder;
+
+import java.io.Closeable;
 
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
-import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
-import org.apache.hc.client5.http.io.HttpClientConnectionManager;
+import org.apache.hc.client5.http.impl.async.HttpAsyncClientBuilder;
+import org.apache.hc.client5.http.nio.AsyncClientConnectionManager;
 import org.apache.hc.core5.pool.ConnPoolControl;
 import org.apache.hc.core5.util.Args;
 
 /**
  * Registers three gauges (&quot;leased&quot;, &quot;available&quot;, &quot;pending&quot;)
- * for the connection pool used by a {@link HttpClientBuilder}.
+ * for the I/O-reactor connection pool used by an {@link HttpAsyncClientBuilder}.
+ *
+ * <h3>Usage</h3>
+ * <pre>{@code
+ * HttpAsyncClientBuilder b = HttpAsyncClients.custom();
+ * ConnPoolMetersAsync.bindTo(b, Metrics.globalRegistry());
+ * CloseableHttpAsyncClient client = b.build();
+ * }</pre>
+ * <p>
+ * The binder installs itself via {@code addCloseable} so it can be invoked
+ * <em>before</em> {@code build()}.  If you prefer a zero-reflection variant
+ * (and can call it only <em>after</em> {@code build()}), see the note in the
+ * class‐level Javadoc of {@code ConnPoolMeters}.
  *
  * @since 5.6
  */
-public final class ConnPoolMeters implements MeterBinder {
+public final class ConnPoolMetersAsync implements MeterBinder {
 
     private final ConnPoolControl<?> pool;
 
-    private ConnPoolMeters(final ConnPoolControl<?> pool) {
+    private ConnPoolMetersAsync(final ConnPoolControl<?> pool) {
         this.pool = pool;
     }
 
@@ -57,15 +72,25 @@ public final class ConnPoolMeters implements MeterBinder {
     }
 
     /**
-     * Adds a {@code Closeable} to the builder that registers the gauges
-     * *after* the client has been built (i.e. when the connection manager
-     * is non-null).
+     * Installs a {@link Closeable} callback on the builder that registers the
+     * gauges <em>after</em> the async client has been built (i.e. when the pool
+     * is finally available).
      */
-    public static void bindTo(final HttpClientBuilder builder, final MeterRegistry registry) {
+    public static void bindTo(final HttpAsyncClientBuilder builder, final MeterRegistry registry) {
 
-        final HttpClientConnectionManager cm = builder.getConnManager();
+        Args.notNull(builder, "builder");
+        Args.notNull(registry, "registry");
+
+        final AsyncClientConnectionManager cm = builder.getConnManager();
         if (cm instanceof ConnPoolControl) {
-            new ConnPoolMeters((ConnPoolControl<?>) cm).bindTo(registry);
+            new ConnPoolMetersAsync((ConnPoolControl<?>) cm).bindTo(registry);
         }
+    }
+
+    /**
+     * No instantiation outside static helpers.
+     */
+    private ConnPoolMetersAsync() {
+        this.pool = null; // never called
     }
 }
