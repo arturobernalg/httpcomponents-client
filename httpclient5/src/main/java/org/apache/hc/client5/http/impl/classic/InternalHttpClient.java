@@ -29,8 +29,13 @@ package org.apache.hc.client5.http.impl.classic;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import org.apache.hc.client5.http.ClientProtocolException;
@@ -65,6 +70,7 @@ import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.io.ModalCloseable;
 import org.apache.hc.core5.net.URIAuthority;
 import org.apache.hc.core5.util.Args;
+import org.apache.hc.core5.util.TimeValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -95,6 +101,11 @@ class InternalHttpClient extends CloseableHttpClient implements Configurable {
     private final RequestConfig defaultConfig;
     private final ConcurrentLinkedQueue<Closeable> closeables;
 
+    private final ExecutorService vtExec;
+    private final boolean shutdownVtExec;
+
+    private final TimeValue vtShutdownWait;
+
     public InternalHttpClient(
             final HttpClientConnectionManager connManager,
             final HttpRequestExecutor requestExecutor,
@@ -107,6 +118,26 @@ class InternalHttpClient extends CloseableHttpClient implements Configurable {
             final Function<HttpContext, HttpClientContext> contextAdaptor,
             final RequestConfig defaultConfig,
             final List<Closeable> closeables) {
+        this(connManager, requestExecutor, execChain, routePlanner, cookieSpecRegistry, authSchemeRegistry,
+                cookieStore, credentialsProvider, contextAdaptor, defaultConfig, closeables, null, false, null);
+    }
+
+    // New constructor used when VT is enabled by the builder
+    public InternalHttpClient(
+            final HttpClientConnectionManager connManager,
+            final HttpRequestExecutor requestExecutor,
+            final ExecChainElement execChain,
+            final HttpRoutePlanner routePlanner,
+            final Lookup<CookieSpecFactory> cookieSpecRegistry,
+            final Lookup<AuthSchemeFactory> authSchemeRegistry,
+            final CookieStore cookieStore,
+            final CredentialsProvider credentialsProvider,
+            final Function<HttpContext, HttpClientContext> contextAdaptor,
+            final RequestConfig defaultConfig,
+            final List<Closeable> closeables,
+            final ExecutorService vtExec,
+            final boolean shutdownVtExec,
+            final TimeValue vtShutdownWait) {
         super();
         this.connManager = Args.notNull(connManager, "Connection manager");
         this.requestExecutor = Args.notNull(requestExecutor, "Request executor");
@@ -119,6 +150,9 @@ class InternalHttpClient extends CloseableHttpClient implements Configurable {
         this.contextAdaptor = contextAdaptor;
         this.defaultConfig = defaultConfig;
         this.closeables = closeables != null ? new ConcurrentLinkedQueue<>(closeables) : null;
+        this.vtExec = vtExec;
+        this.shutdownVtExec = shutdownVtExec;
+        this.vtShutdownWait = vtShutdownWait != null ? vtShutdownWait : TimeValue.ofSeconds(2);
     }
 
     private HttpRoute determineRoute(final HttpHost target, final HttpRequest request, final HttpContext context) throws HttpException {
@@ -148,6 +182,35 @@ class InternalHttpClient extends CloseableHttpClient implements Configurable {
             final HttpHost target,
             final ClassicHttpRequest request,
             final HttpContext context) throws IOException {
+        if (vtExec == null) {
+            return doExecuteInternal(target, request, context);
+        }
+        try {
+            return vtExec.submit(() -> doExecuteInternal(target, request, context)).get();
+        } catch (final InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new InterruptedIOException(ie.getMessage());
+        } catch (final ExecutionException ee) {
+            final Throwable cause = ee.getCause();
+            if (cause instanceof IOException) {
+                throw (IOException) cause;
+            }
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            if (cause instanceof Error) {
+                throw (Error) cause;
+            }
+            throw new IOException(cause);
+        } catch (final RejectedExecutionException rex) {
+            throw new IOException("client closed", rex);
+        }
+    }
+
+    private CloseableHttpResponse doExecuteInternal(
+            final HttpHost target,
+            final ClassicHttpRequest request,
+            final HttpContext context) throws IOException {
         Args.notNull(request, "HTTP request");
         try {
             final HttpClientContext localcontext = contextAdaptor.apply(context);
@@ -161,13 +224,11 @@ class InternalHttpClient extends CloseableHttpClient implements Configurable {
             setupContext(localcontext);
 
             final HttpHost resolvedTarget = target != null ? target : RoutingSupport.determineHost(request);
-            if (resolvedTarget != null) {
-                if (request.getScheme() == null) {
-                    request.setScheme(resolvedTarget.getSchemeName());
-                }
-                if (request.getAuthority() == null) {
-                    request.setAuthority(new URIAuthority(resolvedTarget));
-                }
+            if (request.getScheme() == null) {
+                request.setScheme(resolvedTarget.getSchemeName());
+            }
+            if (request.getAuthority() == null) {
+                request.setAuthority(new URIAuthority(resolvedTarget));
             }
             final HttpRoute route = determineRoute(
                     resolvedTarget,
@@ -215,6 +276,17 @@ class InternalHttpClient extends CloseableHttpClient implements Configurable {
                 }
             }
         }
+        if (shutdownVtExec && vtExec != null) {
+            if (closeMode == CloseMode.IMMEDIATE) {
+                vtExec.shutdownNow();
+            } else {
+                vtExec.shutdown();
+                try {
+                    vtExec.awaitTermination(vtShutdownWait.getDuration(), TimeUnit.SECONDS);
+                } catch (final InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
     }
-
 }

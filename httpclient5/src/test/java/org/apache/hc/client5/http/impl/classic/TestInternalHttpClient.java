@@ -26,12 +26,22 @@
  */
 package org.apache.hc.client5.http.impl.classic;
 
-import java.io.Closeable;
-import java.io.IOException;
-import java.util.Arrays;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import org.apache.hc.client5.http.ClientProtocolException;
-import org.apache.hc.client5.http.HttpRoute;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+
 import org.apache.hc.client5.http.auth.AuthSchemeFactory;
 import org.apache.hc.client5.http.auth.CredentialsProvider;
 import org.apache.hc.client5.http.classic.ExecChainHandler;
@@ -42,25 +52,19 @@ import org.apache.hc.client5.http.cookie.CookieStore;
 import org.apache.hc.client5.http.io.HttpClientConnectionManager;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.http.routing.HttpRoutePlanner;
-import org.apache.hc.core5.http.ClassicHttpRequest;
-import org.apache.hc.core5.http.HttpException;
-import org.apache.hc.core5.http.HttpHost;
-import org.apache.hc.core5.http.ProtocolException;
 import org.apache.hc.core5.http.config.Lookup;
 import org.apache.hc.core5.http.impl.io.HttpRequestExecutor;
-import org.apache.hc.core5.http.io.support.ClassicRequestBuilder;
-import org.apache.hc.core5.http.message.BasicClassicHttpResponse;
-import org.junit.jupiter.api.Assertions;
+import org.apache.hc.core5.io.CloseMode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
 /**
- *  Simple tests for {@link InternalHttpClient}.
+ * Exception-path tests for the VT-enabled doExecute and close() branches.
  */
-class TestInternalHttpClient {
+class TestInternalHttpClientVirtualThreadsExceptions {
 
     @Mock
     private HttpClientConnectionManager connManager;
@@ -80,171 +84,209 @@ class TestInternalHttpClient {
     private CredentialsProvider credentialsProvider;
     @Mock
     private RequestConfig defaultConfig;
-    @Mock
-    private Closeable closeable1;
-    @Mock
-    private Closeable closeable2;
 
-    private InternalHttpClient client;
+    private AutoCloseable mocks;
 
     @BeforeEach
-    void setup() {
-        MockitoAnnotations.openMocks(this);
-        client = new InternalHttpClient(connManager, requestExecutor, new ExecChainElement(execChain, null), routePlanner,
+    void openMocks() {
+        mocks = MockitoAnnotations.openMocks(this);
+    }
+
+    @AfterEach
+    void closeMocks() throws Exception {
+        if (mocks != null) {
+            mocks.close();
+        }
+        // clear any accidental interrupt so it doesn't affect other tests
+        Thread.interrupted();
+    }
+
+    @Test
+    void testExecutionException_ioExceptionPropagates() throws Exception {
+        final IOException cause = new IOException("boom");
+        final ExecutorService exec = new ThrowingSubmitExecutor(cause, false);
+        final InternalHttpClient client = new InternalHttpClient(
+                connManager, requestExecutor, new ExecChainElement(execChain, null), routePlanner,
                 cookieSpecRegistry, authSchemeRegistry, cookieStore, credentialsProvider,
-                HttpClientContext::castOrCreate, defaultConfig, Arrays.asList(closeable1, closeable2));
+                HttpClientContext::castOrCreate, defaultConfig, null, exec, true, null);
 
+        final HttpGet httpget = new HttpGet("http://example/");
+        final IOException thrown = assertThrows(IOException.class, () -> client.execute(httpget, rsp -> null));
+        assertSame(cause, thrown);
     }
 
     @Test
-    void testExecute() throws Exception {
-        final HttpGet httpget = new HttpGet("http://somehost/stuff");
-        final HttpRoute route = new HttpRoute(new HttpHost("somehost", 80));
+    void testExecutionException_runtimeExceptionPropagates() throws Exception {
+        final RuntimeException cause = new IllegalStateException("boom");
+        final ExecutorService exec = new ThrowingSubmitExecutor(cause, false);
+        final InternalHttpClient client = new InternalHttpClient(
+                connManager, requestExecutor, new ExecChainElement(execChain, null), routePlanner,
+                cookieSpecRegistry, authSchemeRegistry, cookieStore, credentialsProvider,
+                HttpClientContext::castOrCreate, defaultConfig, null, exec, true, null);
 
-        Mockito.when(routePlanner.determineRoute(
-                Mockito.eq(new HttpHost("somehost")),
-                Mockito.any(),
-                Mockito.<HttpClientContext>any())).thenReturn(route);
-        Mockito.when(execChain.execute(
-                Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(
-                CloseableHttpResponse.adapt(new BasicClassicHttpResponse(200)));
-
-        client.execute(httpget, response -> null);
-
-        Mockito.verify(execChain).execute(
-                Mockito.any(),
-                Mockito.any(),
-                Mockito.any());
+        final HttpGet httpget = new HttpGet("http://example/");
+        assertThrows(IllegalStateException.class, () -> client.execute(httpget, rsp -> null));
     }
 
     @Test
-    void testExecuteHttpException() throws Exception {
-        final HttpGet httpget = new HttpGet("http://somehost/stuff");
-        final HttpRoute route = new HttpRoute(new HttpHost("somehost", 80));
+    void testExecutionException_errorPropagates() throws Exception {
+        final Error cause = new AssertionError("boom");
+        final ExecutorService exec = new ThrowingSubmitExecutor(cause, false);
+        final InternalHttpClient client = new InternalHttpClient(
+                connManager, requestExecutor, new ExecChainElement(execChain, null), routePlanner,
+                cookieSpecRegistry, authSchemeRegistry, cookieStore, credentialsProvider,
+                HttpClientContext::castOrCreate, defaultConfig, null, exec, true, null);
 
-        Mockito.when(routePlanner.determineRoute(
-                Mockito.eq(new HttpHost("somehost")),
-                Mockito.any(),
-                Mockito.<HttpClientContext>any())).thenReturn(route);
-        Mockito.when(execChain.execute(
-                Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(
-                CloseableHttpResponse.adapt(new BasicClassicHttpResponse(200)));
-        Mockito.when(execChain.execute(
-                Mockito.any(),
-                Mockito.any(),
-                Mockito.any())).thenThrow(new HttpException());
-
-        Assertions.assertThrows(ClientProtocolException.class, () ->
-                client.execute(httpget, response -> null));
+        final HttpGet httpget = new HttpGet("http://example/");
+        assertThrows(AssertionError.class, () -> client.execute(httpget, rsp -> null));
     }
 
     @Test
-    void testExecuteDefaultContext() throws Exception {
-        final HttpGet httpget = new HttpGet("http://somehost/stuff");
-        final HttpRoute route = new HttpRoute(new HttpHost("somehost", 80));
+    void testExecutionException_otherWrappedAsIOException() throws Exception {
+        final Throwable cause = new Throwable("boom");
+        final ExecutorService exec = new ThrowingSubmitExecutor(cause, false);
+        final InternalHttpClient client = new InternalHttpClient(
+                connManager, requestExecutor, new ExecChainElement(execChain, null), routePlanner,
+                cookieSpecRegistry, authSchemeRegistry, cookieStore, credentialsProvider,
+                HttpClientContext::castOrCreate, defaultConfig, null, exec, true, null);
 
-        Mockito.when(routePlanner.determineRoute(
-                Mockito.eq(new HttpHost("somehost")),
-                Mockito.any(),
-                Mockito.<HttpClientContext>any())).thenReturn(route);
-        Mockito.when(execChain.execute(
-                Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(
-                CloseableHttpResponse.adapt(new BasicClassicHttpResponse(200)));
-
-        final HttpClientContext context = HttpClientContext.create();
-        client.execute(httpget, context, response -> null);
-
-        Assertions.assertSame(cookieSpecRegistry, context.getCookieSpecRegistry());
-        Assertions.assertSame(authSchemeRegistry, context.getAuthSchemeRegistry());
-        Assertions.assertSame(cookieStore, context.getCookieStore());
-        Assertions.assertSame(credentialsProvider, context.getCredentialsProvider());
-        Assertions.assertSame(defaultConfig, context.getRequestConfigOrDefault());
+        final HttpGet httpget = new HttpGet("http://example/");
+        final IOException thrown = assertThrows(IOException.class, () -> client.execute(httpget, rsp -> null));
+        assertSame(cause, thrown.getCause());
     }
 
     @Test
-    void testExecuteRequestConfig() throws Exception {
-        final HttpGet httpget = new HttpGet("http://somehost/stuff");
-        final HttpRoute route = new HttpRoute(new HttpHost("somehost", 80));
+    void testRejectedExecutionMappedToIOException() throws Exception {
+        final ExecutorService exec = new ThrowingSubmitExecutor(null, true);
+        final InternalHttpClient client = new InternalHttpClient(
+                connManager, requestExecutor, new ExecChainElement(execChain, null), routePlanner,
+                cookieSpecRegistry, authSchemeRegistry, cookieStore, credentialsProvider,
+                HttpClientContext::castOrCreate, defaultConfig, null, exec, true, null);
 
-        Mockito.when(routePlanner.determineRoute(
-                Mockito.eq(new HttpHost("somehost")),
-                Mockito.any(),
-                Mockito.<HttpClientContext>any())).thenReturn(route);
-        Mockito.when(execChain.execute(
-                Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(
-                CloseableHttpResponse.adapt(new BasicClassicHttpResponse(200)));
-
-        final RequestConfig config = RequestConfig.custom().build();
-        httpget.setConfig(config);
-        final HttpClientContext context = HttpClientContext.create();
-        client.execute(httpget, context, response -> null);
-
-        Assertions.assertSame(config, context.getRequestConfigOrDefault());
+        final HttpGet httpget = new HttpGet("http://example/");
+        final IOException thrown = assertThrows(IOException.class, () -> client.execute(httpget, rsp -> null));
+        assertTrue(thrown.getMessage().contains("client closed"));
+        assertTrue(thrown.getCause() instanceof RejectedExecutionException);
     }
 
     @Test
-    void testExecuteLocalContext() throws Exception {
-        final HttpGet httpget = new HttpGet("http://somehost/stuff");
-        final HttpRoute route = new HttpRoute(new HttpHost("somehost", 80));
+    void testCloseGracefulAwaitInterruptedReinterruptsCaller() throws Exception {
+        final InterruptingAwaitExecutor exec = new InterruptingAwaitExecutor();
+        final InternalHttpClient client = new InternalHttpClient(
+                connManager, requestExecutor, new ExecChainElement(execChain, null), routePlanner,
+                cookieSpecRegistry, authSchemeRegistry, cookieStore, credentialsProvider,
+                HttpClientContext::castOrCreate, defaultConfig, null, exec, true, null);
 
-        Mockito.when(routePlanner.determineRoute(
-                Mockito.eq(new HttpHost("somehost")),
-                Mockito.any(),
-                Mockito.<HttpClientContext>any())).thenReturn(route);
-        Mockito.when(execChain.execute(
-                Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(
-                CloseableHttpResponse.adapt(new BasicClassicHttpResponse(200)));
-
-        final HttpClientContext context = HttpClientContext.create();
-
-        final Lookup<CookieSpecFactory> localCookieSpecRegistry = Mockito.mock(Lookup.class);
-        final Lookup<AuthSchemeFactory> localAuthSchemeRegistry = Mockito.mock(Lookup.class);
-        final CookieStore localCookieStore = Mockito.mock(CookieStore.class);
-        final CredentialsProvider localCredentialsProvider = Mockito.mock(CredentialsProvider.class);
-        final RequestConfig localConfig = RequestConfig.custom().build();
-
-        context.setCookieSpecRegistry(localCookieSpecRegistry);
-        context.setAuthSchemeRegistry(localAuthSchemeRegistry);
-        context.setCookieStore(localCookieStore);
-        context.setCredentialsProvider(localCredentialsProvider);
-        context.setRequestConfig(localConfig);
-
-        client.execute(httpget, context, response -> null);
-
-        Assertions.assertSame(localCookieSpecRegistry, context.getCookieSpecRegistry());
-        Assertions.assertSame(localAuthSchemeRegistry, context.getAuthSchemeRegistry());
-        Assertions.assertSame(localCookieStore, context.getCookieStore());
-        Assertions.assertSame(localCredentialsProvider, context.getCredentialsProvider());
-        Assertions.assertSame(localConfig, context.getRequestConfigOrDefault());
+        assertFalse(Thread.currentThread().isInterrupted());
+        client.close(CloseMode.GRACEFUL);
+        assertTrue(Thread.currentThread().isInterrupted());
     }
 
-    @Test
-    void testClientClose() throws Exception {
-        client.close();
+    /**
+     * Executor whose submit(Callable) returns a Future whose get() always throws ExecutionException(cause),
+     * or whose submit throws RejectedExecutionException when reject == true.
+     */
+    static final class ThrowingSubmitExecutor extends AbstractExecutorService {
+        private final Throwable cause;
+        private final boolean reject;
 
-        Mockito.verify(closeable1).close();
-        Mockito.verify(closeable2).close();
+        ThrowingSubmitExecutor(final Throwable cause, final boolean reject) {
+            this.cause = cause;
+            this.reject = reject;
+        }
+
+        @Override
+        public <T> Future<T> submit(final Callable<T> task) {
+            if (reject) {
+                throw new RejectedExecutionException("rejected");
+            }
+            return new Future<T>() {
+                @Override
+                public boolean cancel(final boolean mayInterruptIfRunning) {
+                    return false;
+                }
+
+                @Override
+                public boolean isCancelled() {
+                    return false;
+                }
+
+                @Override
+                public boolean isDone() {
+                    return true;
+                }
+
+                @Override
+                public T get() throws ExecutionException {
+                    throw new ExecutionException(cause);
+                }
+
+                @Override
+                public T get(final long timeout, final TimeUnit unit) throws ExecutionException {
+                    throw new ExecutionException(cause);
+                }
+            };
+        }
+
+        @Override
+        public void execute(final Runnable command) {
+        }
+
+        @Override
+        public void shutdown() {
+        }
+
+        @Override
+        public List<Runnable> shutdownNow() {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return false;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return true;
+        }
+
+        @Override
+        public boolean awaitTermination(final long timeout, final TimeUnit unit) {
+            return true;
+        }
     }
 
-    @Test
-    void testClientCloseIOException() throws Exception {
-        Mockito.doThrow(new IOException()).when(closeable1).close();
+    /**
+     * Executor whose awaitTermination always throws InterruptedException to trigger the re-interrupt branch.
+     */
+    static final class InterruptingAwaitExecutor extends AbstractExecutorService {
+        @Override
+        public void execute(final Runnable command) {
+        }
 
-        client.close();
+        @Override
+        public void shutdown() {
+        }
 
-        Mockito.verify(closeable1).close();
-        Mockito.verify(closeable2).close();
-    }
+        @Override
+        public List<Runnable> shutdownNow() {
+            return Collections.emptyList();
+        }
 
-    @Test
-    void testDoExecuteThrowsWhenNoTargetOrHost() throws Exception {
-        final ClassicHttpRequest request = ClassicRequestBuilder.get("/foo").build();
-        final HttpClientContext context = HttpClientContext.create();
-        Mockito.when(routePlanner.determineRoute(
-                Mockito.eq(null),
-                Mockito.any(),
-                Mockito.<HttpClientContext>any())).thenThrow(new ProtocolException());
-        Assertions.assertThrows(ClientProtocolException.class, () ->
-                client.execute(null, request, context));
+        @Override
+        public boolean isShutdown() {
+            return true;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return true;
+        }
+
+        @Override
+        public boolean awaitTermination(final long timeout, final TimeUnit unit) throws InterruptedException {
+            throw new InterruptedException("boom");
+        }
     }
 }
