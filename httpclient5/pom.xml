@@ -118,6 +118,20 @@
       <artifactId>zstd-jni</artifactId>
       <optional>true</optional>
     </dependency>
+
+    <dependency>
+      <groupId>org.openjdk.jmh</groupId>
+      <artifactId>jmh-core</artifactId>
+      <version>1.36</version>
+    </dependency>
+    <!-- Annotation processor for generating the JMH harness -->
+    <dependency>
+      <groupId>org.openjdk.jmh</groupId>
+      <artifactId>jmh-generator-annprocess</artifactId>
+      <version>1.36</version>
+      <scope>provided</scope>
+    </dependency>
+
   </dependencies>
 
   <build>
