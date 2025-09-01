@@ -26,6 +26,8 @@
  */
 package org.apache.hc.client5.http.impl.classic;
 
+import static org.junit.jupiter.api.condition.JRE.JAVA_21;
+
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
@@ -46,10 +48,9 @@ import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.io.CloseMode;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledForJreRange;
 
-/**
- * Tests for {@link VirtualThreadCloseableHttpClient}.
- */
+@EnabledForJreRange(min = JAVA_21)
 class TestVirtualThreadCloseableHttpClient {
 
     static final class StubClient extends CloseableHttpClient {

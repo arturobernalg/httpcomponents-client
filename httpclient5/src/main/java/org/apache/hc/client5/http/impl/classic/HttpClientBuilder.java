@@ -245,6 +245,8 @@ public class HttpClientBuilder {
     private boolean shutdownVirtualThreadExecutor = true;
     private TimeValue virtualThreadShutdownWait = TimeValue.ofSeconds(2);
 
+    private boolean virtualThreadRunHandler;
+
     public static HttpClientBuilder create() {
         return new HttpClientBuilder();
     }
@@ -894,10 +896,7 @@ public class HttpClientBuilder {
      * @since 5.6
      */
     public final HttpClientBuilder virtualThreadExecutor(final ExecutorService exec) {
-        this.virtualThreadExecutor = exec;
-        this.shutdownVirtualThreadExecutor = false; // shared by default
-        this.useVirtualThreads = true;              // ensure VT path is active
-        return this;
+        return virtualThreadExecutor(exec, false);
     }
 
     /**
@@ -915,6 +914,26 @@ public class HttpClientBuilder {
      */
     public final HttpClientBuilder virtualThreadShutdownWait(final TimeValue waitTime) {
         this.virtualThreadShutdownWait = waitTime;
+        return this;
+    }
+
+
+    /**
+     * Configures the client to run the user-supplied {@link org.apache.hc.core5.http.io.HttpClientResponseHandler}
+     * <p>
+     * on a virtual thread as well as the transport layer. By default, the response handler runs on the caller thread.
+     * <p>
+     * <p>
+     * This has an effect only when virtual threads are enabled via {@link #useVirtualThreads()} or
+     * <p>
+     * {@link #virtualThreadExecutor(java.util.concurrent.ExecutorService)}.
+     * </p>
+     *
+     * @return this builder
+     * @since 5.6
+     */
+    public HttpClientBuilder virtualThreadsRunHandler() {
+        this.virtualThreadRunHandler = true;
         return this;
     }
 
@@ -1257,7 +1276,7 @@ public class HttpClientBuilder {
                     ? VirtualThreadSupport.newVirtualThreadPerTaskExecutor(virtualThreadNamePrefix)
                     : null);
             if (vtExecToUse != null) {
-                return new VirtualThreadCloseableHttpClient(base, vtExecToUse, shutdownVirtualThreadExecutor, virtualThreadShutdownWait);
+                return new VirtualThreadCloseableHttpClient(base, vtExecToUse, shutdownVirtualThreadExecutor, virtualThreadShutdownWait, virtualThreadRunHandler);
             }
         }
         return base;

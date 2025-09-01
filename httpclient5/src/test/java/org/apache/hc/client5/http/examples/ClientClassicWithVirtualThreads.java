@@ -36,12 +36,30 @@ import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 
+/**
+ * Demonstrates enabling Virtual Threads for the classic {@link CloseableHttpClient}.
+ * <p>
+ * <strong>Requirements:</strong> run on JDK&nbsp;21 or newer. The feature is disabled by default;
+ * you enable it via the builder. When enabled, the client performs the transport layer
+ * (connection lease, send, receive, entity streaming) on Virtual Threads while preserving the
+ * classic blocking API and error semantics.
+ * </p>
+ * <p>
+ * Notes:
+ * <ul>
+ *   <li>You can choose a thread-name prefix (useful for diagnostics).</li>
+ *   <li>For production, prefer reusing a single {@code CloseableHttpClient} and a connection pool.</li>
+ * </ul>
+ * </p>
+ * @since 5.6
+ */
 public class ClientClassicWithVirtualThreads {
 
     public static void main(final String[] args) throws Exception {
         try (final CloseableHttpClient httpclient = HttpClients.custom()
                 .useVirtualThreads()
                 .virtualThreadNamePrefix("hc-vt-")
+                .virtualThreadsRunHandler()
                 .build()) {
 
             final HttpGet httpget = new HttpGet("http://httpbin.org/get");

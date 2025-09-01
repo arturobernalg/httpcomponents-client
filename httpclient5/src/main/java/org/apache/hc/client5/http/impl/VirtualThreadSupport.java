@@ -32,6 +32,21 @@ import java.util.concurrent.ThreadFactory;
 
 import org.apache.hc.core5.annotation.Internal;
 
+/**
+ * Utilities for working with JDK 21 virtual threads without introducing a hard runtime dependency.
+ *
+ * <p>
+ * <p>
+ * All methods use reflection to detect and construct virtual-thread components so that the client
+ * <p>
+ * remains source- and binary-compatible with earlier JDKs. On runtimes where virtual threads are
+ * <p>
+ * unavailable, the helpers either return {@code false} (for detection) or throw
+ * <p>
+ * {@link UnsupportedOperationException} (for construction).
+ * </p>
+ *
+ **/
 @Internal
 public final class VirtualThreadSupport {
 
@@ -71,28 +86,15 @@ public final class VirtualThreadSupport {
         }
     }
 
-    public static ThreadFactory newVirtualThreadFactory(final String namePrefix) {
+    public static ThreadFactory newVirtualThreadFactory(final String ignored) {
         if (!isAvailable()) {
             throw new UnsupportedOperationException("Virtual threads are not available on this runtime");
         }
         try {
             final Class<?> threadClass = Class.forName("java.lang.Thread");
-            final Method ofVirtual = threadClass.getMethod("ofVirtual");
-            Object builder = ofVirtual.invoke(null);
+            final Object builder = threadClass.getMethod("ofVirtual").invoke(null);
             final Class<?> ofVirtualClass = Class.forName("java.lang.Thread$Builder$OfVirtual");
-            try {
-                final Method name2 = ofVirtualClass.getMethod("name", String.class, long.class);
-                builder = name2.invoke(builder, namePrefix, 0L);
-            } catch (final NoSuchMethodException e1) {
-                try {
-                    final Method name1 = ofVirtualClass.getMethod("name", String.class);
-                    builder = name1.invoke(builder, namePrefix);
-                } catch (final NoSuchMethodException e2) {
-                    // ignore
-                }
-            }
-            final Method factoryMethod = ofVirtualClass.getMethod("factory");
-            return (ThreadFactory) factoryMethod.invoke(builder);
+            return (ThreadFactory) ofVirtualClass.getMethod("factory").invoke(builder);
         } catch (final Throwable t) {
             throw new UnsupportedOperationException("Failed to initialize virtual thread factory", t);
         }
