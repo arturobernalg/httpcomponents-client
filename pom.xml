@@ -264,6 +264,7 @@
     <module>httpclient5</module>
     <module>httpclient5-observation</module>
     <module>httpclient5-fluent</module>
+    <module>httpclient5-socket</module>
     <module>httpclient5-cache</module>
     <module>httpclient5-testing</module>
   </modules>
