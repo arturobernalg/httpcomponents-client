@@ -24,9 +24,15 @@
  * <http://www.apache.org/>.
  *
  */
+package org.apache.hc.client5.http.websocket.core.close;
 
-/**
- * Simple facade APIs for HttpClient based on the concept of
- * a fluent interface.
- */
-package org.apache.hc.client5.http.socket;
+
+public final class WsProtocolException extends RuntimeException {
+
+    public final int closeCode;
+
+    public WsProtocolException(final int closeCode, final String message) {
+        super(message);
+        this.closeCode = closeCode;
+    }
+}
