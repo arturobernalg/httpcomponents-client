@@ -42,8 +42,8 @@ final class ExtensionChainTest {
 
         final byte[] data = "compress me please".getBytes(StandardCharsets.UTF_8);
 
-        final Extension.Encoded enc = pmce.encode(data, true, true);
-        final byte[] back = chain.decode(enc.payload);
+        final Extension.Encoded enc = pmce.newEncoder().encode(data, true, true);
+        final byte[] back = chain.newDecodeChain().decode(enc.payload);
 
         assertArrayEquals(data, back);
     }

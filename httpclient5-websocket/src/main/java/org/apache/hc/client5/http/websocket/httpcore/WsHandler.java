@@ -174,7 +174,7 @@ public final class WsHandler implements IOEventHandler {
                 try {
                     has = decoder.decode(inbuf);
                 } catch (final RuntimeException rte) {
-                    final int code = (rte instanceof WsProtocolException)
+                    final int code = rte instanceof WsProtocolException
                             ? ((WsProtocolException) rte).closeCode
                             : 1002; // protocol error
                     initiateCloseAndWait(ioSession, code, rte.getMessage());

@@ -303,7 +303,9 @@ public final class WebSocketClientConfig {
          * Add a subprotocol to offer (Sec-WebSocket-Protocol).
          */
         public Builder addSubprotocol(final String proto) {
-            if (proto != null && !proto.isEmpty()) this.subprotocols.add(proto);
+            if (proto != null && !proto.isEmpty()) {
+                this.subprotocols.add(proto);
+            }
             return this;
         }
 
@@ -312,7 +314,9 @@ public final class WebSocketClientConfig {
          */
         public Builder setSubprotocols(final List<String> protos) {
             this.subprotocols.clear();
-            if (protos != null) this.subprotocols.addAll(protos);
+            if (protos != null) {
+                this.subprotocols.addAll(protos);
+            }
             return this;
         }
 
