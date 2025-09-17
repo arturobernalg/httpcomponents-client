@@ -40,6 +40,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.hc.client5.http.websocket.api.WebSocket;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
+import org.apache.hc.client5.http.websocket.core.close.WsProtocolException;
 import org.apache.hc.client5.http.websocket.core.extension.ExtensionChain;
 import org.apache.hc.client5.http.websocket.core.frame.FrameWriter;
 import org.apache.hc.client5.http.websocket.core.frame.Opcode;
@@ -57,26 +58,25 @@ import org.slf4j.LoggerFactory;
  * RFC6455/7692 WebSocket handler on HttpCore.
  * - Control frames + close handshake.
  * - Inbound fragmentation assembly + maxMessageSize.
- * - Optional ExtensionChain (e.g., permessage-deflate) on single-frame messages.
+ * - PMCE thread-safety: per-thread encoder (app) / decoder (I/O) via EncodeChain/DecodeChain.
  * - Outbound: control-first scheduling BETWEEN frames, never mid-frame.
- * - Outbound: bounded drain loop + small auto-chunks so PING is timely.
+ * - Outbound: bounded drain loop + cfg.outgoingChunkSize chunks so PING is timely.
  */
 public final class WsHandler implements IOEventHandler {
     private static final Logger LOG = LoggerFactory.getLogger(WsHandler.class);
 
     /**
-     * Small chunk so control traffic can preempt quickly between frames.
-     */
-    private static final int OUT_CHUNK = 4096;
-    /**
      * Prevent monopolizing the reactor: max frames we’ll push per output tick.
      */
-    private static final int MAX_FRAMES_PER_TICK = 64;
+//    private static final int MAX_FRAMES_PER_TICK = 64;
 
     private final ProtocolIOSession session;
     private final WebSocketListener listener;
     private final WebSocketClientConfig cfg;
-    private final ExtensionChain chain; // nullable
+
+    // Per-thread PMCE chains
+    private final ExtensionChain.EncodeChain encChain; // app thread
+    private final ExtensionChain.DecodeChain decChain; // I/O thread
 
     private final FrameWriter writer = new FrameWriter();
     private final WsDecoder decoder;
@@ -104,6 +104,11 @@ public final class WsHandler implements IOEventHandler {
     // Outbound application fragmentation state
     private int outOpcode = -1;
 
+    // Configured outbound chunk size
+    private final int outChunk;
+
+    private final int maxFramesPerTick;
+
     public WsHandler(final ProtocolIOSession session,
                      final WebSocketListener listener,
                      final WebSocketClientConfig cfg) {
@@ -117,8 +122,16 @@ public final class WsHandler implements IOEventHandler {
         this.session = session;
         this.listener = listener;
         this.cfg = cfg;
-        this.chain = chain;
         this.decoder = new WsDecoder(cfg.maxFrameSize);
+        this.outChunk = Math.max(256, cfg.outgoingChunkSize);
+        this.maxFramesPerTick = Math.max(1, cfg.maxFramesPerTick);
+        if (chain != null && !chain.isEmpty()) {
+            this.encChain = chain.newEncodeChain(); // app thread
+            this.decChain = chain.newDecodeChain(); // I/O thread
+        } else {
+            this.encChain = null;
+            this.decChain = null;
+        }
     }
 
     public WebSocket exposeWebSocket() {
@@ -161,7 +174,10 @@ public final class WsHandler implements IOEventHandler {
                 try {
                     has = decoder.decode(inbuf);
                 } catch (final RuntimeException rte) {
-                    initiateCloseAndWait(ioSession, 1002, rte.getMessage());
+                    final int code = (rte instanceof WsProtocolException)
+                            ? ((WsProtocolException) rte).closeCode
+                            : 1002; // protocol error
+                    initiateCloseAndWait(ioSession, code, rte.getMessage());
                     inbuf.clear();
                     return;
                 }
@@ -182,7 +198,7 @@ public final class WsHandler implements IOEventHandler {
                     inbuf.clear();
                     return;
                 }
-                if (r1 && chain == null) {
+                if (r1 && decChain == null) {
                     initiateCloseAndWait(ioSession, 1002, "RSV1 without negotiated extension");
                     inbuf.clear();
                     return;
@@ -193,7 +209,7 @@ public final class WsHandler implements IOEventHandler {
                     continue;
                 }
 
-                // Control frame checks
+                // Control frame checks (already enforced by decoder, but keep)
                 if (Opcode.isControl(op)) {
                     if (!fin) {
                         initiateCloseAndWait(ioSession, 1002, "fragmented control frame");
@@ -286,11 +302,11 @@ public final class WsHandler implements IOEventHandler {
                             initiateCloseAndWait(ioSession, 1009, "Message too big");
                             break;
                         }
-                        if (r1 && chain != null) {
+                        if (r1 && decChain != null) {
                             final byte[] comp = toBytes(payload);
                             final byte[] plain;
                             try {
-                                plain = chain.decode(comp);
+                                plain = decChain.decode(comp);
                             } catch (final Exception e) {
                                 initiateCloseAndWait(ioSession, 1007, "Extension decode failed");
                                 inbuf.clear();
@@ -321,7 +337,7 @@ public final class WsHandler implements IOEventHandler {
             int framesThisTick = 0;
 
             // Drain bounded number of frames per tick
-            while (framesThisTick < MAX_FRAMES_PER_TICK) {
+            while (framesThisTick < maxFramesPerTick) {
                 // Finish current frame first
                 if (activeWrite != null && activeWrite.hasRemaining()) {
                     final int written = ioSession.write(activeWrite);
@@ -428,7 +444,7 @@ public final class WsHandler implements IOEventHandler {
 
     private void startMessage(final int opcode, final ByteBuffer payload, final boolean rsv1, final IOSession ioSession) {
         this.assemblingOpcode = opcode;
-        this.assemblingCompressed = rsv1 && chain != null;
+        this.assemblingCompressed = rsv1 && decChain != null;
         this.assemblingBytes = new ByteArrayOutputStream(Math.max(1024, payload.remaining()));
         this.assemblingSize = 0L;
         appendToMessage(payload, ioSession);
@@ -458,9 +474,9 @@ public final class WsHandler implements IOEventHandler {
         assemblingSize = 0L;
 
         byte[] data = body;
-        if (compressed && chain != null) {
+        if (compressed && decChain != null) {
             try {
-                data = chain.decode(body);
+                data = decChain.decode(body);
             } catch (final Exception e) {
                 try {
                     listener.onError(e);
@@ -579,10 +595,11 @@ public final class WsHandler implements IOEventHandler {
 
         private boolean sendData(final int opcode, final ByteBuffer data, final boolean fin) {
             int opcodeCopy = opcode;
-            // Single-frame fast path with extension chain
-            if (outOpcode == -1 && fin && chain != null && data.remaining() <= OUT_CHUNK) {
+
+            // Single-frame fast path with extension encode on app thread
+            if (outOpcode == -1 && fin && encChain != null && data.remaining() <= outChunk) {
                 final byte[] src = toBytes(data);
-                final ExtensionChain.Enc enc = chain.encode(src, true, true);
+                final ExtensionChain.EncodeChain.Enc enc = encChain.encode(src, true, true);
                 final ByteBuffer payload = ByteBuffer.wrap(enc.payload);
                 final int rsv = enc.setRsv1 ? FrameWriter.RSV1 : 0;
                 enqueueData(writer.frameWithRSV(opcodeCopy, payload, true, true, rsv));
@@ -593,7 +610,7 @@ public final class WsHandler implements IOEventHandler {
             if (outOpcode == -1) {
                 outOpcode = opcodeCopy;
                 while (data.hasRemaining()) {
-                    final int n = Math.min(data.remaining(), OUT_CHUNK);
+                    final int n = Math.min(data.remaining(), outChunk);
                     final ByteBuffer slice = sliceN(data, n);
                     final boolean lastChunk = !data.hasRemaining() && fin;
                     enqueueData(writer.frame(opcodeCopy, slice, lastChunk, true));
@@ -607,7 +624,7 @@ public final class WsHandler implements IOEventHandler {
 
             // Continuations while a fragmented message is in progress
             while (data.hasRemaining()) {
-                final int n = Math.min(data.remaining(), OUT_CHUNK);
+                final int n = Math.min(data.remaining(), outChunk);
                 final ByteBuffer slice = sliceN(data, n);
                 final boolean lastChunk = !data.hasRemaining() && fin;
                 enqueueData(writer.frame(Opcode.CONT, slice, lastChunk, true));

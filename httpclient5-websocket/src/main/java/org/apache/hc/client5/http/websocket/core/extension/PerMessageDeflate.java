@@ -33,17 +33,13 @@ import java.util.zip.Inflater;
 import org.apache.hc.client5.http.websocket.core.frame.FrameHeaderBits;
 
 public final class PerMessageDeflate implements Extension {
+    private static final byte[] TAIL = new byte[]{0x00, 0x00, (byte) 0xFF, (byte) 0xFF};
 
     private final boolean enabled;
     private final boolean serverNoContextTakeover;
     private final boolean clientNoContextTakeover;
     private final Integer clientMaxWindowBits; // negotiated or null
     private final Integer serverMaxWindowBits; // negotiated or null
-
-    private final Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true); // raw DEFLATE
-    private final Inflater inflater = new Inflater(true);
-
-    private static final byte[] TAIL = new byte[]{0x00, 0x00, (byte) 0xFF, (byte) 0xFF};
 
     public PerMessageDeflate(final boolean enabled,
                              final boolean serverNoContextTakeover,
@@ -57,142 +53,101 @@ public final class PerMessageDeflate implements Extension {
         this.serverMaxWindowBits = serverMaxWindowBits;
     }
 
-    // ---- Extension API ----
+    @Override
+    public int rsvMask() { return FrameHeaderBits.RSV1; }
 
     @Override
-    public int rsvMask() {
-        // PMCE uses RSV1 per RFC 7692
-        return FrameHeaderBits.RSV1; // RSV1 bit in the WebSocket frame header
-    }
-
-    @Override
-    public Encoded encode(final byte[] data, final boolean first, final boolean fin) {
+    public Encoder newEncoder() {
         if (!enabled) {
-            return new Encoded(data, false);
+            return (data, first, fin) -> new Encoded(data, false);
         }
-        final byte[] out = first && fin
-                ? compressMessage(data)          // single-frame message
-                : compressFragment(data, fin);   // streaming fragment
-        // signal that RSV must be set on the FIRST compressed data frame only
-        return new Encoded(out, first);
-    }
+        return new Encoder() {
+            private final Deflater def = new Deflater(Deflater.DEFAULT_COMPRESSION, true); // raw DEFLATE
 
-    @Override
-    public byte[] decode(final byte[] compressedMessage) {
-        if (!enabled) {
-            return compressedMessage;
-        }
-        return decompressMessage(compressedMessage);
-    }
-
-    // ---- helpers ----
-
-    public byte[] compressMessage(final byte[] data) {
-        return doDeflate(data, /*fin=*/true, /*stripTail=*/true, /*maybeReset=*/clientNoContextTakeover);
-    }
-
-    public byte[] compressFragment(final byte[] data, final boolean fin) {
-        return doDeflate(data, fin, /*stripTail=*/true, /*maybeReset=*/fin && clientNoContextTakeover);
-    }
-
-    public byte[] decompressMessage(final byte[] compressed) {
-        return doInflate(compressed, /*fin=*/true, /*maybeReset=*/serverNoContextTakeover);
-    }
-
-    private byte[] doDeflate(final byte[] data,
-                             final boolean fin,
-                             final boolean stripTail,
-                             final boolean maybeReset) {
-        if (data == null || data.length == 0) {
-            if (maybeReset) {
-                deflater.reset();
+            @Override
+            public Encoded encode(final byte[] data, final boolean first, final boolean fin) {
+                final byte[] out = (first && fin)
+                        ? compressMessage(data)
+                        : compressFragment(data, fin);
+                // RSV1 on first compressed data frame only
+                return new Encoded(out, first);
             }
-            return new byte[0];
-        }
 
-        deflater.setInput(data);
-        final ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(128, data.length / 2));
-        final byte[] buf = new byte[8192];
-
-        while (!deflater.needsInput()) {
-            final int n = deflater.deflate(buf, 0, buf.length, Deflater.SYNC_FLUSH);
-            if (n > 0) {
-                out.write(buf, 0, n);
-            } else {
-                break;
+            private byte[] compressMessage(final byte[] data) {
+                return doDeflate(data, /*fin=*/true, /*stripTail=*/true, /*maybeReset=*/clientNoContextTakeover);
             }
-        }
 
-        byte[] all = out.toByteArray();
-        if (stripTail && all.length >= 4) {
-            final int newLen = all.length - 4; // strip 00 00 FF FF
-            if (newLen <= 0) {
-                all = new byte[0];
-            } else {
-                final byte[] trimmed = new byte[newLen];
-                System.arraycopy(all, 0, trimmed, 0, newLen);
-                all = trimmed;
+            private byte[] compressFragment(final byte[] data, final boolean fin) {
+                return doDeflate(data, fin, /*stripTail=*/true, /*maybeReset=*/fin && clientNoContextTakeover);
             }
-        }
 
-        if (fin && maybeReset) {
-            deflater.reset();
-        }
-        return all;
-    }
-
-    private byte[] doInflate(final byte[] compressed,
-                             final boolean fin,
-                             final boolean maybeReset) {
-        final byte[] withTail;
-        if (compressed == null || compressed.length == 0) {
-            withTail = TAIL.clone();
-        } else {
-            withTail = new byte[compressed.length + 4];
-            System.arraycopy(compressed, 0, withTail, 0, compressed.length);
-            System.arraycopy(TAIL, 0, withTail, compressed.length, 4);
-        }
-
-        inflater.setInput(withTail);
-        final ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(128, withTail.length * 2));
-        final byte[] buf = new byte[8192];
-        try {
-            while (!inflater.needsInput()) {
-                final int n = inflater.inflate(buf);
-                if (n > 0) {
-                    out.write(buf, 0, n);
-                } else {
-                    break;
+            private byte[] doDeflate(final byte[] data,
+                                     final boolean fin,
+                                     final boolean stripTail,
+                                     final boolean maybeReset) {
+                if (data == null || data.length == 0) {
+                    if (fin && maybeReset) def.reset();
+                    return new byte[0];
                 }
+                def.setInput(data);
+                final ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(128, data.length / 2));
+                final byte[] buf = new byte[8192];
+                while (!def.needsInput()) {
+                    final int n = def.deflate(buf, 0, buf.length, Deflater.SYNC_FLUSH);
+                    if (n > 0) out.write(buf, 0, n); else break;
+                }
+                byte[] all = out.toByteArray();
+                if (stripTail && all.length >= 4) {
+                    final int newLen = all.length - 4; // strip 00 00 FF FF
+                    if (newLen <= 0) all = new byte[0];
+                    else {
+                        final byte[] trimmed = new byte[newLen];
+                        System.arraycopy(all, 0, trimmed, 0, newLen);
+                        all = trimmed;
+                    }
+                }
+                if (fin && maybeReset) def.reset();
+                return all;
             }
-        } catch (final Exception e) {
-            throw new RuntimeException("permessage-deflate inflate failed", e);
+        };
+    }
+
+    @Override
+    public Decoder newDecoder() {
+        if (!enabled) {
+            return payload -> payload;
         }
+        return new Decoder() {
+            private final Inflater inf = new Inflater(true);
 
-        if (fin && maybeReset) {
-            inflater.reset();
-        }
-        return out.toByteArray();
+            @Override
+            public byte[] decode(final byte[] compressedMessage) throws Exception {
+                final byte[] withTail;
+                if (compressedMessage == null || compressedMessage.length == 0) {
+                    withTail = TAIL.clone();
+                } else {
+                    withTail = new byte[compressedMessage.length + 4];
+                    System.arraycopy(compressedMessage, 0, withTail, 0, compressedMessage.length);
+                    System.arraycopy(TAIL, 0, withTail, compressedMessage.length, 4);
+                }
+
+                inf.setInput(withTail);
+                final ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(128, withTail.length * 2));
+                final byte[] buf = new byte[8192];
+                while (!inf.needsInput()) {
+                    final int n = inf.inflate(buf);
+                    if (n > 0) out.write(buf, 0, n); else break;
+                }
+                if (serverNoContextTakeover) inf.reset();
+                return out.toByteArray();
+            }
+        };
     }
 
-    // (optional) getters for logging/tests
-    public boolean isEnabled() {
-        return enabled;
-    }
-
-    public boolean isServerNoContextTakeover() {
-        return serverNoContextTakeover;
-    }
-
-    public boolean isClientNoContextTakeover() {
-        return clientNoContextTakeover;
-    }
-
-    public Integer getClientMaxWindowBits() {
-        return clientMaxWindowBits;
-    }
-
-    public Integer getServerMaxWindowBits() {
-        return serverMaxWindowBits;
-    }
+    // optional getters for logging/tests
+    public boolean isEnabled() { return enabled; }
+    public boolean isServerNoContextTakeover() { return serverNoContextTakeover; }
+    public boolean isClientNoContextTakeover() { return clientNoContextTakeover; }
+    public Integer getClientMaxWindowBits() { return clientMaxWindowBits; }
+    public Integer getServerMaxWindowBits() { return serverMaxWindowBits; }
 }
