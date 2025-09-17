@@ -130,6 +130,11 @@ public final class WebSocketClientConfig {
      */
     public final List<String> subprotocols;
 
+    /**
+     * Max frames drained per output tick (backpressure on writer loop).
+     */
+    public final int maxFramesPerTick;
+
     private WebSocketClientConfig(
             final int maxFrameSize,
             final long maxMessageSize,
@@ -143,7 +148,8 @@ public final class WebSocketClientConfig {
             final boolean offerClientNoContextTakeover,
             final Integer offerClientMaxWindowBits,
             final Integer offerServerMaxWindowBits,
-            final List<String> subprotocols) {
+            final List<String> subprotocols,
+            final int maxFramesPerTick) {
         this.maxFrameSize = maxFrameSize;
         this.maxMessageSize = maxMessageSize;
         this.connectTimeout = connectTimeout;
@@ -157,6 +163,7 @@ public final class WebSocketClientConfig {
         this.offerClientMaxWindowBits = offerClientMaxWindowBits;
         this.offerServerMaxWindowBits = offerServerMaxWindowBits;
         this.subprotocols = subprotocols;
+        this.maxFramesPerTick = maxFramesPerTick;
     }
 
     /**
@@ -181,6 +188,7 @@ public final class WebSocketClientConfig {
         private Timeout closeWaitTimeout = Timeout.ofSeconds(5);
         private boolean autoPong = true;
         private int outgoingChunkSize = 4096;                // 4 KiB
+        private int maxFramesPerTick = 64;
 
         private boolean perMessageDeflateEnabled = false;
         private boolean offerServerNoContextTakeover = false;
@@ -189,6 +197,8 @@ public final class WebSocketClientConfig {
         private Integer offerServerMaxWindowBits = null;
 
         private final List<String> subprotocols = new ArrayList<>();
+
+
 
         /**
          * Maximum allowed frame payload size in bytes (default 64 KiB).
@@ -307,6 +317,14 @@ public final class WebSocketClientConfig {
         }
 
         /**
+         * Max frames to write per output spin (default 64).
+         */
+        public Builder setMaxFramesPerTick(final int n) {
+            this.maxFramesPerTick = Math.max(1, n);
+            return this;
+        }
+
+        /**
          * Builds an immutable {@link WebSocketClientConfig}.
          */
         public WebSocketClientConfig build() {
@@ -324,7 +342,8 @@ public final class WebSocketClientConfig {
                     offerClientNoContextTakeover,
                     offerClientMaxWindowBits,
                     offerServerMaxWindowBits,
-                    Collections.unmodifiableList(new ArrayList<>(subprotocols))
+                    Collections.unmodifiableList(new ArrayList<>(subprotocols)),
+                    maxFramesPerTick
             );
         }
     }

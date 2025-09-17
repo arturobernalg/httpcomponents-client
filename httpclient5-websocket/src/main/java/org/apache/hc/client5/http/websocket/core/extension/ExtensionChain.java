@@ -37,9 +37,7 @@ public final class ExtensionChain {
     private final List<Extension> exts = new ArrayList<>();
 
     public void add(final Extension e) {
-        if (e != null) {
-            exts.add(e);
-        }
+        if (e != null) exts.add(e);
     }
 
     public boolean isEmpty() {
@@ -47,47 +45,77 @@ public final class ExtensionChain {
     }
 
     /**
-     * Encode one fragment through the chain; note RSV flag for the first extension.
+     * App-thread encoder chain.
      */
-    public Enc encode(final byte[] data, final boolean first, final boolean fin) {
-        if (exts.isEmpty()) {
-            return new Enc(data, false);
+    public EncodeChain newEncodeChain() {
+        final List<Extension.Encoder> encs = new ArrayList<>(exts.size());
+        for (Extension e : exts) encs.add(e.newEncoder());
+        return new EncodeChain(encs);
+    }
+
+    /**
+     * I/O-thread decoder chain.
+     */
+    public DecodeChain newDecodeChain() {
+        final List<Extension.Decoder> decs = new ArrayList<>(exts.size());
+        for (Extension e : exts) decs.add(e.newDecoder());
+        return new DecodeChain(decs);
+    }
+
+    // ----------------------
+
+    public static final class EncodeChain {
+        private final List<Extension.Encoder> encs;
+
+        public EncodeChain(final List<Extension.Encoder> encs) {
+            this.encs = encs;
         }
-        byte[] out = data;
-        boolean setRsv1 = false;
-        boolean firstExt = true;
-        for (final Extension e : exts) {
-            final Extension.Encoded res = e.encode(out, first, fin);
-            out = res.payload;
-            if (first && firstExt && res.setRsvOnFirst) {
-                setRsv1 = true;
+
+        /**
+         * Encode one fragment through the chain; note RSV flag for the first extension.
+         */
+        public Enc encode(final byte[] data, final boolean first, final boolean fin) {
+            if (encs.isEmpty()) return new Enc(data, false);
+            byte[] out = data;
+            boolean setRsv1 = false;
+            boolean firstExt = true;
+            for (final Extension.Encoder e : encs) {
+                final Extension.Encoded res = e.encode(out, first, fin);
+                out = res.payload;
+                if (first && firstExt && res.setRsvOnFirst) setRsv1 = true;
+                firstExt = false;
             }
-            firstExt = false;
+            return new Enc(out, setRsv1);
         }
-        return new Enc(out, setRsv1);
+
+        public static final class Enc {
+            public final byte[] payload;
+            public final boolean setRsv1;
+
+            public Enc(final byte[] payload, final boolean setRsv1) {
+                this.payload = payload;
+                this.setRsv1 = setRsv1;
+            }
+        }
     }
 
-    /**
-     * Decode a full message (reverse order if stacking).
-     */
-    public byte[] decode(final byte[] data) throws Exception {
-        byte[] out = data;
-        for (int i = exts.size() - 1; i >= 0; i--) {
-            out = exts.get(i).decode(out);
+    public static final class DecodeChain {
+        private final List<Extension.Decoder> decs;
+
+        public DecodeChain(final List<Extension.Decoder> decs) {
+            this.decs = decs;
         }
-        return out;
-    }
 
-    /**
-     * Result of a chain encode step.
-     */
-    public static final class Enc {
-        public final byte[] payload;
-        public final boolean setRsv1;
-
-        public Enc(final byte[] payload, final boolean setRsv1) {
-            this.payload = payload;
-            this.setRsv1 = setRsv1;
+        /**
+         * Decode a full message (reverse order if stacking).
+         */
+        public byte[] decode(final byte[] data) throws Exception {
+            byte[] out = data;
+            for (int i = decs.size() - 1; i >= 0; i--) {
+                out = decs.get(i).decode(out);
+            }
+            return out;
         }
     }
 }
+

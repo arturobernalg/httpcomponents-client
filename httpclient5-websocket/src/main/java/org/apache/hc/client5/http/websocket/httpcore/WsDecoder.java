@@ -28,6 +28,7 @@ package org.apache.hc.client5.http.websocket.httpcore;
 
 import java.nio.ByteBuffer;
 
+import org.apache.hc.client5.http.websocket.core.close.WsProtocolException;
 import org.apache.hc.client5.http.websocket.core.frame.Opcode;
 
 /**
@@ -60,19 +61,16 @@ public final class WsDecoder {
         rsv2 = (b0 & 0x20) != 0;
         rsv3 = (b0 & 0x10) != 0;
 
-        // No extensions negotiated here
-        if (rsv1 || rsv2 || rsv3) {
-            throw new IllegalStateException("RSV bits set without extension");
-        }
+        // RSV validation is done by the upper layer.
 
         opcode = b0 & 0x0F;
 
         final boolean masked = (b1 & 0x80) != 0;
         long len = b1 & 0x7F;
 
-        // Client receiving from server: MUST NOT be masked
+        // Server frames MUST NOT be masked -> 1002
         if (masked) {
-            throw new IllegalStateException("Server frame is masked");
+            throw new WsProtocolException(1002, "Server frame is masked");
         }
 
         if (len == 126) {
@@ -88,22 +86,23 @@ public final class WsDecoder {
             }
             final long l = in.getLong();
             if (l < 0) {
-                throw new IllegalStateException("Negative length");
+                throw new WsProtocolException(1002, "Negative length");
             }
             len = l;
         }
 
         if (Opcode.isControl(opcode)) {
             if (!fin) {
-                throw new IllegalStateException("fragmented control frame");
+                throw new WsProtocolException(1002, "Fragmented control frame");
             }
             if (len > 125) {
-                throw new IllegalStateException("control frame too large");
+                throw new WsProtocolException(1002, "Control frame too large");
             }
         }
 
-        if (len > Integer.MAX_VALUE || maxFrameSize > 0 && len > maxFrameSize) {
-            throw new IllegalStateException("Frame too large: " + len);
+        if (len > Integer.MAX_VALUE || (maxFrameSize > 0 && len > maxFrameSize)) {
+            // Application policy / too big -> 1009
+            throw new WsProtocolException(1009, "Frame too large: " + len);
         }
 
         if (in.remaining() < len) {
@@ -119,6 +118,7 @@ public final class WsDecoder {
         payload = data.asReadOnlyBuffer();
         return true;
     }
+
 
     public int opcode() {
         return opcode;

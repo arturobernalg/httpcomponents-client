@@ -33,28 +33,32 @@ package org.apache.hc.client5.http.websocket.core.extension;
  */
 public interface Extension {
 
-    /**
-     * RSV bits this extension uses on the first data frame (e.g. 0x40 for RSV1).
-     */
+    /** RSV bits this extension uses on the first data frame (e.g. 0x40 for RSV1). */
     int rsvMask();
 
-    /**
-     * Encode one fragment; return transformed payload and whether to set RSV on FIRST frame.
-     */
-    Encoded encode(byte[] data, boolean first, boolean fin);
+    /** Create a thread-confined encoder instance (app thread). */
+    Encoder newEncoder();
 
-    /**
-     * Decode a whole message produced with this extension.
-     */
-    byte[] decode(byte[] payload) throws Exception;
+    /** Create a thread-confined decoder instance (I/O thread). */
+    Decoder newDecoder();
 
+    /** Encoded fragment result. */
     final class Encoded {
         public final byte[] payload;
         public final boolean setRsvOnFirst;
-
         public Encoded(final byte[] payload, final boolean setRsvOnFirst) {
             this.payload = payload;
             this.setRsvOnFirst = setRsvOnFirst;
         }
+    }
+
+    interface Encoder {
+        /** Encode one fragment; return transformed payload and whether to set RSV on FIRST frame. */
+        Encoded encode(byte[] data, boolean first, boolean fin);
+    }
+
+    interface Decoder {
+        /** Decode a full message produced with this extension. */
+        byte[] decode(byte[] payload) throws Exception;
     }
 }
