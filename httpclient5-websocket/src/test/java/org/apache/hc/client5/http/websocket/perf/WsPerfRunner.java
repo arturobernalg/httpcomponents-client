@@ -208,7 +208,9 @@ public final class WsPerfRunner {
             final Args r = new Args();
             for (final String s : a) {
                 final String[] kv = s.split("=", 2);
-                if (kv.length != 2) continue;
+                if (kv.length != 2) {
+                    continue;
+                }
                 switch (kv[0]) {
                     case "uri":
                         r.uri = kv[1];

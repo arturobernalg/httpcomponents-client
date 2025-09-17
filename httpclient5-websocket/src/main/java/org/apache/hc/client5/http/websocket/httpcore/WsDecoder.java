@@ -100,7 +100,7 @@ public final class WsDecoder {
             }
         }
 
-        if (len > Integer.MAX_VALUE || (maxFrameSize > 0 && len > maxFrameSize)) {
+        if (len > Integer.MAX_VALUE || maxFrameSize > 0 && len > maxFrameSize) {
             // Application policy / too big -> 1009
             throw new WsProtocolException(1009, "Frame too large: " + len);
         }

@@ -37,7 +37,9 @@ public final class ExtensionChain {
     private final List<Extension> exts = new ArrayList<>();
 
     public void add(final Extension e) {
-        if (e != null) exts.add(e);
+        if (e != null) {
+            exts.add(e);
+        }
     }
 
     public boolean isEmpty() {
@@ -49,7 +51,9 @@ public final class ExtensionChain {
      */
     public EncodeChain newEncodeChain() {
         final List<Extension.Encoder> encs = new ArrayList<>(exts.size());
-        for (Extension e : exts) encs.add(e.newEncoder());
+        for (final Extension e : exts) {
+            encs.add(e.newEncoder());
+        }
         return new EncodeChain(encs);
     }
 
@@ -58,7 +62,9 @@ public final class ExtensionChain {
      */
     public DecodeChain newDecodeChain() {
         final List<Extension.Decoder> decs = new ArrayList<>(exts.size());
-        for (Extension e : exts) decs.add(e.newDecoder());
+        for (final Extension e : exts) {
+            decs.add(e.newDecoder());
+        }
         return new DecodeChain(decs);
     }
 
@@ -75,14 +81,18 @@ public final class ExtensionChain {
          * Encode one fragment through the chain; note RSV flag for the first extension.
          */
         public Enc encode(final byte[] data, final boolean first, final boolean fin) {
-            if (encs.isEmpty()) return new Enc(data, false);
+            if (encs.isEmpty()) {
+                return new Enc(data, false);
+            }
             byte[] out = data;
             boolean setRsv1 = false;
             boolean firstExt = true;
             for (final Extension.Encoder e : encs) {
                 final Extension.Encoded res = e.encode(out, first, fin);
                 out = res.payload;
-                if (first && firstExt && res.setRsvOnFirst) setRsv1 = true;
+                if (first && firstExt && res.setRsvOnFirst) {
+                    setRsv1 = true;
+                }
                 firstExt = false;
             }
             return new Enc(out, setRsv1);

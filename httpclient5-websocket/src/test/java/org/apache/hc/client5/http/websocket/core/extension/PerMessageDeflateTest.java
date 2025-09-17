@@ -48,10 +48,12 @@ final class PerMessageDeflateTest {
     @Test
     void encode_setsRSVOnlyOnFirst() {
         final PerMessageDeflate pmce = new PerMessageDeflate(true, false, false, null, null);
+        final Extension.Encoder enc = pmce.newEncoder();
+
         final byte[] data = "hello".getBytes(StandardCharsets.UTF_8);
 
-        final Extension.Encoded first = pmce.encode(data, /*first*/true, /*fin*/false);
-        final Extension.Encoded cont = pmce.encode(data, /*first*/false, /*fin*/true);
+        final Extension.Encoded first = enc.encode(data, /*first*/true,  /*fin*/false);
+        final Extension.Encoded cont = enc.encode(data, /*first*/false, /*fin*/true);
 
         assertTrue(first.setRsvOnFirst, "RSV on first fragment");
         assertFalse(cont.setRsvOnFirst, "no RSV on continuation");
@@ -60,18 +62,23 @@ final class PerMessageDeflateTest {
     }
 
     @Test
-    void roundTrip_message() {
-        final PerMessageDeflate pmce = new PerMessageDeflate(true, /*server_no_ctx*/true, /*client_no_ctx*/true, null, null);
+    void roundTrip_message() throws Exception {
+        final PerMessageDeflate pmce = new PerMessageDeflate(true,  /*server_no_ctx*/ true, true,  /*client_no_ctx*/ null,  null);
+        final Extension.Encoder enc = pmce.newEncoder();
+        final Extension.Decoder dec = pmce.newDecoder();
 
-        final String s = "The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog.";
+        final String s = "The quick brown fox jumps over the lazy dog. "
+                + "The quick brown fox jumps over the lazy dog.";
         final byte[] plain = s.getBytes(StandardCharsets.UTF_8);
 
-        final byte[] enc = pmce.compressMessage(plain);
-        assertTrue(enc.length > 0);
-        assertFalse(endsWithTail(enc), "tail must be stripped on wire");
+        // Single-frame message: first=true, fin=true
+        final byte[] wire = enc.encode(plain, /*first*/true, /*fin*/true).payload;
 
-        final byte[] dec = pmce.decompressMessage(enc);
-        assertArrayEquals(plain, dec);
+        assertTrue(wire.length > 0);
+        assertFalse(endsWithTail(wire), "tail must be stripped on wire");
+
+        final byte[] roundTrip = dec.decode(wire);
+        assertArrayEquals(plain, roundTrip);
     }
 
     private static boolean endsWithTail(final byte[] b) {

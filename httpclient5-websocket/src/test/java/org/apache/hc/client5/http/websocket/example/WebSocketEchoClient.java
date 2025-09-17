@@ -37,6 +37,7 @@ import org.apache.hc.client5.http.websocket.api.WebSocket;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.client5.http.websocket.client.WebSocketClient;
+import org.apache.hc.core5.util.Timeout;
 
 /**
  * <h1>WebSocketEchoClient</h1>
@@ -78,6 +79,7 @@ public final class WebSocketEchoClient {
                 .offerServerNoContextTakeover(true)
                 .offerClientNoContextTakeover(true)
                 .offerClientMaxWindowBits(15)
+                .setCloseWaitTimeout(Timeout.ofMilliseconds(200))
                 .build();
 
         try (final WebSocketClient client = new WebSocketClient()) {
@@ -106,7 +108,7 @@ public final class WebSocketEchoClient {
                 @Override
                 public void onText(final CharSequence text, final boolean last) {
                     final int len = text.length();
-                    final CharSequence preview = (len > 120) ? text.subSequence(0, 120) + "…" : text;
+                    final CharSequence preview = len > 120 ? text.subSequence(0, 120) + "…" : text;
                     System.out.println("[TEST] text (chars=" + len + "): " + preview);
                     ws.close(1000, "done");
                 }

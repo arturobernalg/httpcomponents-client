@@ -54,7 +54,9 @@ public final class PerMessageDeflate implements Extension {
     }
 
     @Override
-    public int rsvMask() { return FrameHeaderBits.RSV1; }
+    public int rsvMask() {
+        return FrameHeaderBits.RSV1;
+    }
 
     @Override
     public Encoder newEncoder() {
@@ -66,7 +68,7 @@ public final class PerMessageDeflate implements Extension {
 
             @Override
             public Encoded encode(final byte[] data, final boolean first, final boolean fin) {
-                final byte[] out = (first && fin)
+                final byte[] out = first && fin
                         ? compressMessage(data)
                         : compressFragment(data, fin);
                 // RSV1 on first compressed data frame only
@@ -86,7 +88,9 @@ public final class PerMessageDeflate implements Extension {
                                      final boolean stripTail,
                                      final boolean maybeReset) {
                 if (data == null || data.length == 0) {
-                    if (fin && maybeReset) def.reset();
+                    if (fin && maybeReset) {
+                        def.reset();
+                    }
                     return new byte[0];
                 }
                 def.setInput(data);
@@ -94,19 +98,26 @@ public final class PerMessageDeflate implements Extension {
                 final byte[] buf = new byte[8192];
                 while (!def.needsInput()) {
                     final int n = def.deflate(buf, 0, buf.length, Deflater.SYNC_FLUSH);
-                    if (n > 0) out.write(buf, 0, n); else break;
+                    if (n > 0) {
+                        out.write(buf, 0, n);
+                    } else {
+                        break;
+                    }
                 }
                 byte[] all = out.toByteArray();
                 if (stripTail && all.length >= 4) {
                     final int newLen = all.length - 4; // strip 00 00 FF FF
-                    if (newLen <= 0) all = new byte[0];
-                    else {
+                    if (newLen <= 0) {
+                        all = new byte[0];
+                    } else {
                         final byte[] trimmed = new byte[newLen];
                         System.arraycopy(all, 0, trimmed, 0, newLen);
                         all = trimmed;
                     }
                 }
-                if (fin && maybeReset) def.reset();
+                if (fin && maybeReset) {
+                    def.reset();
+                }
                 return all;
             }
         };
@@ -136,18 +147,38 @@ public final class PerMessageDeflate implements Extension {
                 final byte[] buf = new byte[8192];
                 while (!inf.needsInput()) {
                     final int n = inf.inflate(buf);
-                    if (n > 0) out.write(buf, 0, n); else break;
+                    if (n > 0) {
+                        out.write(buf, 0, n);
+                    } else {
+                        break;
+                    }
                 }
-                if (serverNoContextTakeover) inf.reset();
+                if (serverNoContextTakeover) {
+                    inf.reset();
+                }
                 return out.toByteArray();
             }
         };
     }
 
     // optional getters for logging/tests
-    public boolean isEnabled() { return enabled; }
-    public boolean isServerNoContextTakeover() { return serverNoContextTakeover; }
-    public boolean isClientNoContextTakeover() { return clientNoContextTakeover; }
-    public Integer getClientMaxWindowBits() { return clientMaxWindowBits; }
-    public Integer getServerMaxWindowBits() { return serverMaxWindowBits; }
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public boolean isServerNoContextTakeover() {
+        return serverNoContextTakeover;
+    }
+
+    public boolean isClientNoContextTakeover() {
+        return clientNoContextTakeover;
+    }
+
+    public Integer getClientMaxWindowBits() {
+        return clientMaxWindowBits;
+    }
+
+    public Integer getServerMaxWindowBits() {
+        return serverMaxWindowBits;
+    }
 }

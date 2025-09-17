@@ -70,7 +70,7 @@ import org.eclipse.jetty.websocket.servlet.WebSocketServletFactory;
 public final class WebSocketEchoServer {
 
     public static void main(final String[] args) throws Exception {
-        final int port = (args.length > 0) ? Integer.parseInt(args[0]) : 8080;
+        final int port = args.length > 0 ? Integer.parseInt(args[0]) : 8080;
 
         final Server server = new Server(port);
         final ServletContextHandler ctx = new ServletContextHandler(ServletContextHandler.SESSIONS);
