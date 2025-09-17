@@ -30,7 +30,7 @@
     <artifactId>httpclient5-parent</artifactId>
     <version>5.6-alpha1-SNAPSHOT</version>
   </parent>
-  <artifactId>httpclient5-socket</artifactId>
+  <artifactId>httpclient5-websocket</artifactId>
   <name>Apache HttpClient Socket</name>
   <inceptionYear>2011</inceptionYear>
   <description>Apache HttpComponents Client Socket</description>
