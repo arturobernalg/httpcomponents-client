@@ -31,6 +31,7 @@ import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hc.client5.http.AuthenticationStrategy;
@@ -76,17 +77,9 @@ import org.apache.hc.core5.http.nio.DataStreamChannel;
 import org.apache.hc.core5.http.nio.RequestChannel;
 import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.http.protocol.HttpProcessor;
-import org.apache.hc.core5.util.Args;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Request execution handler in the asynchronous request execution chain
- * that is responsible for establishing connection to the target
- * origin server as specified by the current connection route.
- *
- * @since 5.0
- */
 @Contract(threading = ThreadingBehavior.STATELESS)
 @Internal
 public final class AsyncConnectExec implements AsyncExecChainHandler {
@@ -99,13 +92,35 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
     private final AuthCacheKeeper authCacheKeeper;
     private final HttpRouteDirector routeDirector;
 
+    private static final class TrampolineExecutor implements Executor {
+        private final ThreadLocal<Boolean> running = ThreadLocal.withInitial(() -> Boolean.FALSE);
+        private final ThreadLocal<java.util.ArrayDeque<Runnable>> queue = ThreadLocal.withInitial(java.util.ArrayDeque::new);
+        @Override
+        public void execute(final Runnable task) {
+            queue.get().add(task);
+            if (!running.get()) {
+                running.set(Boolean.TRUE);
+                try {
+                    Runnable r;
+                    while ((r = queue.get().poll()) != null) {
+                        r.run();
+                    }
+                } finally {
+                    running.set(Boolean.FALSE);
+                }
+            }
+        }
+    }
+
+    private final Executor executor = new TrampolineExecutor();
+
     public AsyncConnectExec(
             final HttpProcessor proxyHttpProcessor,
             final AuthenticationStrategy proxyAuthStrategy,
             final SchemePortResolver schemePortResolver,
             final boolean authCachingDisabled) {
-        Args.notNull(proxyHttpProcessor, "Proxy HTTP processor");
-        Args.notNull(proxyAuthStrategy, "Proxy authentication strategy");
+        org.apache.hc.core5.util.Args.notNull(proxyHttpProcessor, "Proxy HTTP processor");
+        org.apache.hc.core5.util.Args.notNull(proxyAuthStrategy, "Proxy authentication strategy");
         this.proxyHttpProcessor = proxyHttpProcessor;
         this.proxyAuthStrategy = proxyAuthStrategy;
         this.authenticator = new AuthenticationHandler();
@@ -134,8 +149,8 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
             final AsyncExecChain.Scope scope,
             final AsyncExecChain chain,
             final AsyncExecCallback asyncExecCallback) throws HttpException, IOException {
-        Args.notNull(request, "HTTP request");
-        Args.notNull(scope, "Scope");
+        org.apache.hc.core5.util.Args.notNull(request, "HTTP request");
+        org.apache.hc.core5.util.Args.notNull(scope, "Scope");
 
         final String exchangeId = scope.exchangeId;
         final HttpRoute route = scope.route;
@@ -161,7 +176,7 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                                     asyncExecCallback.failed(ex);
                                 }
                             } else {
-                                proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback);
+                                executor.execute(() -> proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback));
                             }
                         }
 
@@ -180,7 +195,7 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
             if (execRuntime.isEndpointConnected()) {
                 proceedConnected(request, entityProducer, scope, chain, asyncExecCallback);
             } else {
-                proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback);
+                executor.execute(() -> proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback));
             }
         }
 
@@ -227,7 +242,7 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                         if (LOG.isDebugEnabled()) {
                             LOG.debug("{} connected to target", exchangeId);
                         }
-                        proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback);
+                        executor.execute(() -> proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback));
                     }
 
                     @Override
@@ -253,7 +268,7 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                         if (LOG.isDebugEnabled()) {
                             LOG.debug("{} connected to proxy", exchangeId);
                         }
-                        proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback);
+                        executor.execute(() -> proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback));
                     }
 
                     @Override
@@ -290,7 +305,6 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                     @Override
                     public void completed() {
                         if (!execRuntime.isEndpointConnected()) {
-                            // Remote endpoint disconnected. Need to start over
                             if (LOG.isDebugEnabled()) {
                                 LOG.debug("{} proxy disconnected", exchangeId);
                             }
@@ -300,7 +314,7 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                             if (LOG.isDebugEnabled()) {
                                 LOG.debug("{} proxy authentication required", exchangeId);
                             }
-                            proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback);
+                            executor.execute(() -> proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback));
                         } else {
                             if (state.tunnelRefused) {
                                 if (LOG.isDebugEnabled()) {
@@ -312,7 +326,7 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                                     LOG.debug("{} tunnel to target created", exchangeId);
                                 }
                                 tracker.tunnelTarget(false);
-                                proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback);
+                                executor.execute(() -> proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback));
                             }
                         }
                     }
@@ -327,10 +341,6 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                 break;
 
             case HttpRouteDirector.TUNNEL_PROXY:
-                // The most simple example for this case is a proxy chain
-                // of two proxies, where P1 must be tunnelled to P2.
-                // route: Source -> P1 -> P2 -> Target (3 hops)
-                // fact:  Source -> P1 -> Target       (2 hops)
                 asyncExecCallback.failed(new HttpException("Proxy chains are not supported"));
                 break;
 
@@ -343,7 +353,7 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                             LOG.debug("{} upgraded to TLS", exchangeId);
                         }
                         tracker.layerProtocol(route.isSecure());
-                        proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback);
+                        executor.execute(() -> proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback));
                     }
 
                     @Override

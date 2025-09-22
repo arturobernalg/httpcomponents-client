@@ -32,7 +32,10 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -52,6 +55,28 @@ final class MultihomeIOSessionRequester {
 
     private static final Logger LOG = LoggerFactory.getLogger(MultihomeIOSessionRequester.class);
     private final DnsResolver dnsResolver;
+
+    private static final class TrampolineExecutor implements Executor {
+        private final ThreadLocal<Boolean> running = ThreadLocal.withInitial(() -> Boolean.FALSE);
+        private final ThreadLocal<Deque<Runnable>> queue = ThreadLocal.withInitial(ArrayDeque::new);
+        @Override
+        public void execute(final Runnable task) {
+            queue.get().add(task);
+            if (!running.get()) {
+                running.set(Boolean.TRUE);
+                try {
+                    Runnable r;
+                    while ((r = queue.get().poll()) != null) {
+                        r.run();
+                    }
+                } finally {
+                    running.set(Boolean.FALSE);
+                }
+            }
+        }
+    }
+
+    private final Executor executor = new TrampolineExecutor();
 
     MultihomeIOSessionRequester(final DnsResolver dnsResolver) {
         this.dnsResolver = dnsResolver != null ? dnsResolver : SystemDefaultDnsResolver.INSTANCE;
@@ -174,8 +199,12 @@ final class MultihomeIOSessionRequester {
                                         LOG.debug("{}:{} connection to {} failed ({}); retrying connection to the next address",
                                                 remoteEndpoint.getHostName(), remoteEndpoint.getPort(), remoteAddress, cause.getClass());
                                     }
-                                    executeNext();
+                                    executor.execute(this::scheduleNext);
                                 }
+                            }
+
+                            private void scheduleNext() {
+                                executor.execute(() -> executeNext());
                             }
 
                             @Override
@@ -189,11 +218,11 @@ final class MultihomeIOSessionRequester {
 
             @Override
             public void run() {
-                executeNext();
+                executor.execute(this::executeNext);
             }
 
         };
-        runnable.run();
+        executor.execute(runnable);
         return future;
     }
 
