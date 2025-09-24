@@ -31,19 +31,27 @@ import java.nio.ByteBuffer;
 import org.apache.hc.client5.http.websocket.core.close.WsProtocolException;
 import org.apache.hc.client5.http.websocket.core.frame.Opcode;
 
-/**
- * RFC6455 frame decoder used by WsHandler (no extensions here).
- */
 public final class WsDecoder {
     private final int maxFrameSize;
+    private final boolean strictNoExtensions;
 
     private int opcode;
     private boolean fin;
     private boolean rsv1, rsv2, rsv3;
     private ByteBuffer payload = ByteBuffer.allocate(0);
 
+    // Keep old 1-arg ctor strict by default so existing tests keep working.
     public WsDecoder(final int maxFrameSize) {
+        this(maxFrameSize, true);
+    }
+
+    /**
+     * @param strictNoExtensions when true, any RSV bit triggers 1002 unless an extension negotiated at this layer.
+     *                           When false, decoder only parses and exposes RSV flags without enforcing policy.
+     */
+    public WsDecoder(final int maxFrameSize, final boolean strictNoExtensions) {
         this.maxFrameSize = maxFrameSize;
+        this.strictNoExtensions = strictNoExtensions;
     }
 
     public boolean decode(final ByteBuffer in) {
@@ -61,14 +69,17 @@ public final class WsDecoder {
         rsv2 = (b0 & 0x20) != 0;
         rsv3 = (b0 & 0x10) != 0;
 
-        // RSV validation is done by the upper layer.
+        // Enforce when strict
+        if (strictNoExtensions && (rsv1 || rsv2 || rsv3)) {
+            throw new WsProtocolException(1002, "RSV bits set without extension");
+        }
 
         opcode = b0 & 0x0F;
 
         final boolean masked = (b1 & 0x80) != 0;
         long len = b1 & 0x7F;
 
-        // Server frames MUST NOT be masked -> 1002
+        // Server->client frames MUST NOT be masked
         if (masked) {
             throw new WsProtocolException(1002, "Server frame is masked");
         }
@@ -93,15 +104,14 @@ public final class WsDecoder {
 
         if (Opcode.isControl(opcode)) {
             if (!fin) {
-                throw new WsProtocolException(1002, "Fragmented control frame");
+                throw new WsProtocolException(1002, "fragmented control frame");
             }
             if (len > 125) {
-                throw new WsProtocolException(1002, "Control frame too large");
+                throw new WsProtocolException(1002, "control frame too large");
             }
         }
 
         if (len > Integer.MAX_VALUE || maxFrameSize > 0 && len > maxFrameSize) {
-            // Application policy / too big -> 1009
             throw new WsProtocolException(1009, "Frame too large: " + len);
         }
 
@@ -118,7 +128,6 @@ public final class WsDecoder {
         payload = data.asReadOnlyBuffer();
         return true;
     }
-
 
     public int opcode() {
         return opcode;

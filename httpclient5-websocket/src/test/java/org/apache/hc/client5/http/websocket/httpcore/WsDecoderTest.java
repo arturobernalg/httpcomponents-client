@@ -33,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
 
+import org.apache.hc.client5.http.websocket.core.close.WsProtocolException;
 import org.apache.hc.client5.http.websocket.core.frame.Opcode;
 import org.junit.jupiter.api.Test;
 
@@ -49,7 +50,7 @@ class WsDecoderTest {
         buf.flip();
 
         final WsDecoder d = new WsDecoder(8192);
-        assertThrows(IllegalStateException.class, () -> d.decode(buf));
+        assertThrows(WsProtocolException.class, () -> d.decode(buf));
     }
 
     @Test
@@ -78,7 +79,7 @@ class WsDecoderTest {
         final ByteBuffer f127 = ByteBuffer.allocate(2 + 8 + p2.length);
         f127.put((byte) 0x82);
         f127.put((byte) 127);
-        f127.putLong((long) big);
+        f127.putLong(big);
         f127.put(p2);
         f127.flip();
 

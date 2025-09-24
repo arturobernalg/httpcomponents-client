@@ -24,23 +24,16 @@
  * <http://www.apache.org/>.
  *
  */
-package org.apache.hc.client5.http.websocket.core.frame;
 
 /**
- * WebSocket frame header bit masks (RFC 6455 §5.2).
+ * Internal support for the WebSocket client built on Apache HttpCore 5.
+ * <p>
+ * Provides helpers to bootstrap an {@code HttpAsyncRequester} with access to its
+ * {@code ManagedConnPool}, and a requester that exposes the underlying
+ * {@code ProtocolIOSession} for clean WebSocket protocol switching without reflection.
+ * <p>
+ * This package is internal and may change without notice; use the public client API instead.
+ *
+ * @since 1.0
  */
-public final class FrameHeaderBits {
-    private FrameHeaderBits() {
-    }
-
-    // First header byte
-    public static final int FIN = 0x80;
-    public static final int RSV1 = 0x40;
-    public static final int RSV2 = 0x20;
-    public static final int RSV3 = 0x10;
-    // low 4 bits (0x0F) are opcode
-
-    // Second header byte
-    public static final int MASK_BIT = 0x80;  // client->server payload mask bit
-    // low 7 bits (0x7F) are payload len indicator
-}
+package org.apache.hc.client5.http.websocket.support;

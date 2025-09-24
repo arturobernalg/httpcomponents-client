@@ -135,6 +135,10 @@ public final class WebSocketClientConfig {
      */
     public final int maxFramesPerTick;
 
+    public final int ioPoolCapacity;
+
+    public boolean directBuffers;
+
     private WebSocketClientConfig(
             final int maxFrameSize,
             final long maxMessageSize,
@@ -149,7 +153,9 @@ public final class WebSocketClientConfig {
             final Integer offerClientMaxWindowBits,
             final Integer offerServerMaxWindowBits,
             final List<String> subprotocols,
-            final int maxFramesPerTick) {
+            final int maxFramesPerTick,
+            final int ioPoolCapacity,
+            final boolean directBuffers) {
         this.maxFrameSize = maxFrameSize;
         this.maxMessageSize = maxMessageSize;
         this.connectTimeout = connectTimeout;
@@ -164,6 +170,8 @@ public final class WebSocketClientConfig {
         this.offerServerMaxWindowBits = offerServerMaxWindowBits;
         this.subprotocols = subprotocols;
         this.maxFramesPerTick = maxFramesPerTick;
+        this.ioPoolCapacity = ioPoolCapacity;
+        this.directBuffers = directBuffers;
     }
 
     /**
@@ -189,6 +197,8 @@ public final class WebSocketClientConfig {
         private boolean autoPong = true;
         private int outgoingChunkSize = 4096;                // 4 KiB
         private int maxFramesPerTick = 64;
+        private int ioPoolCapacity = 64;
+        private boolean directBuffers = false;
 
         private boolean perMessageDeflateEnabled = false;
         private boolean offerServerNoContextTakeover = false;
@@ -197,6 +207,7 @@ public final class WebSocketClientConfig {
         private Integer offerServerMaxWindowBits = null;
 
         private final List<String> subprotocols = new ArrayList<>();
+
 
 
 
@@ -328,6 +339,15 @@ public final class WebSocketClientConfig {
             return this;
         }
 
+        public Builder setIoPoolCapacity(final int ioPoolCapacity) {
+            this.ioPoolCapacity = ioPoolCapacity;
+            return this;
+        }
+        public Builder setDirectBuffers(final boolean directBuffers) {
+            this.directBuffers = directBuffers;
+            return this;
+        }
+
         /**
          * Builds an immutable {@link WebSocketClientConfig}.
          */
@@ -347,7 +367,9 @@ public final class WebSocketClientConfig {
                     offerClientMaxWindowBits,
                     offerServerMaxWindowBits,
                     Collections.unmodifiableList(new ArrayList<>(subprotocols)),
-                    maxFramesPerTick
+                    maxFramesPerTick,
+                    ioPoolCapacity,
+                    directBuffers
             );
         }
     }

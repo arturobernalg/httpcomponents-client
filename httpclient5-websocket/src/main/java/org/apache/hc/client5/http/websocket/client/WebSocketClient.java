@@ -27,8 +27,6 @@
 package org.apache.hc.client5.http.websocket.client;
 
 import java.io.IOException;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -45,6 +43,8 @@ import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.client5.http.websocket.core.extension.ExtensionChain;
 import org.apache.hc.client5.http.websocket.core.extension.PerMessageDeflate;
 import org.apache.hc.client5.http.websocket.httpcore.WebSocketUpgrader;
+import org.apache.hc.client5.http.websocket.support.AsyncRequesterBootstrap;
+import org.apache.hc.client5.http.websocket.support.WebSocketRequester;
 import org.apache.hc.core5.concurrent.FutureCallback;
 import org.apache.hc.core5.http.EntityDetails;
 import org.apache.hc.core5.http.Header;
@@ -52,132 +52,95 @@ import org.apache.hc.core5.http.HttpException;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpResponse;
 import org.apache.hc.core5.http.HttpStatus;
-import org.apache.hc.core5.http.impl.bootstrap.AsyncRequesterBootstrap;
+import org.apache.hc.core5.http.URIScheme;
+import org.apache.hc.core5.http.config.CharCodingConfig;
+import org.apache.hc.core5.http.config.Http1Config;
+import org.apache.hc.core5.http.impl.HttpProcessors;
 import org.apache.hc.core5.http.impl.bootstrap.HttpAsyncRequester;
 import org.apache.hc.core5.http.message.BasicHttpRequest;
-import org.apache.hc.core5.http.nio.AsyncClientEndpoint;
 import org.apache.hc.core5.http.nio.AsyncClientExchangeHandler;
 import org.apache.hc.core5.http.nio.CapacityChannel;
+import org.apache.hc.core5.http.nio.DataStreamChannel;
+import org.apache.hc.core5.http.nio.RequestChannel;
 import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.http.protocol.HttpCoreContext;
 import org.apache.hc.core5.io.CloseMode;
-import org.apache.hc.core5.net.URIAuthority;
-import org.apache.hc.core5.reactor.IOEventHandler;
+import org.apache.hc.core5.pool.ManagedConnPool;
+import org.apache.hc.core5.reactor.IOReactorConfig;
 import org.apache.hc.core5.reactor.IOSession;
 import org.apache.hc.core5.reactor.ProtocolIOSession;
 import org.apache.hc.core5.util.Args;
+import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * High-level asynchronous WebSocket client built on Apache HttpCore 5.
- *
- * <p>Performs an HTTP/1.1 Upgrade to WebSocket (RFC&nbsp;6455), validates
- * handshake headers, optionally offers subprotocols and the permessage-deflate
- * extension (RFC&nbsp;7692), and then installs a WebSocket protocol handler
- * on the live {@link ProtocolIOSession}. Application messages are delivered
- * via {@link WebSocketListener} callbacks.</p>
- *
- * <h3>Lifecycle</h3>
- * <ul>
- *   <li>The client owns an internal {@link HttpAsyncRequester} (I/O reactor).</li>
- *   <li>Use try-with-resources or call {@link #close()} to shut it down.</li>
- *   <li>Each {@link #connect} returns a {@link CompletableFuture} that completes
- *       with a {@link WebSocket} on successful upgrade.</li>
- * </ul>
- *
- * <h3>Thread-safety</h3>
- * <p>Instances are thread-safe. Multiple concurrent {@link #connect} calls are supported.</p>
- *
- * <h3>Compliance</h3>
- * <ul>
- *   <li>RFC&nbsp;6455 handshake checks: {@code Host}, {@code Upgrade}, {@code Connection},
- *       {@code Sec-WebSocket-Key}/Accept, and (optionally) {@code Sec-WebSocket-Protocol}.</li>
- *   <li>permessage-deflate (RFC&nbsp;7692) offer/verify: strictly validates the server’s selection.</li>
- * </ul>
- *
- * <h3>Example</h3>
- * <pre>{@code
- * try (WebSocketClient client = new WebSocketClient()) {
- *   WebSocketClientConfig cfg = WebSocketClientConfig.custom()
- *       .enablePerMessageDeflate(true)
- *       .addSubprotocol("chat")
- *       .build();
- *
- *   CompletableFuture<WebSocket> f = client.connect(
- *       URI.create("wss://example.org/socket"),
- *       new WebSocketListener() {
- *         public void onOpen(WebSocket ws) { ws.sendText("hi", true); }
- *         public void onText(CharSequence text, boolean last) { /* ... *\/ }
- *       },
- *       cfg
- *   );
- *
- *   WebSocket ws = f.join();
- *   // ...
- * }
- * }</pre>
+ * Client-side bootstrap + RFC6455 upgrade handshake and protocol switch.
  *
  * @since 5.6
  */
 public final class WebSocketClient implements AutoCloseable {
+
+    private static final ThreadLocal<byte[]> NONCE_BUFFER = ThreadLocal.withInitial(() -> new byte[16]);
     private static final Logger LOG = LoggerFactory.getLogger(WebSocketClient.class);
 
     private final HttpAsyncRequester requester;
+    private final ManagedConnPool<HttpHost, IOSession> connPool;
+    private final WebSocketRequester wsRequester;
 
+
+    /**
+     * Creates a client with sensible defaults for transport/pooling.
+     */
     public WebSocketClient() {
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("Bootstrapping requester");
+        if (LOG.isTraceEnabled()) {
+            LOG.trace("Bootstrapping HttpAsyncRequester (defaults: perRoute=20, maxTotal=100)");
         }
-        this.requester = AsyncRequesterBootstrap.bootstrap().create();
+        final AsyncRequesterBootstrap.Result res =
+                AsyncRequesterBootstrap.bootstrap()
+                        .setIOReactorConfig(IOReactorConfig.custom()
+                                .setIoThreadCount(Math.min(Math.max(1, Runtime.getRuntime().availableProcessors()), 4))
+                                .setSelectInterval(TimeValue.ofMilliseconds(1))
+                                .setSoTimeout(Timeout.ofSeconds(30))
+                                .build())
+                        .setHttp1Config(Http1Config.DEFAULT)
+                        .setCharCodingConfig(CharCodingConfig.DEFAULT)
+                        .setHttpProcessor(HttpProcessors.client())
+                        .setDefaultMaxPerRoute(20)
+                        .setMaxTotal(100)
+                        .setTimeToLive(Timeout.ofMinutes(5))
+                        .createWithPool();
+
+        this.requester = res.requester;
+        this.connPool = res.connPool;
         this.requester.start();
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("Requester started");
+        this.wsRequester = new WebSocketRequester(this.requester, this.connPool);
+        if (LOG.isTraceEnabled()) {
+            LOG.trace("WebSocketRequester ready (pool class: {})", connPool.getClass().getSimpleName());
         }
     }
 
     /**
-     * Shuts down the internal I/O reactor and releases resources.
-     *
-     * <p>Any active WebSocket connections managed by this client will be closed.</p>
+     * Package-level for builder/factory.
      */
+    WebSocketClient(final HttpAsyncRequester requester, final ManagedConnPool<HttpHost, IOSession> connPool) {
+        this.requester = Args.notNull(requester, "requester");
+        this.connPool = Args.notNull(connPool, "connPool");
+        this.requester.start();
+        this.wsRequester = new WebSocketRequester(this.requester, this.connPool);
+    }
+
+    // ------------------------------------------------------------------------------------
+    // Lifecycle
+    // ------------------------------------------------------------------------------------
+
     @Override
     public void close() {
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("Closing requester");
-        }
         requester.close(CloseMode.GRACEFUL);
     }
 
-    /**
-     * Establishes a WebSocket connection to the given {@link URI}.
-     *
-     * <p>This method performs an HTTP/1.1 GET with Upgrade headers, validates the
-     * server response (101 Switching Protocols + required headers), then upgrades the
-     * live channel to a WebSocket protocol handler. The returned future completes with
-     * a {@link WebSocket} once the pipeline is switched and {@link WebSocketListener#onOpen(WebSocket)}
-     * has been called.</p>
-     *
-     * <h4>Configuration</h4>
-     * <ul>
-     *   <li>Subprotocols: if {@link WebSocketClientConfig#subprotocols} is non-empty,
-     *       a {@code Sec-WebSocket-Protocol} offer header is sent and the server’s
-     *       selection is verified.</li>
-     *   <li>permessage-deflate: when enabled in {@code cfg}, a
-     *       {@code Sec-WebSocket-Extensions} offer is sent and the server’s response
-     *       is strictly validated.</li>
-     * </ul>
-     *
-     * @param uri      {@code ws://} or {@code wss://} endpoint
-     * @param listener application callbacks; must be non-{@code null}
-     * @param cfg      client behavior and negotiation parameters; must be non-{@code null}
-     * @return future that completes with an open {@link WebSocket} on success
-     * @throws IllegalArgumentException if the URI scheme is not {@code ws} or {@code wss}
-     */
-    public CompletableFuture<WebSocket> connect(final URI uri,
-                                                final WebSocketListener listener,
-                                                final WebSocketClientConfig cfg) {
+    public CompletableFuture<WebSocket> connect(final URI uri, final WebSocketListener listener, final WebSocketClientConfig cfg) {
         Args.notNull(uri, "uri");
         Args.notNull(listener, "listener");
         Args.notNull(cfg, "cfg");
@@ -189,60 +152,50 @@ public final class WebSocketClient implements AutoCloseable {
             return f;
         }
 
-        final String scheme = secure ? "https" : "http";
-        final int port = uri.getPort() > 0 ? uri.getPort() : secure ? 443 : 80;
-        final String host = uri.getHost();
-        if (host == null) {
-            final CompletableFuture<WebSocket> f = new CompletableFuture<>();
-            f.completeExceptionally(new IllegalArgumentException("Host required"));
-            return f;
-        }
+        final String scheme = secure ? URIScheme.HTTPS.id : URIScheme.HTTP.id;
+        final int port = uri.getPort() > 0 ? uri.getPort() : (secure ? 443 : 80);
+        final String host = Args.notBlank(uri.getHost(), "host");
         String path = uri.getRawPath();
         if (path == null || path.isEmpty()) {
             path = "/";
         }
         final String fullPath = uri.getRawQuery() != null ? path + "?" + uri.getRawQuery() : path;
-
         final HttpHost target = new HttpHost(scheme, host, port);
-        final CompletableFuture<WebSocket> result = new CompletableFuture<>();
 
         if (LOG.isDebugEnabled()) {
-            LOG.debug("Connecting to {} and will upgrade {}", target, fullPath);
+            LOG.debug("connect(): target={} uri={} timeout={} subprotocols={} pmceEnabled={}",
+                    target, fullPath,
+                    cfg.connectTimeout != null ? cfg.connectTimeout : Timeout.ofSeconds(10),
+                    cfg.subprotocols, cfg.perMessageDeflateEnabled);
         }
 
-        requester.connect(target, cfg.connectTimeout != null ? cfg.connectTimeout : Timeout.ofSeconds(10), null,
-                new FutureCallback<AsyncClientEndpoint>() {
+        final CompletableFuture<WebSocket> result = new CompletableFuture<>();
+
+        wsRequester.connect(target, cfg.connectTimeout != null ? cfg.connectTimeout : Timeout.ofSeconds(10), null,
+                new FutureCallback<WebSocketRequester.ProtoEndpoint>() {
                     @Override
-                    public void completed(final AsyncClientEndpoint endpoint) {
+                    public void completed(final WebSocketRequester.ProtoEndpoint endpoint) {
                         if (LOG.isDebugEnabled()) {
-                            LOG.debug("Endpoint leased: {} (now dispatching upgrade)", endpoint);
+                            LOG.debug("Endpoint leased: {}", endpoint);
                         }
                         try {
                             final String secKey = randomKey();
                             final BasicHttpRequest req = new BasicHttpRequest("GET", target, fullPath);
-                            req.setAuthority(new URIAuthority(host, port));
-                            req.addHeader("Host", port == (secure ? 443 : 80) ? host : host + ":" + port);
+
                             req.addHeader("Connection", "Upgrade");
                             req.addHeader("Upgrade", "websocket");
                             req.addHeader("Sec-WebSocket-Version", "13");
                             req.addHeader("Sec-WebSocket-Key", secKey);
-                            req.addHeader("Origin", scheme + "://" + host + (port == (secure ? 443 : 80) ? "" : ":" + port));
 
-                            // Subprotocol offer
                             if (!cfg.subprotocols.isEmpty()) {
                                 final StringJoiner sj = new StringJoiner(", ");
-                                for (final String p : cfg.subprotocols) {
-                                    if (p != null && !p.isEmpty()) {
-                                        sj.add(p);
-                                    }
-                                }
+                                cfg.subprotocols.stream().filter(p -> p != null && !p.isEmpty()).forEach(sj::add);
                                 final String offered = sj.toString();
                                 if (!offered.isEmpty()) {
                                     req.addHeader("Sec-WebSocket-Protocol", offered);
                                 }
                             }
 
-                            // RFC 7692: permessage-deflate offer
                             if (cfg.perMessageDeflateEnabled) {
                                 final StringBuilder ext = new StringBuilder("permessage-deflate");
                                 if (cfg.offerServerNoContextTakeover) {
@@ -260,6 +213,13 @@ public final class WebSocketClient implements AutoCloseable {
                                 req.addHeader("Sec-WebSocket-Extensions", ext.toString());
                             }
 
+                            if (LOG.isDebugEnabled()) {
+                                LOG.debug("Dispatching HTTP Upgrade: {} {} with headers:", "GET", fullPath);
+                                for (final Header h : req.getHeaders()) {
+                                    LOG.debug("  {}: {}", h.getName(), h.getValue());
+                                }
+                            }
+
                             final HttpCoreContext ctx = HttpCoreContext.create();
                             final AtomicBoolean done = new AtomicBoolean(false);
 
@@ -272,7 +232,7 @@ public final class WebSocketClient implements AutoCloseable {
                                 public void failed(final Exception cause) {
                                     if (done.compareAndSet(false, true)) {
                                         if (LOG.isDebugEnabled()) {
-                                            LOG.debug("upgrade FAILED", cause);
+                                            LOG.debug("Upgrade FAILED", cause);
                                         }
                                         try {
                                             endpoint.releaseAndDiscard();
@@ -286,7 +246,7 @@ public final class WebSocketClient implements AutoCloseable {
                                 public void cancel() {
                                     if (done.compareAndSet(false, true)) {
                                         if (LOG.isDebugEnabled()) {
-                                            LOG.debug("upgrade CANCELLED");
+                                            LOG.debug("Upgrade CANCELLED");
                                         }
                                         try {
                                             endpoint.releaseAndDiscard();
@@ -297,10 +257,9 @@ public final class WebSocketClient implements AutoCloseable {
                                 }
 
                                 @Override
-                                public void produceRequest(final org.apache.hc.core5.http.nio.RequestChannel ch, final HttpContext hc)
-                                        throws HttpException, IOException {
+                                public void produceRequest(final RequestChannel ch, final HttpContext hc) throws IOException, HttpException {
                                     if (LOG.isDebugEnabled()) {
-                                        LOG.debug("upgrade: send request");
+                                        LOG.debug("Sending upgrade request");
                                     }
                                     ch.sendRequest(req, null, hc);
                                 }
@@ -311,30 +270,28 @@ public final class WebSocketClient implements AutoCloseable {
                                 }
 
                                 @Override
-                                public void produce(final org.apache.hc.core5.http.nio.DataStreamChannel channel) {
+                                public void produce(final DataStreamChannel channel) {
                                 }
 
                                 @Override
-                                public void consumeInformation(final HttpResponse response, final HttpContext hc)
-                                        throws HttpException, IOException {
+                                public void consumeInformation(final HttpResponse response, final HttpContext hc) {
                                     final int code = response.getCode();
                                     if (LOG.isDebugEnabled()) {
-                                        LOG.debug("upgrade: consumeInformation {}", code);
+                                        LOG.debug("consumeInformation: {}", code);
                                     }
                                     if (code == HttpStatus.SC_SWITCHING_PROTOCOLS && done.compareAndSet(false, true)) {
-                                        finishUpgrade(response, secKey, endpoint, listener, cfg, result);
+                                        finishUpgrade(endpoint, response, secKey, listener, cfg, result);
                                     }
                                 }
 
                                 @Override
-                                public void consumeResponse(final HttpResponse response, final EntityDetails entityDetails, final HttpContext hc)
-                                        throws HttpException, IOException {
+                                public void consumeResponse(final HttpResponse response, final EntityDetails entity, final HttpContext hc) {
                                     final int code = response.getCode();
                                     if (LOG.isDebugEnabled()) {
-                                        LOG.debug("upgrade: consumeResponse {} entity={}", code, entityDetails != null);
+                                        LOG.debug("consumeResponse: {} entity={}", code, entity != null);
                                     }
                                     if (code == HttpStatus.SC_SWITCHING_PROTOCOLS && done.compareAndSet(false, true)) {
-                                        finishUpgrade(response, secKey, endpoint, listener, cfg, result);
+                                        finishUpgrade(endpoint, response, secKey, listener, cfg, result);
                                         return;
                                     }
                                     failed(new IllegalStateException("Unexpected status: " + code));
@@ -354,9 +311,7 @@ public final class WebSocketClient implements AutoCloseable {
                             };
 
                             endpoint.execute(upgrade, null, ctx);
-                            if (LOG.isDebugEnabled()) {
-                                LOG.debug("endpoint.execute(handler) returned (async)");
-                            }
+
                         } catch (final Exception ex) {
                             if (LOG.isDebugEnabled()) {
                                 LOG.debug("Exception preparing upgrade", ex);
@@ -389,16 +344,17 @@ public final class WebSocketClient implements AutoCloseable {
         return result;
     }
 
-    private void finishUpgrade(final HttpResponse response,
+    private void finishUpgrade(final WebSocketRequester.ProtoEndpoint endpoint,
+                               final HttpResponse response,
                                final String secKey,
-                               final AsyncClientEndpoint endpoint,
                                final WebSocketListener listener,
                                final WebSocketClientConfig cfg,
                                final CompletableFuture<WebSocket> result) {
         try {
             if (LOG.isDebugEnabled()) {
+                LOG.debug("Validating 101 Switching Protocols response headers:");
                 for (final Header h : response.getHeaders()) {
-                    LOG.debug("Hdr: {}: {}", h.getName(), h.getValue());
+                    LOG.debug("  {}: {}", h.getName(), h.getValue());
                 }
             }
 
@@ -407,7 +363,6 @@ public final class WebSocketClient implements AutoCloseable {
             if (!expected.equals(accept)) {
                 throw new IllegalStateException("Bad Sec-WebSocket-Accept");
             }
-
             final String upgrade = headerValue(response, "Upgrade");
             if (upgrade == null || !"websocket".equalsIgnoreCase(upgrade.trim())) {
                 throw new IllegalStateException("Missing/invalid Upgrade header: " + upgrade);
@@ -416,7 +371,6 @@ public final class WebSocketClient implements AutoCloseable {
                 throw new IllegalStateException("Missing/invalid Connection header");
             }
 
-            // Subprotocol verification
             final String proto = headerValue(response, "Sec-WebSocket-Protocol");
             if (proto != null && !proto.isEmpty()) {
                 if (cfg.subprotocols.isEmpty()) {
@@ -434,24 +388,20 @@ public final class WebSocketClient implements AutoCloseable {
                 }
             }
 
-            // --- RFC 7692: permessage-deflate negotiation -> build ExtensionChain
             final ExtensionChain chain = new ExtensionChain();
             final String ext = headerValue(response, "Sec-WebSocket-Extensions");
             if (ext != null && !ext.isEmpty()) {
-                boolean sawPmce = false;
-                boolean serverNoCtx = false;
-                boolean clientNoCtx = false;
-                Integer clientBits = null;
-                Integer serverBits = null;
+                boolean pmce = false;
+                boolean serverNoCtx = false, clientNoCtx = false;
+                Integer clientBits = null, serverBits = null;
 
                 for (final String rawExt : ext.split(",")) {
                     final String[] parts = rawExt.trim().split(";");
                     final String name = parts[0].trim();
                     if (!"permessage-deflate".equalsIgnoreCase(name)) {
-                        // server must not select unknown/unsupported extensions
                         continue;
                     }
-                    sawPmce = true;
+                    pmce = true;
                     for (int i = 1; i < parts.length; i++) {
                         final String p = parts[i].trim();
                         final int eq = p.indexOf('=');
@@ -483,37 +433,35 @@ public final class WebSocketClient implements AutoCloseable {
                                     serverBits = Integer.parseInt(v);
                                 } catch (final NumberFormatException ignore) {
                                 }
-                                // Accept any; inflate side doesn't require it
                             }
                         }
                     }
-                    break; // consider first pmce entry only
+                    break;
                 }
-
-                if (sawPmce) {
+                if (pmce) {
                     if (!cfg.perMessageDeflateEnabled) {
                         throw new IllegalStateException("Server negotiated PMCE but client disabled it");
                     }
                     chain.add(new PerMessageDeflate(true, serverNoCtx, clientNoCtx, clientBits, serverBits));
-                } else {
-                    throw new IllegalStateException("Server negotiated unsupported extensions: " + ext);
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("permessage-deflate negotiated: serverNoCtx={}, clientNoCtx={}, clientBits={}, serverBits={}",
+                                serverNoCtx, clientNoCtx, clientBits, serverBits);
+                    }
                 }
             }
 
-            final ProtocolIOSession ioSession = extractProtocolIOSession(endpoint);
-            if (ioSession == null) {
-                throw new IllegalStateException("ProtocolIOSession not available");
-            }
-
+            final ProtocolIOSession ioSession = endpoint.getProtocolIOSession();
             if (LOG.isDebugEnabled()) {
-                LOG.debug("Registering websocket ProtocolUpgradeHandler and switching protocol on {}", ioSession);
+                LOG.debug("Switching ProtocolIOSession to 'websocket' protocol");
             }
-
             final WebSocketUpgrader upgrader = new WebSocketUpgrader(listener, cfg, chain);
             ioSession.registerProtocol("websocket", upgrader);
             ioSession.switchProtocol("websocket", new FutureCallback<ProtocolIOSession>() {
                 @Override
                 public void completed(final ProtocolIOSession s) {
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("Protocol switch completed. Notifying onOpen()");
+                    }
                     final WebSocket ws = upgrader.getWebSocket();
                     try {
                         listener.onOpen(ws);
@@ -524,6 +472,9 @@ public final class WebSocketClient implements AutoCloseable {
 
                 @Override
                 public void failed(final Exception ex) {
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("Protocol switch FAILED", ex);
+                    }
                     try {
                         endpoint.releaseAndDiscard();
                     } catch (final Throwable ignore) {
@@ -533,6 +484,9 @@ public final class WebSocketClient implements AutoCloseable {
 
                 @Override
                 public void cancelled() {
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("Protocol switch CANCELLED");
+                    }
                     try {
                         endpoint.releaseAndDiscard();
                     } catch (final Throwable ignore) {
@@ -553,53 +507,12 @@ public final class WebSocketClient implements AutoCloseable {
         }
     }
 
-    private static ProtocolIOSession extractProtocolIOSession(final AsyncClientEndpoint endpoint) {
-        try {
-            final Field poolEntryRef = endpoint.getClass().getDeclaredField("poolEntryRef");
-            poolEntryRef.setAccessible(true);
-            final Object atomicRef = poolEntryRef.get(endpoint); // AtomicReference<PoolEntry<...>>
-            final Method getMethod = atomicRef.getClass().getMethod("get");
-            final Object poolEntry = getMethod.invoke(atomicRef);
-            if (poolEntry == null) {
-                return null;
-            }
-
-            final Method getConn = poolEntry.getClass().getMethod("getConnection");
-            final Object ioSession = getConn.invoke(poolEntry);
-            if (ioSession instanceof ProtocolIOSession) {
-                return (ProtocolIOSession) ioSession;
-            }
-
-            if (ioSession instanceof IOSession) {
-                final IOSession s = (IOSession) ioSession;
-                final IOEventHandler h = s.getHandler();
-                try {
-                    final Class<?> hCls = h.getClass();
-                    final Field fDuplexer = hCls.getDeclaredField("streamDuplexer");
-                    fDuplexer.setAccessible(true);
-                    final Object duplexer = fDuplexer.get(h);
-                    final Method mGetSession = duplexer.getClass().getMethod("getSession");
-                    final Object proto = mGetSession.invoke(duplexer);
-                    if (proto instanceof ProtocolIOSession) {
-                        return (ProtocolIOSession) proto;
-                    }
-                } catch (final Throwable ignore) {
-                }
-            }
-        } catch (final Throwable t) {
-            if (LOG.isDebugEnabled()) {
-                LOG.debug("extractProtocolIOSession failed", t);
-            }
-        }
-        return null;
-    }
-
     private static String headerValue(final HttpResponse r, final String name) {
         return r.getFirstHeader(name) != null ? r.getFirstHeader(name).getValue() : null;
     }
 
     private static String randomKey() {
-        final byte[] nonce = new byte[16];
+        final byte[] nonce = NONCE_BUFFER.get();
         ThreadLocalRandom.current().nextBytes(nonce);
         return Base64.getEncoder().encodeToString(nonce);
     }
