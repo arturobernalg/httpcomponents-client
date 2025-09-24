@@ -40,7 +40,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Installs WsHandler via HttpCore protocol-upgrade API (optionally with extensions).
+ * Installs WsHandler via HttpCore protocol upgrade API.
+ *
+ * @since 5.6
  */
 public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
     private static final Logger LOG = LoggerFactory.getLogger(WebSocketUpgrader.class);
@@ -50,9 +52,7 @@ public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
     private final ExtensionChain chain; // may be null
     private final AtomicReference<WebSocket> wsRef = new AtomicReference<>();
 
-    public WebSocketUpgrader(final WebSocketListener listener,
-                             final WebSocketClientConfig cfg,
-                             final ExtensionChain chain) {
+    public WebSocketUpgrader(final WebSocketListener listener, final WebSocketClientConfig cfg, final ExtensionChain chain) {
         this.listener = listener;
         this.cfg = cfg;
         this.chain = chain;

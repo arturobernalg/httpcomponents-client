@@ -26,6 +26,8 @@
  */
 package org.apache.hc.client5.http.websocket.httpcore;
 
+import static org.apache.hc.client5.http.websocket.core.frame.FrameHeaderBits.RSV1;
+
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -35,6 +37,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.hc.client5.http.websocket.api.WebSocket;
@@ -45,53 +48,65 @@ import org.apache.hc.client5.http.websocket.core.extension.ExtensionChain;
 import org.apache.hc.client5.http.websocket.core.frame.FrameWriter;
 import org.apache.hc.client5.http.websocket.core.frame.Opcode;
 import org.apache.hc.client5.http.websocket.core.message.CloseCodec;
+import org.apache.hc.client5.http.websocket.support.SimpleBufferPool;
 import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.reactor.EventMask;
 import org.apache.hc.core5.reactor.IOEventHandler;
 import org.apache.hc.core5.reactor.IOSession;
 import org.apache.hc.core5.reactor.ProtocolIOSession;
 import org.apache.hc.core5.util.Timeout;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
- * RFC6455/7692 WebSocket handler on HttpCore.
- * - Control frames + close handshake.
- * - Inbound fragmentation assembly + maxMessageSize.
- * - PMCE thread-safety: per-thread encoder (app) / decoder (I/O) via EncodeChain/DecodeChain.
- * - Outbound: control-first scheduling BETWEEN frames, never mid-frame.
- * - Outbound: bounded drain loop + cfg.outgoingChunkSize chunks so PING is timely.
+ * RFC6455/7692 WebSocket handler on HttpCore with pooled buffers.
  */
 public final class WsHandler implements IOEventHandler {
-    private static final Logger LOG = LoggerFactory.getLogger(WsHandler.class);
+
 
     /**
-     * Prevent monopolizing the reactor: max frames we’ll push per output tick.
+     * Simple pool used for read buffers and small outbound frames.
      */
-//    private static final int MAX_FRAMES_PER_TICK = 64;
+    private final SimpleBufferPool bufferPool;
+
+    /**
+     * Borrowed read buffer; returned on disconnect.
+     */
+    private ByteBuffer readBuf;
+
+    /**
+     * Marks buffers that must be returned to pool after write completes.
+     */
+    private static final class OutFrame {
+        final ByteBuffer buf;
+        final boolean pooled;
+
+        OutFrame(final ByteBuffer buf, final boolean pooled) {
+            this.buf = buf;
+            this.pooled = pooled;
+        }
+    }
+
 
     private final ProtocolIOSession session;
     private final WebSocketListener listener;
     private final WebSocketClientConfig cfg;
 
-    // Per-thread PMCE chains
     private final ExtensionChain.EncodeChain encChain; // app thread
     private final ExtensionChain.DecodeChain decChain; // I/O thread
 
     private final FrameWriter writer = new FrameWriter();
     private final WsDecoder decoder;
 
-    // Outbound queues (never interleave mid-frame): control first, then data
-    private final ConcurrentLinkedQueue<ByteBuffer> ctrlOutbound = new ConcurrentLinkedQueue<>();
-    private final ConcurrentLinkedQueue<ByteBuffer> dataOutbound = new ConcurrentLinkedQueue<>();
-    private ByteBuffer activeWrite = null;
+    // Outbound queues (control first, then data). We enqueue OutFrame so we can release pooled buffers.
+    private final ConcurrentLinkedQueue<OutFrame> ctrlOutbound = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<OutFrame> dataOutbound = new ConcurrentLinkedQueue<>();
+    private OutFrame activeWrite = null;
 
     private final AtomicBoolean open = new AtomicBoolean(true);
     private final WsFacade facade = new WsFacade();
+    private final Object writeLock = new Object();
 
-    // Input accumulation
+    // Input accumulation (message framing). Grows as needed (heap); hot scratch is pooled (readBuf).
     private ByteBuffer inbuf = ByteBuffer.allocate(4096);
-    private final ByteBuffer readBuf = ByteBuffer.allocate(8192);
 
     private volatile boolean closingSent = false;
 
@@ -101,12 +116,10 @@ public final class WsHandler implements IOEventHandler {
     private ByteArrayOutputStream assemblingBytes = null;
     private long assemblingSize = 0L;
 
-    // Outbound application fragmentation state
+    // Outbound application fragmentation
     private int outOpcode = -1;
 
-    // Configured outbound chunk size
     private final int outChunk;
-
     private final int maxFramesPerTick;
 
     public WsHandler(final ProtocolIOSession session,
@@ -122,16 +135,28 @@ public final class WsHandler implements IOEventHandler {
         this.session = session;
         this.listener = listener;
         this.cfg = cfg;
-        this.decoder = new WsDecoder(cfg.maxFrameSize);
+
+        // Decoder: policy enforcement happens in handler; decoder is lenient on RSV.
+        this.decoder = new WsDecoder(cfg.maxFrameSize, false);
+
         this.outChunk = Math.max(256, cfg.outgoingChunkSize);
         this.maxFramesPerTick = Math.max(1, cfg.maxFramesPerTick);
+
         if (chain != null && !chain.isEmpty()) {
-            this.encChain = chain.newEncodeChain(); // app thread
-            this.decChain = chain.newDecodeChain(); // I/O thread
+            this.encChain = chain.newEncodeChain();
+            this.decChain = chain.newDecodeChain();
         } else {
             this.encChain = null;
             this.decChain = null;
         }
+
+        // Pooled buffers: size = max(8k, outChunk) so chunks fit in one buffer.
+        final int poolBufSize = Math.max(8192, this.outChunk);
+        final int poolCapacity = Math.max(16, cfg.ioPoolCapacity); // add this int to your cfg; default ~64 is fine
+        this.bufferPool = new SimpleBufferPool(poolBufSize, poolCapacity, cfg.directBuffers);
+
+        // Borrow one read buffer upfront.
+        this.readBuf = bufferPool.acquire();
     }
 
     public WebSocket exposeWebSocket() {
@@ -176,7 +201,7 @@ public final class WsHandler implements IOEventHandler {
                 } catch (final RuntimeException rte) {
                     final int code = rte instanceof WsProtocolException
                             ? ((WsProtocolException) rte).closeCode
-                            : 1002; // protocol error
+                            : 1002;
                     initiateCloseAndWait(ioSession, code, rte.getMessage());
                     inbuf.clear();
                     return;
@@ -192,7 +217,7 @@ public final class WsHandler implements IOEventHandler {
                 final boolean r3 = decoder.rsv3();
                 final ByteBuffer payload = decoder.payload();
 
-                // RSV validation
+                // RSV validation policy at handler-level
                 if (r2 || r3) {
                     initiateCloseAndWait(ioSession, 1002, "RSV2/RSV3 not supported");
                     inbuf.clear();
@@ -204,12 +229,10 @@ public final class WsHandler implements IOEventHandler {
                     return;
                 }
 
-                // After we sent CLOSE, ignore everything except CLOSE
                 if (closingSent && op != Opcode.CLOSE) {
                     continue;
                 }
 
-                // Control frame checks (already enforced by decoder, but keep)
                 if (Opcode.isControl(op)) {
                     if (!fin) {
                         initiateCloseAndWait(ioSession, 1002, "fragmented control frame");
@@ -230,7 +253,7 @@ public final class WsHandler implements IOEventHandler {
                         } catch (final Throwable ignore) {
                         }
                         if (cfg.autoPong) {
-                            enqueueCtrl(writer.frame(Opcode.PONG, payload.asReadOnlyBuffer(), true, true));
+                            enqueueCtrl(pooledFrame(Opcode.PONG, payload.asReadOnlyBuffer(), true));
                         }
                         break;
                     }
@@ -262,7 +285,7 @@ public final class WsHandler implements IOEventHandler {
                         }
                         notifyCloseOnce(code, reason);
                         if (!closingSent) {
-                            enqueueCtrl(writer.closeEcho(payload.asReadOnlyBuffer()));
+                            enqueueCtrl(pooledCloseEcho(ro));
                             closingSent = true;
                             session.setSocketTimeout(cfg.closeWaitTimeout);
                         }
@@ -336,50 +359,47 @@ public final class WsHandler implements IOEventHandler {
         try {
             int framesThisTick = 0;
 
-            // Drain bounded number of frames per tick
             while (framesThisTick < maxFramesPerTick) {
-                // Finish current frame first
-                if (activeWrite != null && activeWrite.hasRemaining()) {
-                    final int written = ioSession.write(activeWrite);
+                if (activeWrite != null && activeWrite.buf.hasRemaining()) {
+                    final int written = ioSession.write(activeWrite.buf);
                     if (written == 0) {
                         ioSession.setEvent(EventMask.WRITE);
                         return;
                     }
-                    if (activeWrite.hasRemaining()) {
+                    if (activeWrite.buf.hasRemaining()) {
                         ioSession.setEvent(EventMask.WRITE);
                         return;
                     }
-                    activeWrite = null; // finished one frame
+                    releaseIfPooled(activeWrite);
+                    activeWrite = null;
                     framesThisTick++;
                     continue;
                 }
 
-                // No active frame: control frames have priority
-                ByteBuffer next = ctrlOutbound.poll();
+                OutFrame next = ctrlOutbound.poll();
                 if (next == null) {
                     next = dataOutbound.poll();
                 }
                 if (next == null) {
-                    // nothing to send
                     ioSession.clearEvent(EventMask.WRITE);
                     return;
                 }
 
                 activeWrite = next;
-                final int written = ioSession.write(activeWrite);
+                final int written = ioSession.write(activeWrite.buf);
                 if (written == 0) {
                     ioSession.setEvent(EventMask.WRITE);
                     return;
                 }
-                if (activeWrite.hasRemaining()) {
+                if (activeWrite.buf.hasRemaining()) {
                     ioSession.setEvent(EventMask.WRITE);
                     return;
                 }
-                activeWrite = null; // finished this frame
+                releaseIfPooled(activeWrite);
+                activeWrite = null;
                 framesThisTick++;
             }
 
-            // More work pending? ask for another spin
             if (activeWrite != null || !ctrlOutbound.isEmpty() || !dataOutbound.isEmpty()) {
                 ioSession.setEvent(EventMask.WRITE);
             } else {
@@ -393,10 +413,9 @@ public final class WsHandler implements IOEventHandler {
     @Override
     public void timeout(final IOSession ioSession, final Timeout timeout) {
         try {
-            listener.onError(new java.util.concurrent.TimeoutException());
+            listener.onError(new TimeoutException());
         } catch (final Throwable ignore) {
         }
-        open.set(false);
         ioSession.close(CloseMode.GRACEFUL);
     }
 
@@ -406,7 +425,6 @@ public final class WsHandler implements IOEventHandler {
             listener.onError(cause);
         } catch (final Throwable ignore) {
         }
-        open.set(false);
         ioSession.close(CloseMode.GRACEFUL);
     }
 
@@ -418,11 +436,33 @@ public final class WsHandler implements IOEventHandler {
             } catch (final Throwable ignore) {
             }
         }
+        // Return any pooled buffers
+        if (readBuf != null) {
+            bufferPool.release(readBuf);
+            readBuf = null;
+        }
+        if (activeWrite != null) {
+            releaseIfPooled(activeWrite);
+            activeWrite = null;
+        }
+        OutFrame f;
+        while ((f = ctrlOutbound.poll()) != null) {
+            releaseIfPooled(f);
+        }
+        while ((f = dataOutbound.poll()) != null) {
+            releaseIfPooled(f);
+        }
     }
 
     // ------------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------------
+
+    private void releaseIfPooled(final OutFrame f) {
+        if (f != null && f.pooled) {
+            bufferPool.release(f.buf);
+        }
+    }
 
     /**
      * Grow-and-append into the session input accumulator.
@@ -434,7 +474,7 @@ public final class WsHandler implements IOEventHandler {
         if (inbuf.remaining() < src.remaining()) {
             final int need = inbuf.position() + src.remaining();
             final int newCap = Math.max(inbuf.capacity() * 2, need);
-            final ByteBuffer bigger = ByteBuffer.allocate(newCap);
+            final ByteBuffer bigger = ByteBuffer.allocate(newCap); // keep heap for large aggregates
             inbuf.flip();
             bigger.put(inbuf);
             inbuf = bigger;
@@ -542,22 +582,65 @@ public final class WsHandler implements IOEventHandler {
         return out;
     }
 
-    private void enqueueCtrl(final ByteBuffer frame) {
+    private void enqueueCtrl(final OutFrame frame) {
         ctrlOutbound.add(frame);
         session.setEvent(EventMask.WRITE);
         session.setEventMask(EventMask.READ | EventMask.WRITE);
     }
 
-    private void enqueueData(final ByteBuffer frame) {
+    private void enqueueData(final OutFrame frame) {
         dataOutbound.add(frame);
         session.setEvent(EventMask.WRITE);
         session.setEventMask(EventMask.READ | EventMask.WRITE);
     }
 
+    /**
+     * Build a pooled control/data frame if it fits in pool buffer, else fall back to normal allocation.
+     */
+    private OutFrame pooledFrame(final int opcode, final ByteBuffer payload, final boolean fin) {
+        final int payloadLen = payload != null ? payload.remaining() : 0;
+        final int headerExtra = payloadLen <= 125 ? 0 : payloadLen <= 0xFFFF ? 2 : 8;
+        final int need = 2 + headerExtra + 4 + payloadLen; // +4 for client mask
+        final ByteBuffer target = need <= bufferPool.bufferSize() ? bufferPool.acquire() : null;
+
+        if (target != null) {
+            final ByteBuffer built = writer.frameInto(opcode, payload, fin, true, target);
+            built.flip();                    // position=0, limit=frame length
+            return new OutFrame(built, true); // built is the same pooled buffer
+        } else {
+            return new OutFrame(writer.frame(opcode, payload, fin, true), false);
+        }
+    }
+
+    private OutFrame pooledCloseEcho(final ByteBuffer payload) {
+        final int payloadLen = payload != null ? payload.remaining() : 0;
+        final int need = 2 + (payloadLen <= 125 ? 0 : payloadLen <= 0xFFFF ? 2 : 8) + 4 + payloadLen;
+        final ByteBuffer target = need <= bufferPool.bufferSize() ? bufferPool.acquire() : null;
+        if (target != null) {
+            final ByteBuffer built = writer.frameInto(Opcode.CLOSE, payload, true, true, target);
+            built.flip();
+            return new OutFrame(built, true);
+        } else {
+            return new OutFrame(writer.frame(Opcode.CLOSE, payload, true, true), false);
+        }
+    }
+
     private void initiateCloseAndWait(final IOSession ioSession, final int code, final String reason) {
         if (!closingSent) {
             try {
-                enqueueCtrl(writer.close(code, reason == null ? "" : reason));
+                final ByteBuffer reasonBuf = reason != null && !reason.isEmpty()
+                        ? StandardCharsets.UTF_8.encode(reason)
+                        : ByteBuffer.allocate(0);
+                if (reasonBuf.remaining() > 123) {
+                    throw new IllegalArgumentException("Close reason too long");
+                }
+                final ByteBuffer p = ByteBuffer.allocate(2 + reasonBuf.remaining());
+                p.put((byte) (code >> 8 & 0xFF)).put((byte) (code & 0xFF));
+                if (reasonBuf.hasRemaining()) {
+                    p.put(reasonBuf);
+                }
+                p.flip();
+                enqueueCtrl(pooledFrame(Opcode.CLOSE, p.asReadOnlyBuffer(), true));
             } catch (final Throwable ignore) {
             }
             closingSent = true;
@@ -574,6 +657,10 @@ public final class WsHandler implements IOEventHandler {
             }
         }
     }
+
+    // ------------------------------------------------------------------------
+    // Facade
+    // ------------------------------------------------------------------------
 
     private final class WsFacade implements WebSocket {
         @Override
@@ -594,45 +681,65 @@ public final class WsHandler implements IOEventHandler {
         }
 
         private boolean sendData(final int opcode, final ByteBuffer data, final boolean fin) {
-            int opcodeCopy = opcode;
+            synchronized (writeLock) {
+                int opcodeCopy = opcode;
 
-            // Single-frame fast path with extension encode on app thread
-            if (outOpcode == -1 && fin && encChain != null && data.remaining() <= outChunk) {
-                final byte[] src = toBytes(data);
-                final ExtensionChain.EncodeChain.Enc enc = encChain.encode(src, true, true);
-                final ByteBuffer payload = ByteBuffer.wrap(enc.payload);
-                final int rsv = enc.setRsv1 ? FrameWriter.RSV1 : 0;
-                enqueueData(writer.frameWithRSV(opcodeCopy, payload, true, true, rsv));
-                return true;
-            }
+                // Single-frame fast path with extension encode on app thread
+                if (outOpcode == -1 && fin && encChain != null && data.remaining() <= outChunk) {
+                    final byte[] src = toBytes(data);
+                    final ExtensionChain.EncodeChain.Enc enc = encChain.encode(src, true, true);
+                    final ByteBuffer payload = ByteBuffer.wrap(enc.payload);
+                    final int rsv = enc.setRsv1 ? RSV1 : 0;
 
-            // Auto-fragment into small chunks
-            if (outOpcode == -1) {
-                outOpcode = opcodeCopy;
+                    // Try pooled build if fits; else heap
+                    final OutFrame f = pooledFrameWithRSV(opcodeCopy, payload, true, rsv);
+                    enqueueData(f);
+                    return true;
+                }
+
+                // Auto-fragment into chunks of outChunk
+                if (outOpcode == -1) {
+                    outOpcode = opcodeCopy;
+                    while (data.hasRemaining()) {
+                        final int n = Math.min(data.remaining(), outChunk);
+                        final ByteBuffer slice = sliceN(data, n);
+                        final boolean lastChunk = !data.hasRemaining() && fin;
+                        enqueueData(pooledFrame(opcodeCopy, slice, lastChunk));
+                        opcodeCopy = Opcode.CONT;
+                    }
+                    if (fin) {
+                        outOpcode = -1;
+                    }
+                    return true;
+                }
+
+                // Continuations
                 while (data.hasRemaining()) {
                     final int n = Math.min(data.remaining(), outChunk);
                     final ByteBuffer slice = sliceN(data, n);
                     final boolean lastChunk = !data.hasRemaining() && fin;
-                    enqueueData(writer.frame(opcodeCopy, slice, lastChunk, true));
-                    opcodeCopy = Opcode.CONT; // subsequent chunks use CONT
+                    enqueueData(pooledFrame(Opcode.CONT, slice, lastChunk));
                 }
                 if (fin) {
                     outOpcode = -1;
                 }
                 return true;
             }
+        }
 
-            // Continuations while a fragmented message is in progress
-            while (data.hasRemaining()) {
-                final int n = Math.min(data.remaining(), outChunk);
-                final ByteBuffer slice = sliceN(data, n);
-                final boolean lastChunk = !data.hasRemaining() && fin;
-                enqueueData(writer.frame(Opcode.CONT, slice, lastChunk, true));
+        private OutFrame pooledFrameWithRSV(final int opcode, final ByteBuffer payload, final boolean fin, final int rsvBits) {
+            final int payloadLen = payload != null ? payload.remaining() : 0;
+            final int headerExtra = payloadLen <= 125 ? 0 : payloadLen <= 0xFFFF ? 2 : 8;
+            final int need = 2 + headerExtra + 4 + payloadLen;
+            final ByteBuffer target = need <= bufferPool.bufferSize() ? bufferPool.acquire() : null;
+
+            if (target != null) {
+                final ByteBuffer built = writer.frameIntoWithRSV(opcode, payload, fin, true, rsvBits, target);
+                built.flip();
+                return new OutFrame(built, true);
+            } else {
+                return new OutFrame(writer.frameWithRSV(opcode, payload, fin, true, rsvBits), false);
             }
-            if (fin) {
-                outOpcode = -1;
-            }
-            return true;
         }
 
         private ByteBuffer sliceN(final ByteBuffer src, final int n) {
@@ -653,7 +760,7 @@ public final class WsHandler implements IOEventHandler {
             if (data != null && data.remaining() > 125) {
                 return false;
             }
-            enqueueCtrl(writer.frame(Opcode.PING, data == null ? ByteBuffer.allocate(0) : data.asReadOnlyBuffer(), true, true));
+            enqueueCtrl(pooledFrame(Opcode.PING, data == null ? ByteBuffer.allocate(0) : data.asReadOnlyBuffer(), true));
             return true;
         }
 
@@ -666,7 +773,19 @@ public final class WsHandler implements IOEventHandler {
             }
             if (!closingSent) {
                 try {
-                    enqueueCtrl(writer.close(statusCode, reason));
+                    final ByteBuffer reasonBuf = reason != null && !reason.isEmpty()
+                            ? StandardCharsets.UTF_8.encode(reason)
+                            : ByteBuffer.allocate(0);
+                    if (reasonBuf.remaining() > 123) {
+                        throw new IllegalArgumentException("Close reason too long");
+                    }
+                    final ByteBuffer p = ByteBuffer.allocate(2 + reasonBuf.remaining());
+                    p.put((byte) (statusCode >> 8 & 0xFF)).put((byte) (statusCode & 0xFF));
+                    if (reasonBuf.hasRemaining()) {
+                        p.put(reasonBuf);
+                    }
+                    p.flip();
+                    enqueueCtrl(pooledFrame(Opcode.CLOSE, p.asReadOnlyBuffer(), true));
                 } catch (final Throwable ignore) {
                 }
                 closingSent = true;

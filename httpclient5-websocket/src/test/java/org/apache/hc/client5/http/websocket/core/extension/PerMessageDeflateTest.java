@@ -52,8 +52,8 @@ final class PerMessageDeflateTest {
 
         final byte[] data = "hello".getBytes(StandardCharsets.UTF_8);
 
-        final Extension.Encoded first = enc.encode(data, /*first*/true,  /*fin*/false);
-        final Extension.Encoded cont = enc.encode(data, /*first*/false, /*fin*/true);
+        final Extension.Encoded first = enc.encode(data, true, false);
+        final Extension.Encoded cont = enc.encode(data, false, true);
 
         assertTrue(first.setRsvOnFirst, "RSV on first fragment");
         assertFalse(cont.setRsvOnFirst, "no RSV on continuation");
@@ -63,7 +63,7 @@ final class PerMessageDeflateTest {
 
     @Test
     void roundTrip_message() throws Exception {
-        final PerMessageDeflate pmce = new PerMessageDeflate(true,  /*server_no_ctx*/ true, true,  /*client_no_ctx*/ null,  null);
+        final PerMessageDeflate pmce = new PerMessageDeflate(true, true, true, null, null);
         final Extension.Encoder enc = pmce.newEncoder();
         final Extension.Decoder dec = pmce.newDecoder();
 
@@ -72,7 +72,7 @@ final class PerMessageDeflateTest {
         final byte[] plain = s.getBytes(StandardCharsets.UTF_8);
 
         // Single-frame message: first=true, fin=true
-        final byte[] wire = enc.encode(plain, /*first*/true, /*fin*/true).payload;
+        final byte[] wire = enc.encode(plain, true, true).payload;
 
         assertTrue(wire.length > 0);
         assertFalse(endsWithTail(wire), "tail must be stripped on wire");

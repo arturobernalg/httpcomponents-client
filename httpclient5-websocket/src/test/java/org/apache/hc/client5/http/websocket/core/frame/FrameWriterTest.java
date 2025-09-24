@@ -26,6 +26,7 @@
  */
 package org.apache.hc.client5.http.websocket.core.frame;
 
+import static org.apache.hc.client5.http.websocket.core.frame.FrameHeaderBits.RSV1;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -136,11 +137,11 @@ class FrameWriterTest {
         final FrameWriter w = new FrameWriter();
         final ByteBuffer payload = StandardCharsets.UTF_8.encode("x");
         // Use RSV1 bit
-        final ByteBuffer f = w.frameWithRSV(Opcode.TEXT, payload, true, true, FrameWriter.RSV1);
+        final ByteBuffer f = w.frameWithRSV(Opcode.TEXT, payload, true, true, RSV1);
         final Parsed p = parse(f);
         assertTrue(p.fin);
         assertEquals(Opcode.TEXT, p.opcode);
-        assertTrue((p.b0 & FrameWriter.RSV1) != 0, "RSV1 must be set");
+        assertTrue((p.b0 & RSV1) != 0, "RSV1 must be set");
         assertArrayEquals("x".getBytes(StandardCharsets.UTF_8), unmask(p));
     }
 

@@ -36,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
+import org.apache.hc.client5.http.websocket.core.close.WsProtocolException;
 import org.apache.hc.client5.http.websocket.httpcore.WsDecoder;
 import org.junit.jupiter.api.Test;
 
@@ -58,7 +59,7 @@ class FrameReaderTest {
             buf = ByteBuffer.allocate(2 + 8 + len);
             buf.put((byte) 0x81);
             buf.put((byte) 127);
-            buf.putLong((long) len);
+            buf.putLong(len);
         }
         buf.put(p);
         buf.flip();
@@ -106,7 +107,7 @@ class FrameReaderTest {
         final ByteBuffer f = ByteBuffer.allocate(2 + 8 + len);
         f.put((byte) 0x82); // FIN|BINARY
         f.put((byte) 127);
-        f.putLong((long) len);
+        f.putLong(len);
         f.put(p);
         f.flip();
 
@@ -125,19 +126,20 @@ class FrameReaderTest {
         f.flip();
 
         final WsDecoder d = new WsDecoder(1024);
-        assertThrows(IllegalStateException.class, () -> d.decode(f));
+        assertThrows(WsProtocolException.class, () -> d.decode(f));
     }
 
     @Test
-    void rsv_bits_set_without_extension_is_rejected() {
-        // FIN + RSV1 + TEXT
+    void rsv_bits_without_extension_is_rejected() {
         final ByteBuffer f = ByteBuffer.allocate(2);
-        f.put((byte) 0xC1); // 0x80 (FIN) + 0x40 (RSV1) + 0x01 (TEXT)
-        f.put((byte) 0x00); // no MASK, len=0
+        f.put((byte) 0xC1); // FIN|RSV1|TEXT
+        f.put((byte) 0x00); // no mask, len=0
         f.flip();
 
-        final WsDecoder d = new WsDecoder(1024);
-        assertThrows(IllegalStateException.class, () -> d.decode(f));
+        final WsDecoder d = new WsDecoder(1024); // strict by default
+        final WsProtocolException ex =
+                assertThrows(WsProtocolException.class, () -> d.decode(f));
+        assertEquals(1002, ex.closeCode);
     }
 
     @Test
@@ -162,7 +164,7 @@ class FrameReaderTest {
         f.flip();
 
         final WsDecoder d = new WsDecoder(1024);
-        assertThrows(IllegalStateException.class, () -> d.decode(f));
+        assertThrows(WsProtocolException.class, () -> d.decode(f));
     }
 
     @Test
@@ -176,6 +178,6 @@ class FrameReaderTest {
         f.flip();
 
         final WsDecoder d = new WsDecoder(1024); // max frame size smaller than len
-        assertThrows(IllegalStateException.class, () -> d.decode(f));
+        assertThrows(WsProtocolException.class, () -> d.decode(f));
     }
 }
