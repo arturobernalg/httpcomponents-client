@@ -33,9 +33,9 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.hc.client5.http.websocket.api.WebSocket;
@@ -171,11 +171,9 @@ public final class WsHandler implements IOEventHandler {
     @Override
     public void inputReady(final IOSession ioSession, final ByteBuffer src) {
         try {
-            // If we've already marked the session closed, ignore any straggling input callbacks.
             if (!open.get()) {
                 return;
             }
-            // JDK8 race: disconnected() may have returned the pooled buffer before this tick fires.
             if (readBuf == null) {
                 readBuf = bufferPool.acquire();
                 if (readBuf == null) {
@@ -188,11 +186,16 @@ public final class WsHandler implements IOEventHandler {
             }
             int n;
             do {
-                readBuf.clear();
-                n = ioSession.read(readBuf);
+                ByteBuffer rb = readBuf;
+                if (rb == null) {
+                    rb = bufferPool.acquire();
+                    readBuf = rb;
+                }
+                rb.clear();
+                n = ioSession.read(rb);
                 if (n > 0) {
-                    readBuf.flip();
-                    appendToInbuf(readBuf);
+                    rb.flip();
+                    appendToInbuf(rb);
                 }
             } while (n > 0);
 
@@ -421,11 +424,13 @@ public final class WsHandler implements IOEventHandler {
     @Override
     public void timeout(final IOSession ioSession, final Timeout timeout) {
         try {
-            listener.onError(new TimeoutException());
+            final String msg = "I/O timeout: " + (timeout != null ? timeout : Timeout.ZERO_MILLISECONDS);
+            listener.onError(new java.util.concurrent.TimeoutException(msg));
         } catch (final Throwable ignore) {
         }
         ioSession.close(CloseMode.GRACEFUL);
     }
+
 
     @Override
     public void exception(final IOSession ioSession, final Exception cause) {
@@ -444,6 +449,7 @@ public final class WsHandler implements IOEventHandler {
             } catch (final Throwable ignore) {
             }
         }
+        session.clearEvent(EventMask.READ | EventMask.WRITE);
         // Return any pooled buffers
         if (readBuf != null) {
             bufferPool.release(readBuf);
@@ -666,9 +672,6 @@ public final class WsHandler implements IOEventHandler {
         }
     }
 
-    // ------------------------------------------------------------------------
-    // Facade
-    // ------------------------------------------------------------------------
 
     private final class WsFacade implements WebSocket {
         @Override
@@ -691,11 +694,6 @@ public final class WsHandler implements IOEventHandler {
         private boolean sendData(final int opcode, final ByteBuffer data, final boolean fin) {
             synchronized (writeLock) {
                 int opcodeCopy = opcode;
-
-                // NOTE: If you need outbound permessage-deflate with RSV1,
-                // integrate here with your encoder & writer that supports RSV bits.
-
-                // Auto-fragment into chunks of outChunk
                 if (outOpcode == -1) {
                     outOpcode = opcodeCopy;
                     while (data.hasRemaining()) {
@@ -748,6 +746,18 @@ public final class WsHandler implements IOEventHandler {
         }
 
         @Override
+        public boolean pong(final ByteBuffer data) {
+            if (!open.get() || closingSent) {
+                return false;
+            }
+            if (data != null && data.remaining() > 125) {
+                return false;
+            }
+            enqueueCtrl(pooledFrame(Opcode.PONG, data == null ? ByteBuffer.allocate(0) : data.asReadOnlyBuffer(), true));
+            return true;
+        }
+
+        @Override
         public CompletableFuture<Void> close(final int statusCode, final String reason) {
             final CompletableFuture<Void> f = new CompletableFuture<>();
             if (!open.get()) {
@@ -783,5 +793,58 @@ public final class WsHandler implements IOEventHandler {
         public boolean isOpen() {
             return open.get() && !closingSent;
         }
+
+        @Override
+        public boolean sendTextBatch(final List<CharSequence> fragments, final boolean finalFragment) {
+            if (!open.get() || closingSent || fragments == null || fragments.isEmpty()) {
+                return false;
+            }
+            synchronized (writeLock) {
+                int opcodeCopy = outOpcode == -1 ? Opcode.TEXT : Opcode.CONT;
+                int i = 0;
+                for (CharSequence data : fragments) {
+                    final ByteBuffer plain = StandardCharsets.UTF_8.encode(data.toString());
+                    final boolean lastChunk = (i == fragments.size() - 1) && finalFragment;
+                    while (plain.hasRemaining()) {
+                        final int n = Math.min(plain.remaining(), outChunk);
+                        final ByteBuffer slice = sliceN(plain, n);
+                        enqueueData(pooledFrame(opcodeCopy, slice, lastChunk));
+                        opcodeCopy = Opcode.CONT;
+                    }
+                    i++;
+                }
+                if (finalFragment) {
+                    outOpcode = -1;
+                }
+                return true;
+            }
+        }
+
+        public boolean sendBinaryBatch(final List<ByteBuffer> fragments, final boolean finalFragment) {
+            if (!open.get() || closingSent || fragments == null || fragments.isEmpty()) {
+                return false;
+            }
+            synchronized (writeLock) {
+                int opcodeCopy = outOpcode == -1 ? Opcode.BINARY : Opcode.CONT;
+                int i = 0;
+                for (ByteBuffer data : fragments) {
+                    final ByteBuffer roData = data.asReadOnlyBuffer();
+                    final boolean lastChunk = (i == fragments.size() - 1) && finalFragment;
+                    while (roData.hasRemaining()) {
+                        final int n = Math.min(roData.remaining(), outChunk);
+                        final ByteBuffer slice = sliceN(roData, n);
+                        enqueueData(pooledFrame(opcodeCopy, slice, lastChunk));
+                        opcodeCopy = Opcode.CONT;
+                    }
+                    i++;
+                }
+                if (finalFragment) {
+                    outOpcode = -1;
+                }
+                return true;
+            }
+        }
     }
+
+
 }

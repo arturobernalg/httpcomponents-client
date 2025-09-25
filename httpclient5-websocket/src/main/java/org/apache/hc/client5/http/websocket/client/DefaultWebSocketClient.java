@@ -67,6 +67,7 @@ import org.slf4j.LoggerFactory;
  *
  * @since 5.6
  */
+// package and imports as in your project
 final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
 
     private static final ThreadLocal<byte[]> NONCE_BUFFER = ThreadLocal.withInitial(() -> new byte[16]);
@@ -192,8 +193,7 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
 
                             final AsyncClientExchangeHandler upgrade = new AsyncClientExchangeHandler() {
                                 @Override
-                                public void releaseResources() {
-                                }
+                                public void releaseResources() { }
 
                                 @Override
                                 public void failed(final Exception cause) {
@@ -201,10 +201,7 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                                         if (LOG.isDebugEnabled()) {
                                             LOG.debug("Upgrade FAILED", cause);
                                         }
-                                        try {
-                                            endpoint.releaseAndDiscard();
-                                        } catch (final Throwable ignore) {
-                                        }
+                                        try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
                                         result.completeExceptionally(cause);
                                     }
                                 }
@@ -215,10 +212,7 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                                         if (LOG.isDebugEnabled()) {
                                             LOG.debug("Upgrade CANCELLED");
                                         }
-                                        try {
-                                            endpoint.releaseAndDiscard();
-                                        } catch (final Throwable ignore) {
-                                        }
+                                        try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
                                         result.cancel(true);
                                     }
                                 }
@@ -232,26 +226,11 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                                     ch.sendRequest(req, null, hc);
                                 }
 
-                                @Override
-                                public int available() {
-                                    return 0;
-                                }
-
-                                @Override
-                                public void produce(final DataStreamChannel channel) {
-                                }
-
-                                @Override
-                                public void updateCapacity(final CapacityChannel capacityChannel) {
-                                }
-
-                                @Override
-                                public void consume(final ByteBuffer src) {
-                                }
-
-                                @Override
-                                public void streamEnd(final java.util.List<? extends Header> trailers) {
-                                }
+                                @Override public int available() { return 0; }
+                                @Override public void produce(final DataStreamChannel channel) { }
+                                @Override public void updateCapacity(final CapacityChannel capacityChannel) { }
+                                @Override public void consume(final ByteBuffer src) { }
+                                @Override public void streamEnd(final java.util.List<? extends Header> trailers) { }
 
                                 @Override
                                 public void consumeInformation(final HttpResponse response, final HttpContext hc) {
@@ -284,10 +263,7 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                             if (LOG.isDebugEnabled()) {
                                 LOG.debug("Exception preparing upgrade", ex);
                             }
-                            try {
-                                endpoint.releaseAndDiscard();
-                            } catch (final Throwable ignore) {
-                            }
+                            try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
                             result.completeExceptionally(ex);
                         }
                     }
@@ -390,25 +366,16 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                                 if (cfg.offerClientMaxWindowBits == null) {
                                     throw new IllegalStateException("Server sent client_max_window_bits but it was not offered");
                                 }
-                                try {
-                                    clientBits = Integer.parseInt(v);
-                                } catch (final NumberFormatException ignore) {
-                                }
-//                                if (clientBits == null || !clientBits.equals(cfg.offerClientMaxWindowBits)) {
-//                                    throw new IllegalStateException("Unsupported client_max_window_bits: " + v);
-//                                }
+                                try { clientBits = Integer.parseInt(v); } catch (final NumberFormatException ignore) { }
                                 if (clientBits == null || clientBits < 8 || clientBits > 15) {
                                     throw new IllegalStateException("Invalid client_max_window_bits: " + v);
                                 }
                             } else if ("server_max_window_bits".equalsIgnoreCase(k)) {
-                                try {
-                                    serverBits = Integer.parseInt(v);
-                                } catch (final NumberFormatException ignore) {
-                                }
+                                try { serverBits = Integer.parseInt(v); } catch (final NumberFormatException ignore) { }
                             }
                         }
                     }
-                    break; // only process first pmce extension occurrence
+                    break; // only the first pmce occurrence
                 }
                 if (pmce) {
                     if (!cfg.perMessageDeflateEnabled) {
@@ -428,19 +395,26 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
             }
             final WebSocketUpgrader upgrader = new WebSocketUpgrader(listener, cfg, chain);
             ioSession.registerProtocol("websocket", upgrader);
+
+            // --- Optional polish: bound the handoff with exchangeTimeout ---
+            if (cfg.exchangeTimeout != null && !cfg.exchangeTimeout.isDisabled()) {
+                ioSession.setSocketTimeout(cfg.exchangeTimeout);
+            }
+
             ioSession.switchProtocol("websocket", new FutureCallback<ProtocolIOSession>() {
                 @Override
                 public void completed(final ProtocolIOSession s) {
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("Protocol switch completed.");
                     }
-//                    final WebSocket ws = upgrader.getWebSocket();
-//                    try {
-//                        listener.onOpen(ws);
-//                    } catch (final Throwable ignore) {
-//                    }
-//                    result.complete(ws);
-                    result.complete(upgrader.getWebSocket());
+                    // Optional: clear timeout after successful switch
+                    try {
+                        s.setSocketTimeout(Timeout.DISABLED);
+                    } catch (final Throwable ignore) { }
+
+                    final WebSocket ws = upgrader.getWebSocket();
+                    try { listener.onOpen(ws); } catch (final Throwable ignore) {}
+                    result.complete(ws);
                 }
 
                 @Override
@@ -448,10 +422,7 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("Protocol switch FAILED", ex);
                     }
-                    try {
-                        endpoint.releaseAndDiscard();
-                    } catch (final Throwable ignore) {
-                    }
+                    try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
                     result.completeExceptionally(ex);
                 }
 
@@ -460,10 +431,7 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("Protocol switch CANCELLED");
                     }
-                    try {
-                        endpoint.releaseAndDiscard();
-                    } catch (final Throwable ignore) {
-                    }
+                    try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
                     result.cancel(true);
                 }
             });
@@ -472,10 +440,7 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("finishUpgrade failed", ex);
             }
-            try {
-                endpoint.releaseAndDiscard();
-            } catch (final Throwable ignore) {
-            }
+            try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
             result.completeExceptionally(ex);
         }
     }

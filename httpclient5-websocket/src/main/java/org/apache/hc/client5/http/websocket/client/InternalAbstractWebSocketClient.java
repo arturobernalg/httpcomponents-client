@@ -60,7 +60,6 @@ abstract class InternalAbstractWebSocketClient extends CloseableWebSocketClient 
         return connect(uri, listener, defaultConfig);
     }
 
-    @Override
     public final CompletableFuture<WebSocket> connect(
             final URI uri, final WebSocketListener listener, final WebSocketClientConfig cfg) {
         if (state.get() == State.NEW) start();
@@ -69,11 +68,15 @@ abstract class InternalAbstractWebSocketClient extends CloseableWebSocketClient 
             f.completeExceptionally(new IllegalStateException("Client is closed"));
             return f;
         }
-        Objects.requireNonNull(uri, "uri");
-        Objects.requireNonNull(listener, "listener");
-        Objects.requireNonNull(cfg, "cfg");
-
-        // Delegate to the concrete implementation (same logic you already have)
+        Args.notNull(uri, "uri");
+        Args.notNull(listener, "listener");
+        Args.notNull(cfg, "cfg");
+        final boolean secure = "wss".equalsIgnoreCase(uri.getScheme());
+        if (!secure && !"ws".equalsIgnoreCase(uri.getScheme())) {
+            final CompletableFuture<WebSocket> f = new CompletableFuture<>();
+            f.completeExceptionally(new IllegalArgumentException("Scheme must be ws or wss"));
+            return f;
+        }
         return doConnect(uri, listener, cfg);
     }
 
