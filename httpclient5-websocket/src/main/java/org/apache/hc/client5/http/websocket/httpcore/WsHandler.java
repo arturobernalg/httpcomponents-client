@@ -26,8 +26,6 @@
  */
 package org.apache.hc.client5.http.websocket.httpcore;
 
-import static org.apache.hc.client5.http.websocket.core.frame.FrameHeaderBits.RSV1;
-
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -55,12 +53,15 @@ import org.apache.hc.core5.reactor.IOEventHandler;
 import org.apache.hc.core5.reactor.IOSession;
 import org.apache.hc.core5.reactor.ProtocolIOSession;
 import org.apache.hc.core5.util.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * RFC6455/7692 WebSocket handler on HttpCore with pooled buffers.
  */
 public final class WsHandler implements IOEventHandler {
 
+    private static final Logger LOG = LoggerFactory.getLogger(WsHandler.class);
 
     /**
      * Simple pool used for read buffers and small outbound frames.
@@ -84,7 +85,6 @@ public final class WsHandler implements IOEventHandler {
             this.pooled = pooled;
         }
     }
-
 
     private final ProtocolIOSession session;
     private final WebSocketListener listener;
@@ -152,20 +152,16 @@ public final class WsHandler implements IOEventHandler {
 
         // Pooled buffers: size = max(8k, outChunk) so chunks fit in one buffer.
         final int poolBufSize = Math.max(8192, this.outChunk);
-        final int poolCapacity = Math.max(16, cfg.ioPoolCapacity); // add this int to your cfg; default ~64 is fine
+        final int poolCapacity = Math.max(16, cfg.ioPoolCapacity);
         this.bufferPool = new SimpleBufferPool(poolBufSize, poolCapacity, cfg.directBuffers);
 
-        // Borrow one read buffer upfront.
+        // Borrow one read buffer upfront to prevent NPEs in inputReady()
         this.readBuf = bufferPool.acquire();
     }
 
     public WebSocket exposeWebSocket() {
         return facade;
     }
-
-    // ------------------------------------------------------------------------
-    // IOEventHandler
-    // ------------------------------------------------------------------------
 
     @Override
     public void connected(final IOSession ioSession) {
@@ -175,6 +171,18 @@ public final class WsHandler implements IOEventHandler {
     @Override
     public void inputReady(final IOSession ioSession, final ByteBuffer src) {
         try {
+            // If we've already marked the session closed, ignore any straggling input callbacks.
+            if (!open.get()) {
+                return;
+            }
+            // JDK8 race: disconnected() may have returned the pooled buffer before this tick fires.
+            if (readBuf == null) {
+                readBuf = bufferPool.acquire();
+                if (readBuf == null) {
+                    // Pool exhausted or session is tearing down; nothing to read safely.
+                    return;
+                }
+            }
             if (src != null && src.hasRemaining()) {
                 appendToInbuf(src);
             }
@@ -684,18 +692,8 @@ public final class WsHandler implements IOEventHandler {
             synchronized (writeLock) {
                 int opcodeCopy = opcode;
 
-                // Single-frame fast path with extension encode on app thread
-                if (outOpcode == -1 && fin && encChain != null && data.remaining() <= outChunk) {
-                    final byte[] src = toBytes(data);
-                    final ExtensionChain.EncodeChain.Enc enc = encChain.encode(src, true, true);
-                    final ByteBuffer payload = ByteBuffer.wrap(enc.payload);
-                    final int rsv = enc.setRsv1 ? RSV1 : 0;
-
-                    // Try pooled build if fits; else heap
-                    final OutFrame f = pooledFrameWithRSV(opcodeCopy, payload, true, rsv);
-                    enqueueData(f);
-                    return true;
-                }
+                // NOTE: If you need outbound permessage-deflate with RSV1,
+                // integrate here with your encoder & writer that supports RSV bits.
 
                 // Auto-fragment into chunks of outChunk
                 if (outOpcode == -1) {
@@ -724,21 +722,6 @@ public final class WsHandler implements IOEventHandler {
                     outOpcode = -1;
                 }
                 return true;
-            }
-        }
-
-        private OutFrame pooledFrameWithRSV(final int opcode, final ByteBuffer payload, final boolean fin, final int rsvBits) {
-            final int payloadLen = payload != null ? payload.remaining() : 0;
-            final int headerExtra = payloadLen <= 125 ? 0 : payloadLen <= 0xFFFF ? 2 : 8;
-            final int need = 2 + headerExtra + 4 + payloadLen;
-            final ByteBuffer target = need <= bufferPool.bufferSize() ? bufferPool.acquire() : null;
-
-            if (target != null) {
-                final ByteBuffer built = writer.frameIntoWithRSV(opcode, payload, fin, true, rsvBits, target);
-                built.flip();
-                return new OutFrame(built, true);
-            } else {
-                return new OutFrame(writer.frameWithRSV(opcode, payload, fin, true, rsvBits), false);
             }
         }
 

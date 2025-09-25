@@ -1,28 +1,33 @@
 package org.apache.hc.client5.http.websocket.client;
 
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
-import org.apache.hc.core5.http.config.Http1Config;
-import org.apache.hc.core5.http.nio.ssl.TlsStrategy;
 
+/**
+ * Static factory methods for {@link CloseableWebSocketClient}.
+ *
+ * @since 5.6
+ */
 public final class WebSocketClients {
 
     private WebSocketClients() {}
 
-    /** Creates a builder for custom {@link WebSocketClient} instances. */
+    /** Creates a builder for custom {@link CloseableWebSocketClient} instances. */
     public static WebSocketClientBuilder custom() {
         return WebSocketClientBuilder.create();
     }
 
-    /** Creates a {@link WebSocketClient} with sensible defaults. */
-    public static WebSocketClient createDefault() {
+    /** Creates a {@link CloseableWebSocketClient} with sensible defaults. */
+    public static CloseableWebSocketClient createDefault() {
         return custom().build();
     }
 
     /**
-     * Convenience: create a client with the given default WebSocket config.
-     * Transport defaults are used.
+     * Creates a {@link CloseableWebSocketClient} with the supplied default
+     * {@link WebSocketClientConfig} applied to connections, using default transport settings.
      */
-    public static WebSocketClient createWith(final WebSocketClientConfig defaultConfig) {
-        return custom().setDefaultConfig(defaultConfig).build();
+    public static CloseableWebSocketClient createWith(final WebSocketClientConfig defaultConfig) {
+        return custom()
+                .setDefaultConfig(defaultConfig)   // requires the builder method below
+                .build();
     }
 }

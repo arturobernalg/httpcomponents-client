@@ -137,7 +137,7 @@ public final class WebSocketClientConfig {
 
     public final int ioPoolCapacity;
 
-    public boolean directBuffers;
+    public final boolean directBuffers;
 
     private WebSocketClientConfig(
             final int maxFrameSize,
@@ -223,7 +223,7 @@ public final class WebSocketClientConfig {
          * Maximum size of a reassembled message in bytes (default 8 MiB).
          */
         public Builder setMaxMessageSize(final long bytes) {
-            this.maxMessageSize = Math.max(1L, bytes);
+            this.maxMessageSize = bytes < 0 ? 0L : bytes;
             return this;
         }
 

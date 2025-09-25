@@ -2,14 +2,14 @@ package org.apache.hc.client5.http.websocket.client;
 
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.support.AsyncRequesterBootstrap;
-import org.apache.hc.core5.function.Callback;
-import org.apache.hc.core5.function.Decorator;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.config.CharCodingConfig;
 import org.apache.hc.core5.http.config.Http1Config;
-import org.apache.hc.core5.http.impl.Http1StreamListener;
+import org.apache.hc.core5.http.impl.bootstrap.HttpAsyncRequester;
 import org.apache.hc.core5.http.nio.ssl.TlsStrategy;
+import org.apache.hc.core5.http.protocol.HttpProcessor;
 import org.apache.hc.core5.pool.ConnPoolListener;
+import org.apache.hc.core5.pool.ManagedConnPool;
 import org.apache.hc.core5.pool.PoolConcurrencyPolicy;
 import org.apache.hc.core5.pool.PoolReusePolicy;
 import org.apache.hc.core5.reactor.IOReactorConfig;
@@ -20,160 +20,94 @@ import org.apache.hc.core5.util.Timeout;
 public final class WebSocketClientBuilder {
 
     private final AsyncRequesterBootstrap bootstrap = AsyncRequesterBootstrap.bootstrap();
-    private WebSocketClientConfig.Builder cfg = WebSocketClientConfig.custom();
+    private WebSocketClientConfig defaultConfig = WebSocketClientConfig.custom().build();
+
+    private WebSocketClientBuilder() {
+    }
 
     public static WebSocketClientBuilder create() {
         return new WebSocketClientBuilder();
     }
 
-    private WebSocketClientBuilder() {
-    }
-
-    public WebSocketClientBuilder setIOReactorConfig(final IOReactorConfig c) {
-        bootstrap.setIOReactorConfig(c);
+    public WebSocketClientBuilder defaultConfig(final WebSocketClientConfig cfg) {
+        if (cfg != null) defaultConfig = cfg;
         return this;
     }
 
-    public WebSocketClientBuilder setHttp1Config(final Http1Config c) {
-        bootstrap.setHttp1Config(c);
+    public WebSocketClientBuilder ioReactorConfig(final IOReactorConfig v) {
+        bootstrap.setIOReactorConfig(v);
         return this;
     }
 
-    public WebSocketClientBuilder setCharCoding(final CharCodingConfig c) {
-        bootstrap.setCharCodingConfig(c);
+    public WebSocketClientBuilder http1Config(final Http1Config v) {
+        bootstrap.setHttp1Config(v);
         return this;
     }
 
-    public WebSocketClientBuilder setDefaultMaxPerRoute(final int n) {
+    public WebSocketClientBuilder charCoding(final CharCodingConfig v) {
+        bootstrap.setCharCodingConfig(v);
+        return this;
+    }
+
+    public WebSocketClientBuilder httpProcessor(final HttpProcessor v) {
+        bootstrap.setHttpProcessor(v);
+        return this;
+    }
+
+    public WebSocketClientBuilder defaultMaxPerRoute(final int n) {
         bootstrap.setDefaultMaxPerRoute(n);
         return this;
     }
 
-    public WebSocketClientBuilder setMaxTotal(final int n) {
+    public WebSocketClientBuilder maxTotal(final int n) {
         bootstrap.setMaxTotal(n);
         return this;
     }
 
-    public WebSocketClientBuilder setTimeToLive(final Timeout ttl) {
+    public WebSocketClientBuilder timeToLive(final Timeout ttl) {
         bootstrap.setTimeToLive(ttl);
         return this;
     }
 
-    public WebSocketClientBuilder setPoolReusePolicy(final PoolReusePolicy p) {
+    public WebSocketClientBuilder poolReusePolicy(final PoolReusePolicy p) {
         bootstrap.setPoolReusePolicy(p);
         return this;
     }
 
-    public WebSocketClientBuilder setPoolConcurrencyPolicy(final PoolConcurrencyPolicy p) {
+    public WebSocketClientBuilder poolConcurrency(final PoolConcurrencyPolicy p) {
         bootstrap.setPoolConcurrencyPolicy(p);
         return this;
     }
 
-    public WebSocketClientBuilder setTlsStrategy(final TlsStrategy t) {
+    public WebSocketClientBuilder tlsStrategy(final TlsStrategy t) {
         bootstrap.setTlsStrategy(t);
         return this;
     }
 
-    public WebSocketClientBuilder setTlsHandshakeTimeout(final Timeout t) {
+    public WebSocketClientBuilder tlsHandshakeTimeout(final Timeout t) {
         bootstrap.setTlsHandshakeTimeout(t);
         return this;
     }
 
-    public WebSocketClientBuilder setIOSessionDecorator(final Decorator<IOSession> d) {
-        bootstrap.setIOSessionDecorator(d);
-        return this;
-    }
-
-    public WebSocketClientBuilder setExceptionCallback(final Callback<Exception> cb) {
-        bootstrap.setExceptionCallback(cb);
-        return this;
-    }
-
-    public WebSocketClientBuilder setIOSessionListener(final IOSessionListener l) {
+    public WebSocketClientBuilder ioSessionListener(final IOSessionListener l) {
         bootstrap.setIOSessionListener(l);
         return this;
     }
 
-    public WebSocketClientBuilder setStreamListener(final Http1StreamListener l) {
-        bootstrap.setStreamListener(l);
-        return this;
-    }
-
-    public WebSocketClientBuilder setConnPoolListener(final ConnPoolListener<HttpHost> l) {
+    public WebSocketClientBuilder connPoolListener(final ConnPoolListener<HttpHost> l) {
         bootstrap.setConnPoolListener(l);
         return this;
     }
-
-    // ------------ Default WebSocket config (RFC6455 / RFC7692) -------------
-
-    /**
-     * Replace the default config entirely (power users).
-     */
-    public WebSocketClientBuilder setDefaultConfig(final WebSocketClientConfig c) {
-        this.cfg = WebSocketClientConfig.custom()
-                .setMaxFrameSize(c.maxFrameSize)
-                .setMaxMessageSize(c.maxMessageSize)
-                .setConnectTimeout(c.connectTimeout)
-                .setExchangeTimeout(c.exchangeTimeout)
-                .setCloseWaitTimeout(c.closeWaitTimeout)
-                .setAutoPong(c.autoPong)
-                .setOutgoingChunkSize(c.outgoingChunkSize)
-                .setMaxFramesPerTick(c.maxFramesPerTick)
-                .setIoPoolCapacity(c.ioPoolCapacity)
-                .setDirectBuffers(c.directBuffers)
-                .enablePerMessageDeflate(c.perMessageDeflateEnabled)
-                .offerServerNoContextTakeover(c.offerServerNoContextTakeover)
-                .offerClientNoContextTakeover(c.offerClientNoContextTakeover)
-                .offerClientMaxWindowBits(c.offerClientMaxWindowBits)
-                .offerServerMaxWindowBits(c.offerServerMaxWindowBits)
-                .setSubprotocols(c.subprotocols);
+    /** Sets the default WebSocket per-connection config used by connect(..., cfg==null). */
+    public WebSocketClientBuilder setDefaultConfig(final WebSocketClientConfig cfg) {
+        this.defaultConfig = cfg;
         return this;
     }
 
-    // Handy pass-throughs so callers can keep everything in this one builder:
-    public WebSocketClientBuilder enablePerMessageDeflate(final boolean v) {
-        cfg.enablePerMessageDeflate(v);
-        return this;
-    }
-
-    public WebSocketClientBuilder offerServerNoContextTakeover(final boolean v) {
-        cfg.offerServerNoContextTakeover(v);
-        return this;
-    }
-
-    public WebSocketClientBuilder offerClientNoContextTakeover(final boolean v) {
-        cfg.offerClientNoContextTakeover(v);
-        return this;
-    }
-
-    public WebSocketClientBuilder offerClientMaxWindowBits(final Integer v) {
-        cfg.offerClientMaxWindowBits(v);
-        return this;
-    }
-
-    public WebSocketClientBuilder offerServerMaxWindowBits(final Integer v) {
-        cfg.offerServerMaxWindowBits(v);
-        return this;
-    }
-
-    public WebSocketClientBuilder setConnectTimeout(final Timeout t) {
-        cfg.setConnectTimeout(t);
-        return this;
-    }
-
-    public WebSocketClientBuilder setCloseWaitTimeout(final Timeout t) {
-        cfg.setCloseWaitTimeout(t);
-        return this;
-    }
-
-    public WebSocketClientBuilder addSubprotocol(final String p) {
-        cfg.addSubprotocol(p);
-        return this;
-    }
-
-    public WebSocketClient build() {
+    public CloseableWebSocketClient build() {
         final AsyncRequesterBootstrap.Result r = bootstrap.createWithPool();
-        final WebSocketClient client = new WebSocketClient(r.requester, r.connPool);
-        return client;
+        final HttpAsyncRequester requester = r.requester;
+        final ManagedConnPool<HttpHost, IOSession> pool = r.connPool;
+        return new DefaultWebSocketClient(requester, pool, defaultConfig);
     }
 }
