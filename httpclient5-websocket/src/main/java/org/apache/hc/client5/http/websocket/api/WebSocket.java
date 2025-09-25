@@ -27,6 +27,7 @@
 package org.apache.hc.client5.http.websocket.api;
 
 import java.nio.ByteBuffer;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -101,6 +102,17 @@ public interface WebSocket {
     boolean ping(ByteBuffer data);
 
     /**
+     * Sends a PONG control frame.
+     *
+     * <p>Payload, if provided, must be ≤ 125 bytes per RFC 6455. The method
+     * returns immediately.</p>
+     *
+     * @param data optional payload (may be {@code null})
+     * @return {@code true} if accepted for send; {@code false} if not open/closing
+     */
+    boolean pong(ByteBuffer data);
+
+    /**
      * Initiates the close handshake.
      *
      * <p>The future completes once the close request has been enqueued. The connection
@@ -117,4 +129,23 @@ public interface WebSocket {
      * @return {@code true} while the connection is open and not closing.
      */
     boolean isOpen();
+
+
+    /**
+     * Sends multiple text fragments in a single operation.
+     *
+     * @param fragments list of text fragments
+     * @param finalFragment whether the last fragment finishes the message
+     * @return {@code true} if accepted for send; {@code false} if not open/closing
+     */
+    boolean sendTextBatch(List<CharSequence> fragments, boolean finalFragment);
+
+    /**
+     * Sends multiple binary fragments in a single operation.
+     *
+     * @param fragments list of binary fragments
+     * @param finalFragment whether the last fragment finishes the message
+     * @return {@code true} if accepted for send; {@code false} if not open/closing
+     */
+    boolean sendBinaryBatch(List<ByteBuffer> fragments, boolean finalFragment);
 }

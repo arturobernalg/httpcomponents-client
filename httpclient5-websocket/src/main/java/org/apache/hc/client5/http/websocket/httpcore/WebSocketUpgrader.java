@@ -34,8 +34,10 @@ import org.slf4j.LoggerFactory;
 /**
  * Bridges HttpCore protocol upgrade to a WebSocket {@link WsHandler}.
  *
- * Creates and installs {@link WsHandler} on the {@link ProtocolIOSession}
- * and notifies {@link WebSocketListener#onOpen(WebSocket)}.
+ * <p>Creates and installs {@link WsHandler} on the {@link ProtocolIOSession}
+ * and exposes the {@link WebSocket} facade. The caller (e.g., the client code
+ * that invoked {@code switchProtocol(...)}) is responsible for notifying
+ * {@link WebSocketListener#onOpen(WebSocket)} once the protocol switch completes.</p>
  */
 @Internal
 public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
@@ -46,7 +48,6 @@ public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
     private final WebSocketClientConfig cfg;
     private final ExtensionChain chain;
 
-    // Expose the created WebSocket to callers after upgrade() completes
     private volatile WebSocket webSocket;
 
     public WebSocketUpgrader(
@@ -58,7 +59,6 @@ public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
         this.chain = chain;
     }
 
-    /** Returns the WebSocket created during {@link #upgrade}. */
     public WebSocket getWebSocket() {
         return webSocket;
     }
@@ -70,18 +70,11 @@ public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Installing WsHandler on {}", ioSession);
             }
-
-            // Create and install the IOEventHandler
             final WsHandler handler = new WsHandler(ioSession, listener, cfg, chain);
             ioSession.upgrade(handler);
 
-            // Expose facade and notify listener
+            // Only expose the facade here; DO NOT call listener.onOpen(...) here.
             this.webSocket = handler.exposeWebSocket();
-            try {
-                listener.onOpen(this.webSocket);
-            } catch (final Throwable ignore) {
-                // listener exceptions must not break the upgrade
-            }
 
             if (callback != null) {
                 callback.completed(ioSession);
@@ -93,7 +86,6 @@ public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
             if (callback != null) {
                 callback.failed(ex);
             } else {
-                // Keep behavior consistent with HttpCore: surface the failure
                 throw ex;
             }
         }

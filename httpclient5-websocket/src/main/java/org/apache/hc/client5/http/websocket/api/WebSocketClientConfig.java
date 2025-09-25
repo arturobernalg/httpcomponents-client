@@ -139,6 +139,10 @@ public final class WebSocketClientConfig {
 
     public final boolean directBuffers;
 
+    public final int maxConnectionsPerRoute;
+    public final int maxTotalConnections;
+    public final Timeout connectionTimeToLive;
+
     private WebSocketClientConfig(
             final int maxFrameSize,
             final long maxMessageSize,
@@ -155,7 +159,10 @@ public final class WebSocketClientConfig {
             final List<String> subprotocols,
             final int maxFramesPerTick,
             final int ioPoolCapacity,
-            final boolean directBuffers) {
+            final boolean directBuffers,
+            final int maxConnectionsPerRoute,
+            final int maxTotalConnections,
+            final Timeout connectionTimeToLive) {
         this.maxFrameSize = maxFrameSize;
         this.maxMessageSize = maxMessageSize;
         this.connectTimeout = connectTimeout;
@@ -172,6 +179,9 @@ public final class WebSocketClientConfig {
         this.maxFramesPerTick = maxFramesPerTick;
         this.ioPoolCapacity = ioPoolCapacity;
         this.directBuffers = directBuffers;
+        this.maxConnectionsPerRoute = maxConnectionsPerRoute;
+        this.maxTotalConnections = maxTotalConnections;
+        this.connectionTimeToLive = connectionTimeToLive;
     }
 
     /**
@@ -195,10 +205,13 @@ public final class WebSocketClientConfig {
         private Timeout exchangeTimeout = Timeout.ofSeconds(10);
         private Timeout closeWaitTimeout = Timeout.ofSeconds(5);
         private boolean autoPong = true;
-        private int outgoingChunkSize = 4096;                // 4 KiB
+        private int outgoingChunkSize = 16384;
         private int maxFramesPerTick = 64;
         private int ioPoolCapacity = 64;
         private boolean directBuffers = false;
+        private int maxConnectionsPerRoute = 20;
+        private int maxTotalConnections = 100;
+        private Timeout connectionTimeToLive = Timeout.ofMinutes(5);
 
         private boolean perMessageDeflateEnabled = false;
         private boolean offerServerNoContextTakeover = false;
@@ -207,6 +220,21 @@ public final class WebSocketClientConfig {
         private Integer offerServerMaxWindowBits = null;
 
         private final List<String> subprotocols = new ArrayList<>();
+
+        public Builder setMaxConnectionsPerRoute(final int n) {
+            this.maxConnectionsPerRoute = Math.max(1, n);
+            return this;
+        }
+
+        public Builder setMaxTotalConnections(final int n) {
+            this.maxTotalConnections = Math.max(1, n);
+            return this;
+        }
+
+        public Builder setConnectionTimeToLive(final Timeout t) {
+            this.connectionTimeToLive = t;
+            return this;
+        }
 
 
 
@@ -352,7 +380,10 @@ public final class WebSocketClientConfig {
          * Builds an immutable {@link WebSocketClientConfig}.
          */
         public WebSocketClientConfig build() {
-            final int chunk = outgoingChunkSize <= 0 ? 4096 : outgoingChunkSize;
+//            if (outgoingChunkSize > maxFrameSize) {
+//                throw new IllegalArgumentException("outgoingChunkSize (" + outgoingChunkSize + ") must not exceed maxFrameSize (" + maxFrameSize + ")");
+//            }
+            final int chunk = outgoingChunkSize <= 0 ? Math.min(16384, maxFrameSize / 4) : outgoingChunkSize;
             return new WebSocketClientConfig(
                     maxFrameSize,
                     maxMessageSize,
@@ -369,7 +400,11 @@ public final class WebSocketClientConfig {
                     Collections.unmodifiableList(new ArrayList<>(subprotocols)),
                     maxFramesPerTick,
                     ioPoolCapacity,
-                    directBuffers
+                    directBuffers,
+                    maxConnectionsPerRoute,
+                    maxTotalConnections,
+                    connectionTimeToLive
+
             );
         }
     }

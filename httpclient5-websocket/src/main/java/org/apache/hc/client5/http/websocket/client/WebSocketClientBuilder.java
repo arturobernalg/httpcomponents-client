@@ -30,7 +30,9 @@ public final class WebSocketClientBuilder {
     }
 
     public WebSocketClientBuilder defaultConfig(final WebSocketClientConfig cfg) {
-        if (cfg != null) defaultConfig = cfg;
+        if (cfg != null) {
+            defaultConfig = cfg;
+        }
         return this;
     }
 
@@ -98,14 +100,21 @@ public final class WebSocketClientBuilder {
         bootstrap.setConnPoolListener(l);
         return this;
     }
-    /** Sets the default WebSocket per-connection config used by connect(..., cfg==null). */
+
+    /**
+     * Sets the default WebSocket per-connection config used by connect(..., cfg==null).
+     */
     public WebSocketClientBuilder setDefaultConfig(final WebSocketClientConfig cfg) {
         this.defaultConfig = cfg;
         return this;
     }
 
     public CloseableWebSocketClient build() {
-        final AsyncRequesterBootstrap.Result r = bootstrap.createWithPool();
+        final AsyncRequesterBootstrap.Result r = bootstrap
+                .setDefaultMaxPerRoute(defaultConfig.maxConnectionsPerRoute)
+                .setMaxTotal(defaultConfig.maxTotalConnections)
+                .setTimeToLive(defaultConfig.connectionTimeToLive)
+                .createWithPool();
         final HttpAsyncRequester requester = r.requester;
         final ManagedConnPool<HttpHost, IOSession> pool = r.connPool;
         return new DefaultWebSocketClient(requester, pool, defaultConfig);

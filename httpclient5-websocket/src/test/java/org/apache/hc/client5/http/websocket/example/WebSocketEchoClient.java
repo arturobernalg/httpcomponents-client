@@ -37,6 +37,7 @@ import org.apache.hc.client5.http.websocket.api.WebSocket;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.client5.http.websocket.client.WebSocketClient;
+import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.util.Timeout;
 
 /**
@@ -134,11 +135,11 @@ public final class WebSocketEchoClient {
                 done.countDown();
                 return null;
             });
-
             if (!done.await(12, TimeUnit.SECONDS)) {
                 System.err.println("[TEST] Timed out waiting for echo/close");
                 System.exit(1);
             }
+            client.close(CloseMode.IMMEDIATE);
         }
     }
 }
