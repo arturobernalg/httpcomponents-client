@@ -17,62 +17,85 @@
  * specific language governing permissions and limitations
  * under the License.
  * ====================================================================
- *
- * This software consists of voluntary contributions made by many
- * individuals on behalf of the Apache Software Foundation.  For more
- * information on the Apache Software Foundation, please see
- * <http://www.apache.org/>.
- *
  */
 package org.apache.hc.client5.http.websocket.httpcore;
-
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hc.client5.http.websocket.api.WebSocket;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.client5.http.websocket.core.extension.ExtensionChain;
+import org.apache.hc.core5.annotation.Internal;
 import org.apache.hc.core5.concurrent.FutureCallback;
-import org.apache.hc.core5.reactor.EventMask;
 import org.apache.hc.core5.reactor.ProtocolIOSession;
 import org.apache.hc.core5.reactor.ProtocolUpgradeHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Installs WsHandler via HttpCore protocol upgrade API.
+ * Bridges HttpCore protocol upgrade to a WebSocket {@link WsHandler}.
  *
- * @since 5.6
+ * Creates and installs {@link WsHandler} on the {@link ProtocolIOSession}
+ * and notifies {@link WebSocketListener#onOpen(WebSocket)}.
  */
+@Internal
 public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
+
     private static final Logger LOG = LoggerFactory.getLogger(WebSocketUpgrader.class);
 
     private final WebSocketListener listener;
     private final WebSocketClientConfig cfg;
-    private final ExtensionChain chain; // may be null
-    private final AtomicReference<WebSocket> wsRef = new AtomicReference<>();
+    private final ExtensionChain chain;
 
-    public WebSocketUpgrader(final WebSocketListener listener, final WebSocketClientConfig cfg, final ExtensionChain chain) {
+    // Expose the created WebSocket to callers after upgrade() completes
+    private volatile WebSocket webSocket;
+
+    public WebSocketUpgrader(
+            final WebSocketListener listener,
+            final WebSocketClientConfig cfg,
+            final ExtensionChain chain) {
         this.listener = listener;
         this.cfg = cfg;
         this.chain = chain;
     }
 
-    @Override
-    public void upgrade(final ProtocolIOSession ioSession, final FutureCallback<ProtocolIOSession> callback) {
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("Installing WsHandler on {}", ioSession);
-        }
-        final WsHandler handler = new WsHandler(ioSession, listener, cfg, chain);
-        ioSession.upgrade(handler);
-        ioSession.setEventMask(EventMask.READ | EventMask.WRITE);
-        wsRef.set(handler.exposeWebSocket());
-        if (callback != null) {
-            callback.completed(ioSession);
-        }
+    /** Returns the WebSocket created during {@link #upgrade}. */
+    public WebSocket getWebSocket() {
+        return webSocket;
     }
 
-    public WebSocket getWebSocket() {
-        return wsRef.get();
+    @Override
+    public void upgrade(final ProtocolIOSession ioSession,
+                        final FutureCallback<ProtocolIOSession> callback) {
+        try {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Installing WsHandler on {}", ioSession);
+            }
+
+            // Create and install the IOEventHandler
+            final WsHandler handler = new WsHandler(ioSession, listener, cfg, chain);
+            ioSession.upgrade(handler);
+
+            // Expose facade and notify listener
+            this.webSocket = handler.exposeWebSocket();
+            try {
+                listener.onOpen(this.webSocket);
+            } catch (final Throwable ignore) {
+                // listener exceptions must not break the upgrade
+            }
+
+            if (callback != null) {
+                callback.completed(ioSession);
+            }
+        } catch (final Exception ex) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("WebSocket upgrade failed", ex);
+            }
+            if (callback != null) {
+                callback.failed(ex);
+            } else {
+                // Keep behavior consistent with HttpCore: surface the failure
+                throw ex;
+            }
+        }
     }
 }
