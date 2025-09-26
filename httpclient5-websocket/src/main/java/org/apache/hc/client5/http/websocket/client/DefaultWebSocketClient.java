@@ -1,3 +1,6 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) ...
+ */
 package org.apache.hc.client5.http.websocket.client;
 
 import java.net.URI;
@@ -29,6 +32,7 @@ import org.apache.hc.core5.http.nio.AsyncClientExchangeHandler;
 import org.apache.hc.core5.http.nio.CapacityChannel;
 import org.apache.hc.core5.http.nio.DataStreamChannel;
 import org.apache.hc.core5.http.nio.RequestChannel;
+import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.http.protocol.HttpCoreContext;
 import org.apache.hc.core5.pool.ManagedConnPool;
 import org.apache.hc.core5.reactor.IOSession;
@@ -39,31 +43,32 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Concrete WebSocket client that performs the HTTP/1.1 upgrade and installs the WsHandler.
- * Extends the abstract base so it is-a CloseableWebSocketClient (builder can return it).
+ * Concrete client that keeps your original upgrade logic intact.
  */
 final class DefaultWebSocketClient extends AbstractWebSocketClientBase {
 
     private static final Logger LOG = LoggerFactory.getLogger(DefaultWebSocketClient.class);
 
-    /**
-     * Small adapter around requester + pool to lease a connection and expose ProtocolIOSession.
-     * (This is your previous WebSocketRequester class; if you already have it in its own file, reuse it.)
-     */
+    private final WebSocketClientConfig defaultConfig;
     private final WebSocketRequester wsRequester;
 
-    DefaultWebSocketClient(final HttpAsyncRequester requester,
-                           final ManagedConnPool<HttpHost, IOSession> connPool,
-                           final WebSocketClientConfig defaultConfig) {
-        super(requester, connPool, defaultConfig);
+    DefaultWebSocketClient(
+            final HttpAsyncRequester requester,
+            final ManagedConnPool<HttpHost, IOSession> connPool,
+            final WebSocketClientConfig defaultConfig) {
+        super(requester, connPool);
+        this.defaultConfig = defaultConfig != null ? defaultConfig : WebSocketClientConfig.custom().build();
         this.wsRequester = new WebSocketRequester(requester, connPool);
     }
 
     @Override
-    public CompletableFuture<WebSocket> connect(
+    protected CompletableFuture<WebSocket> doConnect(
             final URI uri,
             final WebSocketListener listener,
-            final WebSocketClientConfig cfg) {
+            final WebSocketClientConfig cfgOrNull,
+            final HttpContext context) {
+
+        final WebSocketClientConfig cfg = cfgOrNull != null ? cfgOrNull : defaultConfig;
 
         Args.notNull(uri, "uri");
         Args.notNull(listener, "listener");
@@ -237,7 +242,7 @@ final class DefaultWebSocketClient extends AbstractWebSocketClientBase {
                                         finishUpgrade(endpoint, response, secKey, listener, cfg, result);
                                         return;
                                     }
-                                    failed(new IllegalStateException("Unexpected status: " + code));
+                                    failed(new IllegalStateException("Unexpected status: " + response.getCode()));
                                 }
                             };
 
@@ -275,10 +280,6 @@ final class DefaultWebSocketClient extends AbstractWebSocketClientBase {
         return result;
     }
 
-    // ---------------------------------------------------------------------
-    // Helpers — same as you used before
-    // ---------------------------------------------------------------------
-
     private void finishUpgrade(
             final WebSocketRequester.ProtoEndpoint endpoint,
             final HttpResponse response,
@@ -309,9 +310,6 @@ final class DefaultWebSocketClient extends AbstractWebSocketClientBase {
 
             final String proto = headerValue(response, "Sec-WebSocket-Protocol");
             if (proto != null && !proto.isEmpty()) {
-                if (cfg.subprotocols.isEmpty()) {
-                    throw new IllegalStateException("Server selected subprotocol but none was offered: " + proto);
-                }
                 boolean matched = false;
                 for (final String p : cfg.subprotocols) {
                     if (p.equals(proto)) {
@@ -333,8 +331,7 @@ final class DefaultWebSocketClient extends AbstractWebSocketClientBase {
 
                 for (final String rawExt : ext.split(",")) {
                     final String[] parts = rawExt.trim().split(";");
-                    final String name = parts[0].trim();
-                    if (!"permessage-deflate".equalsIgnoreCase(name)) {
+                    if (!"permessage-deflate".equalsIgnoreCase(parts[0].trim())) {
                         continue;
                     }
                     pmce = true;
@@ -346,7 +343,7 @@ final class DefaultWebSocketClient extends AbstractWebSocketClientBase {
                                 serverNoCtx = true;
                             } else if ("client_no_context_takeover".equalsIgnoreCase(p)) {
                                 if (!cfg.offerClientNoContextTakeover) {
-                                    throw new IllegalStateException("Server sent client_no_context_takeover but it was not offered");
+                                    throw new IllegalStateException("client_no_context_takeover not offered");
                                 }
                                 clientNoCtx = true;
                             }
@@ -355,11 +352,11 @@ final class DefaultWebSocketClient extends AbstractWebSocketClientBase {
                             final String v = p.substring(eq + 1).trim();
                             if ("client_max_window_bits".equalsIgnoreCase(k)) {
                                 if (cfg.offerClientMaxWindowBits == null) {
-                                    throw new IllegalStateException("Server sent client_max_window_bits but it was not offered");
+                                    throw new IllegalStateException("client_max_window_bits not offered");
                                 }
                                 try {
                                     clientBits = Integer.parseInt(v);
-                                } catch (final NumberFormatException ignore) {
+                                } catch (NumberFormatException ignore) {
                                 }
                                 if (clientBits == null || clientBits < 8 || clientBits > 15) {
                                     throw new IllegalStateException("Invalid client_max_window_bits: " + v);
@@ -367,12 +364,12 @@ final class DefaultWebSocketClient extends AbstractWebSocketClientBase {
                             } else if ("server_max_window_bits".equalsIgnoreCase(k)) {
                                 try {
                                     serverBits = Integer.parseInt(v);
-                                } catch (final NumberFormatException ignore) {
+                                } catch (NumberFormatException ignore) {
                                 }
                             }
                         }
                     }
-                    break; // only first pmce token considered
+                    break;
                 }
                 if (pmce) {
                     if (!cfg.perMessageDeflateEnabled) {
@@ -392,16 +389,18 @@ final class DefaultWebSocketClient extends AbstractWebSocketClientBase {
             }
             final WebSocketUpgrader upgrader = new WebSocketUpgrader(listener, cfg, chain);
             ioSession.registerProtocol("websocket", upgrader);
-            ioSession.switchProtocol("websocket", new FutureCallback<ProtocolIOSession>() {
+            ioSession.switchProtocol("websocket", new org.apache.hc.core5.concurrent.FutureCallback<ProtocolIOSession>() {
                 @Override
                 public void completed(final ProtocolIOSession s) {
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("Protocol switch completed.");
                     }
                     s.setSocketTimeout(Timeout.DISABLED);
-
                     final WebSocket ws = upgrader.getWebSocket();
-                    try { listener.onOpen(ws); } catch (final Throwable ignore) {}
+                    try {
+                        listener.onOpen(ws);
+                    } catch (final Throwable ignore) {
+                    }
                     result.complete(ws);
                 }
 
