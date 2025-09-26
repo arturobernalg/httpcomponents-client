@@ -165,6 +165,7 @@ public final class WsHandler implements IOEventHandler {
 
     @Override
     public void connected(final IOSession ioSession) {
+        ioSession.setSocketTimeout(Timeout.DISABLED);
         ioSession.setEventMask(EventMask.READ | EventMask.WRITE);
     }
 

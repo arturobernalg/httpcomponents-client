@@ -1,30 +1,9 @@
-/*
- * ====================================================================
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- * ====================================================================
- */
 package org.apache.hc.client5.http.websocket.client;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.Base64;
 import java.util.StringJoiner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
@@ -38,7 +17,6 @@ import org.apache.hc.client5.http.websocket.core.extension.PerMessageDeflate;
 import org.apache.hc.client5.http.websocket.httpcore.WebSocketUpgrader;
 import org.apache.hc.client5.http.websocket.support.WebSocketRequester;
 import org.apache.hc.core5.concurrent.FutureCallback;
-import org.apache.hc.core5.http.EntityDetails;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpException;
 import org.apache.hc.core5.http.HttpHost;
@@ -51,9 +29,7 @@ import org.apache.hc.core5.http.nio.AsyncClientExchangeHandler;
 import org.apache.hc.core5.http.nio.CapacityChannel;
 import org.apache.hc.core5.http.nio.DataStreamChannel;
 import org.apache.hc.core5.http.nio.RequestChannel;
-import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.http.protocol.HttpCoreContext;
-import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.pool.ManagedConnPool;
 import org.apache.hc.core5.reactor.IOSession;
 import org.apache.hc.core5.reactor.ProtocolIOSession;
@@ -63,48 +39,28 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Concrete implementation that performs RFC 6455 upgrade & protocol switch.
- *
- * @since 5.6
+ * Concrete WebSocket client that performs the HTTP/1.1 upgrade and installs the WsHandler.
+ * Extends the abstract base so it is-a CloseableWebSocketClient (builder can return it).
  */
-// package and imports as in your project
-final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
+final class DefaultWebSocketClient extends AbstractWebSocketClientBase {
 
-    private static final ThreadLocal<byte[]> NONCE_BUFFER = ThreadLocal.withInitial(() -> new byte[16]);
     private static final Logger LOG = LoggerFactory.getLogger(DefaultWebSocketClient.class);
 
-    private final HttpAsyncRequester requester;
-    private final ManagedConnPool<HttpHost, IOSession> connPool;
+    /**
+     * Small adapter around requester + pool to lease a connection and expose ProtocolIOSession.
+     * (This is your previous WebSocketRequester class; if you already have it in its own file, reuse it.)
+     */
+    private final WebSocketRequester wsRequester;
 
-    DefaultWebSocketClient(
-            final HttpAsyncRequester requester,
-            final ManagedConnPool<HttpHost, IOSession> connPool,
-            final WebSocketClientConfig defaultConfig) {
-        super(new WebSocketRequester(Args.notNull(requester, "requester"),
-                        Args.notNull(connPool, "connPool")),
-                defaultConfig);
-        this.requester = requester;
-        this.connPool = connPool;
+    DefaultWebSocketClient(final HttpAsyncRequester requester,
+                           final ManagedConnPool<HttpHost, IOSession> connPool,
+                           final WebSocketClientConfig defaultConfig) {
+        super(requester, connPool, defaultConfig);
+        this.wsRequester = new WebSocketRequester(requester, connPool);
     }
 
     @Override
-    protected void doStart() {
-        requester.start();
-        if (LOG.isTraceEnabled()) {
-            LOG.trace("WebSocket client started (pool: {})", connPool.getClass().getSimpleName());
-        }
-    }
-
-    @Override
-    protected void doClose(final CloseMode mode) {
-        if (LOG.isTraceEnabled()) {
-            LOG.trace("WebSocket client closing: {}", mode);
-        }
-        requester.close(mode != null ? mode : CloseMode.GRACEFUL);
-    }
-
-    @Override
-    protected CompletableFuture<WebSocket> doConnect(
+    public CompletableFuture<WebSocket> connect(
             final URI uri,
             final WebSocketListener listener,
             final WebSocketClientConfig cfg) {
@@ -157,7 +113,11 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
 
                             if (!cfg.subprotocols.isEmpty()) {
                                 final StringJoiner sj = new StringJoiner(", ");
-                                cfg.subprotocols.stream().filter(p -> p != null && !p.isEmpty()).forEach(sj::add);
+                                for (final String p : cfg.subprotocols) {
+                                    if (p != null && !p.isEmpty()) {
+                                        sj.add(p);
+                                    }
+                                }
                                 final String offered = sj.toString();
                                 if (!offered.isEmpty()) {
                                     req.addHeader("Sec-WebSocket-Protocol", offered);
@@ -193,7 +153,8 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
 
                             final AsyncClientExchangeHandler upgrade = new AsyncClientExchangeHandler() {
                                 @Override
-                                public void releaseResources() { }
+                                public void releaseResources() {
+                                }
 
                                 @Override
                                 public void failed(final Exception cause) {
@@ -201,7 +162,10 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                                         if (LOG.isDebugEnabled()) {
                                             LOG.debug("Upgrade FAILED", cause);
                                         }
-                                        try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
+                                        try {
+                                            endpoint.releaseAndDiscard();
+                                        } catch (final Throwable ignore) {
+                                        }
                                         result.completeExceptionally(cause);
                                     }
                                 }
@@ -212,13 +176,16 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                                         if (LOG.isDebugEnabled()) {
                                             LOG.debug("Upgrade CANCELLED");
                                         }
-                                        try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
+                                        try {
+                                            endpoint.releaseAndDiscard();
+                                        } catch (final Throwable ignore) {
+                                        }
                                         result.cancel(true);
                                     }
                                 }
 
                                 @Override
-                                public void produceRequest(final RequestChannel ch, final HttpContext hc)
+                                public void produceRequest(final RequestChannel ch, final org.apache.hc.core5.http.protocol.HttpContext hc)
                                         throws java.io.IOException, HttpException {
                                     if (LOG.isDebugEnabled()) {
                                         LOG.debug("Sending upgrade request");
@@ -226,14 +193,29 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                                     ch.sendRequest(req, null, hc);
                                 }
 
-                                @Override public int available() { return 0; }
-                                @Override public void produce(final DataStreamChannel channel) { }
-                                @Override public void updateCapacity(final CapacityChannel capacityChannel) { }
-                                @Override public void consume(final ByteBuffer src) { }
-                                @Override public void streamEnd(final java.util.List<? extends Header> trailers) { }
+                                @Override
+                                public int available() {
+                                    return 0;
+                                }
 
                                 @Override
-                                public void consumeInformation(final HttpResponse response, final HttpContext hc) {
+                                public void produce(final DataStreamChannel channel) {
+                                }
+
+                                @Override
+                                public void updateCapacity(final CapacityChannel capacityChannel) {
+                                }
+
+                                @Override
+                                public void consume(final ByteBuffer src) {
+                                }
+
+                                @Override
+                                public void streamEnd(final java.util.List<? extends Header> trailers) {
+                                }
+
+                                @Override
+                                public void consumeInformation(final HttpResponse response, final org.apache.hc.core5.http.protocol.HttpContext hc) {
                                     final int code = response.getCode();
                                     if (LOG.isDebugEnabled()) {
                                         LOG.debug("consumeInformation: {}", code);
@@ -244,7 +226,9 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                                 }
 
                                 @Override
-                                public void consumeResponse(final HttpResponse response, final EntityDetails entity, final HttpContext hc) {
+                                public void consumeResponse(final HttpResponse response,
+                                                            final org.apache.hc.core5.http.EntityDetails entity,
+                                                            final org.apache.hc.core5.http.protocol.HttpContext hc) {
                                     final int code = response.getCode();
                                     if (LOG.isDebugEnabled()) {
                                         LOG.debug("consumeResponse: {} entity={}", code, entity != null);
@@ -263,7 +247,10 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                             if (LOG.isDebugEnabled()) {
                                 LOG.debug("Exception preparing upgrade", ex);
                             }
-                            try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
+                            try {
+                                endpoint.releaseAndDiscard();
+                            } catch (final Throwable ignore) {
+                            }
                             result.completeExceptionally(ex);
                         }
                     }
@@ -287,6 +274,10 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
 
         return result;
     }
+
+    // ---------------------------------------------------------------------
+    // Helpers — same as you used before
+    // ---------------------------------------------------------------------
 
     private void finishUpgrade(
             final WebSocketRequester.ProtoEndpoint endpoint,
@@ -366,16 +357,22 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                                 if (cfg.offerClientMaxWindowBits == null) {
                                     throw new IllegalStateException("Server sent client_max_window_bits but it was not offered");
                                 }
-                                try { clientBits = Integer.parseInt(v); } catch (final NumberFormatException ignore) { }
+                                try {
+                                    clientBits = Integer.parseInt(v);
+                                } catch (final NumberFormatException ignore) {
+                                }
                                 if (clientBits == null || clientBits < 8 || clientBits > 15) {
                                     throw new IllegalStateException("Invalid client_max_window_bits: " + v);
                                 }
                             } else if ("server_max_window_bits".equalsIgnoreCase(k)) {
-                                try { serverBits = Integer.parseInt(v); } catch (final NumberFormatException ignore) { }
+                                try {
+                                    serverBits = Integer.parseInt(v);
+                                } catch (final NumberFormatException ignore) {
+                                }
                             }
                         }
                     }
-                    break; // only the first pmce occurrence
+                    break; // only first pmce token considered
                 }
                 if (pmce) {
                     if (!cfg.perMessageDeflateEnabled) {
@@ -395,22 +392,13 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
             }
             final WebSocketUpgrader upgrader = new WebSocketUpgrader(listener, cfg, chain);
             ioSession.registerProtocol("websocket", upgrader);
-
-            // --- Optional polish: bound the handoff with exchangeTimeout ---
-            if (cfg.exchangeTimeout != null && !cfg.exchangeTimeout.isDisabled()) {
-                ioSession.setSocketTimeout(cfg.exchangeTimeout);
-            }
-
             ioSession.switchProtocol("websocket", new FutureCallback<ProtocolIOSession>() {
                 @Override
                 public void completed(final ProtocolIOSession s) {
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("Protocol switch completed.");
                     }
-                    // Optional: clear timeout after successful switch
-                    try {
-                        s.setSocketTimeout(Timeout.DISABLED);
-                    } catch (final Throwable ignore) { }
+                    s.setSocketTimeout(Timeout.DISABLED);
 
                     final WebSocket ws = upgrader.getWebSocket();
                     try { listener.onOpen(ws); } catch (final Throwable ignore) {}
@@ -422,7 +410,10 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("Protocol switch FAILED", ex);
                     }
-                    try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
+                    try {
+                        endpoint.releaseAndDiscard();
+                    } catch (final Throwable ignore) {
+                    }
                     result.completeExceptionally(ex);
                 }
 
@@ -431,7 +422,10 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("Protocol switch CANCELLED");
                     }
-                    try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
+                    try {
+                        endpoint.releaseAndDiscard();
+                    } catch (final Throwable ignore) {
+                    }
                     result.cancel(true);
                 }
             });
@@ -440,25 +434,16 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("finishUpgrade failed", ex);
             }
-            try { endpoint.releaseAndDiscard(); } catch (final Throwable ignore) { }
+            try {
+                endpoint.releaseAndDiscard();
+            } catch (final Throwable ignore) {
+            }
             result.completeExceptionally(ex);
         }
     }
 
     private static String headerValue(final HttpResponse r, final String name) {
         return r.getFirstHeader(name) != null ? r.getFirstHeader(name).getValue() : null;
-    }
-
-    private static String randomKey() {
-        final byte[] nonce = NONCE_BUFFER.get();
-        ThreadLocalRandom.current().nextBytes(nonce);
-        return Base64.getEncoder().encodeToString(nonce);
-    }
-
-    private static String expectedAccept(final String key) throws Exception {
-        final MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
-        sha1.update((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes(StandardCharsets.ISO_8859_1));
-        return Base64.getEncoder().encodeToString(sha1.digest());
     }
 
     private static boolean containsToken(final HttpResponse r, final String header, final String token) {
@@ -471,5 +456,17 @@ final class DefaultWebSocketClient extends InternalAbstractWebSocketClient {
             }
         }
         return false;
+    }
+
+    private static String randomKey() {
+        final byte[] nonce = new byte[16];
+        ThreadLocalRandom.current().nextBytes(nonce);
+        return java.util.Base64.getEncoder().encodeToString(nonce);
+    }
+
+    private static String expectedAccept(final String key) throws Exception {
+        final MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+        sha1.update((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes(StandardCharsets.ISO_8859_1));
+        return java.util.Base64.getEncoder().encodeToString(sha1.digest());
     }
 }

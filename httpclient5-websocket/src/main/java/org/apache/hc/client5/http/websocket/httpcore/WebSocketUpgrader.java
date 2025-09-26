@@ -34,10 +34,8 @@ import org.slf4j.LoggerFactory;
 /**
  * Bridges HttpCore protocol upgrade to a WebSocket {@link WsHandler}.
  *
- * <p>Creates and installs {@link WsHandler} on the {@link ProtocolIOSession}
- * and exposes the {@link WebSocket} facade. The caller (e.g., the client code
- * that invoked {@code switchProtocol(...)}) is responsible for notifying
- * {@link WebSocketListener#onOpen(WebSocket)} once the protocol switch completes.</p>
+ * <p>IMPORTANT: This class does NOT call {@link WebSocketListener#onOpen(WebSocket)}.
+ * The caller performs notification after {@code switchProtocol(...)} completes.</p>
  */
 @Internal
 public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
@@ -48,6 +46,7 @@ public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
     private final WebSocketClientConfig cfg;
     private final ExtensionChain chain;
 
+    /** The WebSocket facade created during {@link #upgrade}. */
     private volatile WebSocket webSocket;
 
     public WebSocketUpgrader(
@@ -59,6 +58,7 @@ public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
         this.chain = chain;
     }
 
+    /** Returns the {@link WebSocket} created during {@link #upgrade}. */
     public WebSocket getWebSocket() {
         return webSocket;
     }
@@ -70,10 +70,12 @@ public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Installing WsHandler on {}", ioSession);
             }
+
+            // Create and install the IOEventHandler
             final WsHandler handler = new WsHandler(ioSession, listener, cfg, chain);
             ioSession.upgrade(handler);
 
-            // Only expose the facade here; DO NOT call listener.onOpen(...) here.
+            // Expose facade (onOpen is NOT called here)
             this.webSocket = handler.exposeWebSocket();
 
             if (callback != null) {

@@ -59,6 +59,7 @@ class WsPerfRunnerIT {
         });
     }
 
+
     @Test
     void latency_sample() throws Exception {
         WsPerfRunner.main(new String[]{
