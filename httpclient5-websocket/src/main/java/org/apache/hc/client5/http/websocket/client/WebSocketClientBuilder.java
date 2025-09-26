@@ -1,3 +1,6 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) ...
+ */
 package org.apache.hc.client5.http.websocket.client;
 
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
@@ -5,7 +8,6 @@ import org.apache.hc.client5.http.websocket.support.AsyncRequesterBootstrap;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.config.CharCodingConfig;
 import org.apache.hc.core5.http.config.Http1Config;
-import org.apache.hc.core5.http.nio.ssl.TlsStrategy;
 import org.apache.hc.core5.http.protocol.HttpProcessor;
 import org.apache.hc.core5.pool.ConnPoolListener;
 import org.apache.hc.core5.pool.PoolConcurrencyPolicy;
@@ -14,13 +16,6 @@ import org.apache.hc.core5.reactor.IOReactorConfig;
 import org.apache.hc.core5.reactor.IOSessionListener;
 import org.apache.hc.core5.util.Timeout;
 
-/**
- * Builder for {@link CloseableWebSocketClient}.
- * <p>
- * This wires the transport using {@link AsyncRequesterBootstrap} and returns a concrete
- * {@code CloseableWebSocketClient} (currently {@link DefaultWebSocketClient}) that
- * implements the abstract lifecycle and {@code doConnect(...)}.
- */
 public final class WebSocketClientBuilder {
 
     private final AsyncRequesterBootstrap bootstrap = AsyncRequesterBootstrap.bootstrap();
@@ -33,13 +28,6 @@ public final class WebSocketClientBuilder {
         return new WebSocketClientBuilder();
     }
 
-    // -------------------------------
-    // High-level defaults
-    // -------------------------------
-
-    /**
-     * Sets the per-connection WebSocket defaults used when connect(...) is called without a cfg.
-     */
     public WebSocketClientBuilder defaultConfig(final WebSocketClientConfig cfg) {
         if (cfg != null) {
             defaultConfig = cfg;
@@ -47,18 +35,7 @@ public final class WebSocketClientBuilder {
         return this;
     }
 
-    /**
-     * Alias for defaultConfig(...) to mimic other builders’ naming.
-     */
-    public WebSocketClientBuilder setDefaultConfig(final WebSocketClientConfig cfg) {
-        return defaultConfig(cfg);
-    }
-
-    // -------------------------------
-    // Transport / pool wiring passthroughs
-    // (mirrors HttpAsyncClients-style)
-    // -------------------------------
-
+    // Transport/pool passthrough (same as before)
     public WebSocketClientBuilder ioReactorConfig(final IOReactorConfig v) {
         bootstrap.setIOReactorConfig(v);
         return this;
@@ -104,7 +81,7 @@ public final class WebSocketClientBuilder {
         return this;
     }
 
-    public WebSocketClientBuilder tlsStrategy(final TlsStrategy t) {
+    public WebSocketClientBuilder tlsStrategy(final org.apache.hc.core5.http.nio.ssl.TlsStrategy t) {
         bootstrap.setTlsStrategy(t);
         return this;
     }
@@ -124,15 +101,6 @@ public final class WebSocketClientBuilder {
         return this;
     }
 
-    // -------------------------------
-    // Build
-    // -------------------------------
-
-    /**
-     * Build a concrete {@link CloseableWebSocketClient}.
-     * <p>
-     * The returned client owns the requester/reactor and the pool; closing the client closes them.
-     */
     public CloseableWebSocketClient build() {
         final AsyncRequesterBootstrap.Result r = bootstrap
                 .setDefaultMaxPerRoute(defaultConfig.maxConnectionsPerRoute)
@@ -140,8 +108,6 @@ public final class WebSocketClientBuilder {
                 .setTimeToLive(defaultConfig.connectionTimeToLive)
                 .createWithPool();
 
-        // DefaultWebSocketClient must be your concrete subclass of CloseableWebSocketClient
-        // that wires WebSocketRequester + pool and implements doConnect(...), start(), close(), etc.
         return new DefaultWebSocketClient(r.requester, r.connPool, defaultConfig);
     }
 }
