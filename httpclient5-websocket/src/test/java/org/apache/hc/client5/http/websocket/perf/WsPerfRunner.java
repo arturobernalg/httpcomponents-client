@@ -26,7 +26,6 @@
  */
 package org.apache.hc.client5.http.websocket.perf;
 
-
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -46,7 +45,8 @@ import java.util.concurrent.locks.LockSupport;
 import org.apache.hc.client5.http.websocket.api.WebSocket;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
-import org.apache.hc.client5.http.websocket.client.WebSocketClient;
+import org.apache.hc.client5.http.websocket.client.CloseableWebSocketClient;
+import org.apache.hc.client5.http.websocket.client.WebSocketClientBuilder;
 
 public final class WsPerfRunner {
 
@@ -65,7 +65,6 @@ public final class WsPerfRunner {
         final CountDownLatch done = new CountDownLatch(a.clients);
 
         final byte[] payload = a.compressible ? makeCompressible(a.bytes) : makeRandom(a.bytes);
-
         final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(a.durationSec);
 
         for (int i = 0; i < a.clients; i++) {
@@ -101,7 +100,7 @@ public final class WsPerfRunner {
             final ConcurrentLinkedQueue<Long> lats,
             final CountDownLatch ready, final CountDownLatch done, final long deadlineNanos) {
 
-        final WebSocketClient client = new WebSocketClient();
+        // Per-connection WebSocket config
         final WebSocketClientConfig.Builder b = WebSocketClientConfig.custom()
                 .setConnectTimeout(org.apache.hc.core5.util.Timeout.ofSeconds(5))
                 .setExchangeTimeout(org.apache.hc.core5.util.Timeout.ofSeconds(5))
@@ -113,74 +112,85 @@ public final class WsPerfRunner {
             b.enablePerMessageDeflate(true)
                     .offerClientNoContextTakeover(false)
                     .offerServerNoContextTakeover(false)
-                    .offerClientMaxWindowBits(null)   // do NOT offer specific value; we only support default
+                    .offerClientMaxWindowBits(null)
                     .offerServerMaxWindowBits(null);
         }
         final WebSocketClientConfig cfg = b.build();
 
-        final AtomicInteger inflight = new AtomicInteger();
-        final AtomicBoolean open = new AtomicBoolean(false);
-        final CompletableFuture<WebSocket> cf = client.connect(URI.create(a.uri), new WebSocketListener() {
-            @Override
-            public void onOpen(final WebSocket ws) {
-                open.set(true);
-                ready.countDown();
-                // Prime in-flight
-                for (int j = 0; j < a.inflight; j++) {
-                    sendOne(ws, a, payload, sends, inflight);
-                }
-            }
+        // Build a client instance (closeable) with our default per-connection config
+        try (final CloseableWebSocketClient client =
+                     WebSocketClientBuilder.create()
+                             .defaultConfig(cfg)
+                             .build()) {
 
-            @Override
-            public void onBinary(final ByteBuffer p, final boolean last) {
-                final long t1 = System.nanoTime();
-                if (a.mode == Mode.LATENCY) {
-                    if (p.remaining() >= 8) {
-                        final long t0 = p.getLong(p.position());
-                        lats.add(t1 - t0);
-                    }
-                }
-                recvs.incrementAndGet();
-                inflight.decrementAndGet();
-            }
+            final AtomicInteger inflight = new AtomicInteger();
+            final AtomicBoolean open = new AtomicBoolean(false);
 
-            @Override
-            public void onError(final Throwable ex) {
-                errors.incrementAndGet();
-            }
+            final CompletableFuture<WebSocket> cf = client.connect(
+                    URI.create(a.uri),
+                    new WebSocketListener() {
+                        @Override
+                        public void onOpen(final WebSocket ws) {
+                            open.set(true);
+                            ready.countDown();
+                            // Prime in-flight
+                            for (int j = 0; j < a.inflight; j++) {
+                                sendOne(ws, a, payload, sends, inflight);
+                            }
+                        }
 
-            @Override
-            public void onClose(final int code, final String reason) {
-                open.set(false);
-            }
-        }, cfg);
+                        @Override
+                        public void onBinary(final ByteBuffer p, final boolean last) {
+                            final long t1 = System.nanoTime();
+                            if (a.mode == Mode.LATENCY) {
+                                if (p.remaining() >= 8) {
+                                    final long t0 = p.getLong(p.position());
+                                    lats.add(t1 - t0);
+                                }
+                            }
+                            recvs.incrementAndGet();
+                            inflight.decrementAndGet();
+                        }
 
-        try {
-            final WebSocket ws = cf.get(15, TimeUnit.SECONDS);
-            // Main loop: keep target inflight until deadline
-            while (System.nanoTime() < deadlineNanos) {
-                while (open.get() && inflight.get() < a.inflight) {
-                    sendOne(ws, a, payload, sends, inflight);
-                }
-                // backoff a bit
-                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
-            }
-            // Drain a bit more
-            Thread.sleep(200);
-            ws.close(1000, "bye");
-        } catch (final Exception e) {
-            errors.incrementAndGet();
-            ready.countDown();
-        } finally {
+                        @Override
+                        public void onError(final Throwable ex) {
+                            errors.incrementAndGet();
+                        }
+
+                        @Override
+                        public void onClose(final int code, final String reason) {
+                            open.set(false);
+                        }
+                    });
+
             try {
-                client.close();
-            } catch (final Exception ignore) {
+                final WebSocket ws = cf.get(15, TimeUnit.SECONDS);
+
+                // Main loop: keep target inflight until deadline
+                while (System.nanoTime() < deadlineNanos) {
+                    while (open.get() && inflight.get() < a.inflight) {
+                        sendOne(ws, a, payload, sends, inflight);
+                    }
+                    // backoff a bit
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+                }
+
+                // Drain a bit more
+                Thread.sleep(200);
+                ws.close(1000, "bye");
+            } catch (final Exception e) {
+                errors.incrementAndGet();
+                // If connect failed early, make sure the "all connected" gate doesn't block the whole run
+                ready.countDown();
+            } finally {
+                done.countDown();
             }
-            done.countDown();
+        } catch (final Exception ignore) {
         }
     }
 
-    private static void sendOne(final WebSocket ws, final Args a, final byte[] payload, final AtomicLong sends, final AtomicInteger inflight) {
+    private static void sendOne(final WebSocket ws, final Args a, final byte[] payload,
+                                final AtomicLong sends, final AtomicInteger inflight) {
         final ByteBuffer p = ByteBuffer.allocate(payload.length + 8);
         final long t0 = System.nanoTime();
         p.putLong(t0).put(payload).flip();
@@ -190,9 +200,8 @@ public final class WsPerfRunner {
         }
     }
 
-    // --- utils ---
 
-    private enum Mode { THROUGHPUT, LATENCY }
+    private enum Mode {THROUGHPUT, LATENCY}
 
     private static final class Args {
         String uri = "ws://localhost:8080/echo";

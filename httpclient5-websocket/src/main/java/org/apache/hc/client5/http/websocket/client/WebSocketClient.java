@@ -17,77 +17,58 @@
  * specific language governing permissions and limitations
  * under the License.
  * ====================================================================
+ *
+ * This software consists of voluntary contributions made by many
+ * individuals on behalf of the Apache Software Foundation.  For more
+ * information on the Apache Software Foundation, please see
+ * <http://www.apache.org/>.
+ *
  */
 package org.apache.hc.client5.http.websocket.client;
 
-import java.net.URI;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Future;
 
-import org.apache.hc.client5.http.websocket.api.WebSocket;
-import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
-import org.apache.hc.client5.http.websocket.api.WebSocketListener;
-import org.apache.hc.core5.io.CloseMode;
+import org.apache.hc.core5.concurrent.FutureCallback;
+import org.apache.hc.core5.http.nio.AsyncPushConsumer;
+import org.apache.hc.core5.http.nio.AsyncRequestProducer;
+import org.apache.hc.core5.http.nio.AsyncResponseConsumer;
+import org.apache.hc.core5.http.nio.HandlerFactory;
+import org.apache.hc.core5.http.protocol.HttpContext;
 
 /**
- * Public, user-facing WebSocket client that supports try-with-resources and
- * delegates to the internal implementation.
+ * This interface represents only the most basic contract for HTTP request
+ * execution. It imposes no restrictions or particular details on the request
+ * execution process and leaves the specifics of state management,
+ * authentication and redirect handling up to individual implementations.
  *
- * <p>Prefer building via {@link #custom()} or use {@link #createDefault()}.</p>
- *
- * @since 5.6
+ * @since 4.0
  */
-public final class WebSocketClient extends CloseableWebSocketClient {
-
-    private final CloseableWebSocketClient delegate;
+public interface WebSocketClient {
 
     /**
-     * Convenience no-arg constructor using sensible defaults.
-     * Equivalent to {@code WebSocketClient.createDefault()}.
+     * Initiates asynchronous HTTP request execution using the given context.
+     * <p>
+     * The request producer passed to this method will be used to generate
+     * a request message and stream out its content without buffering it
+     * in memory. The response consumer passed to this method will be used
+     * to process a response message without buffering its content in memory.
+     * <p>
+     * Please note it may be unsafe to interact with the context instance
+     * while the request is still being executed.
+     *
+     * @param <T> the result type of request execution.
+     * @param requestProducer request producer callback.
+     * @param responseConsumer response consumer callback.
+     * @param pushHandlerFactory the push handler factory. Optional and may be {@code null}.
+     * @param context HTTP context. Optional and may be {@code null}.
+     * @param callback future callback. Optional and may be {@code null}.
+     * @return future representing pending completion of the operation.
      */
-    public WebSocketClient() {
-        this.delegate = WebSocketClientBuilder.create().build();
-    }
+    <T> Future<T> execute(
+            AsyncRequestProducer requestProducer,
+            AsyncResponseConsumer<T> responseConsumer,
+            HandlerFactory<AsyncPushConsumer> pushHandlerFactory,
+            HttpContext context,
+            FutureCallback<T> callback);
 
-    /**
-     * Package-private constructor for factories/builders.
-     */
-    WebSocketClient(final CloseableWebSocketClient delegate) {
-        this.delegate = delegate;
-    }
-
-    /**
-     * Create a builder for a custom-configured client.
-     */
-    public static WebSocketClientBuilder custom() {
-        return WebSocketClientBuilder.create();
-    }
-
-    /**
-     * Create a client instance with default configuration.
-     */
-    public static WebSocketClient createDefault() {
-        return new WebSocketClient(WebSocketClientBuilder.create().build());
-    }
-
-
-    @Override
-    public void start() {
-        delegate.start();
-    }
-
-    @Override
-    public CompletableFuture<WebSocket> connect(final URI uri, final WebSocketListener listener) {
-        return delegate.connect(uri, listener);
-    }
-
-    @Override
-    public CompletableFuture<WebSocket> connect(final URI uri, final WebSocketListener listener,
-                                                final WebSocketClientConfig cfg) {
-        return delegate.connect(uri, listener, cfg);
-    }
-
-    @Override
-    public void close(final CloseMode closeMode) {
-        delegate.close(closeMode);
-    }
 }
