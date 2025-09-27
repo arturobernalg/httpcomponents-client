@@ -27,6 +27,7 @@ public final class WebSocketEchoClient {
                 .offerClientNoContextTakeover(true)
                 .offerClientMaxWindowBits(15)
                 .setCloseWaitTimeout(Timeout.ofMilliseconds(200))
+                .allowH2ExtendedConnect(false)
                 .build();
 
         try (final CloseableWebSocketClient client = WebSocketClients.createDefault()) {

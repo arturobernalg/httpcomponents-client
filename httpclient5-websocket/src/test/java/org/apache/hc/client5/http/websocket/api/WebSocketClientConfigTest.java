@@ -38,9 +38,9 @@ final class WebSocketClientConfigTest {
     @Test
     void builderDefaultsAndCustom() {
         final WebSocketClientConfig def = WebSocketClientConfig.custom().build();
-        assertTrue(def.autoPong);
-        assertTrue(def.maxFrameSize > 0);
-        assertTrue(def.maxMessageSize > 0);
+        assertTrue(def.isAutoPong());
+        assertTrue(def.getMaxFrameSize() > 0);
+        assertTrue(def.getMaxMessageSize() > 0);
 
         final WebSocketClientConfig cfg = WebSocketClientConfig.custom()
                 .setAutoPong(false)
@@ -49,9 +49,9 @@ final class WebSocketClientConfigTest {
                 .setConnectTimeout(Timeout.ofSeconds(3))
                 .build();
 
-        assertFalse(cfg.autoPong);
-        assertEquals(1024, cfg.maxFrameSize);
-        assertEquals(2048, cfg.maxMessageSize);
-        assertEquals(Timeout.ofSeconds(3), cfg.connectTimeout);
+        assertFalse(cfg.isAutoPong());
+        assertEquals(1024, cfg.getMaxFrameSize());
+        assertEquals(2048, cfg.getMaxMessageSize());
+        assertEquals(Timeout.ofSeconds(3), cfg.getConnectTimeout());
     }
 }
