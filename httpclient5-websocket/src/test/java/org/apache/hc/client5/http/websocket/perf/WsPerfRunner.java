@@ -103,7 +103,7 @@ public final class WsPerfRunner {
         // Per-connection WebSocket config
         final WebSocketClientConfig.Builder b = WebSocketClientConfig.custom()
                 .setConnectTimeout(org.apache.hc.core5.util.Timeout.ofSeconds(5))
-                .setExchangeTimeout(org.apache.hc.core5.util.Timeout.ofSeconds(5))
+//                .setExchangeTimeout(org.apache.hc.core5.util.Timeout.ofSeconds(5))
                 .setCloseWaitTimeout(org.apache.hc.core5.util.Timeout.ofSeconds(3))
                 .setOutgoingChunkSize(4096)
                 .setAutoPong(true);

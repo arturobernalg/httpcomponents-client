@@ -81,8 +81,6 @@ public abstract class CloseableWebSocketClient implements ModalCloseable {
             WebSocketClientConfig cfg,
             HttpContext context);
 
-    // ---------- Public convenience API (no new behavior) ----------
-
     public final CompletableFuture<WebSocket> connect(
             final URI uri,
             final WebSocketListener listener) {
@@ -109,8 +107,6 @@ public abstract class CloseableWebSocketClient implements ModalCloseable {
         Args.notNull(listener, "WebSocketListener");
         return doConnect(uri, listener, cfg, context);
     }
-
-    // ---------- ModalCloseable ----------
 
     /**
      * Close with the given mode (GRACEFUL/IMMEDIATE).

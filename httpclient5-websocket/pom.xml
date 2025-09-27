@@ -95,6 +95,12 @@
       <artifactId>websocket-server</artifactId>
       <version>9.4.54.v20240208</version>
     </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty.http2</groupId>
+      <artifactId>http2-server</artifactId>
+      <version>9.4.54.v20240208</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <reporting>

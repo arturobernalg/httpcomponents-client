@@ -137,10 +137,10 @@ public final class WsHandler implements IOEventHandler {
         this.cfg = cfg;
 
         // Decoder: policy enforcement happens in handler; decoder is lenient on RSV.
-        this.decoder = new WsDecoder(cfg.maxFrameSize, false);
+        this.decoder = new WsDecoder(cfg.getMaxFrameSize(), false);
 
-        this.outChunk = Math.max(256, cfg.outgoingChunkSize);
-        this.maxFramesPerTick = Math.max(1, cfg.maxFramesPerTick);
+        this.outChunk = Math.max(256, cfg.getOutgoingChunkSize());
+        this.maxFramesPerTick = Math.max(1, cfg.getMaxFramesPerTick());
 
         if (chain != null && !chain.isEmpty()) {
             this.encChain = chain.newEncodeChain();
@@ -152,8 +152,8 @@ public final class WsHandler implements IOEventHandler {
 
         // Pooled buffers: size = max(8k, outChunk) so chunks fit in one buffer.
         final int poolBufSize = Math.max(8192, this.outChunk);
-        final int poolCapacity = Math.max(16, cfg.ioPoolCapacity);
-        this.bufferPool = new SimpleBufferPool(poolBufSize, poolCapacity, cfg.directBuffers);
+        final int poolCapacity = Math.max(16, cfg.getIoPoolCapacity());
+        this.bufferPool = new SimpleBufferPool(poolBufSize, poolCapacity, cfg.isDirectBuffers());
 
         // Borrow one read buffer upfront to prevent NPEs in inputReady()
         this.readBuf = bufferPool.acquire();
@@ -264,7 +264,7 @@ public final class WsHandler implements IOEventHandler {
                             listener.onPing(payload.asReadOnlyBuffer());
                         } catch (final Throwable ignore) {
                         }
-                        if (cfg.autoPong) {
+                        if (cfg.isAutoPong()) {
                             enqueueCtrl(pooledFrame(Opcode.PONG, payload.asReadOnlyBuffer(), true));
                         }
                         break;
@@ -299,7 +299,7 @@ public final class WsHandler implements IOEventHandler {
                         if (!closingSent) {
                             enqueueCtrl(pooledCloseEcho(ro));
                             closingSent = true;
-                            session.setSocketTimeout(cfg.closeWaitTimeout);
+                            session.setSocketTimeout(cfg.getCloseWaitTimeout());
                         }
                         ioSession.close(CloseMode.GRACEFUL);
                         inbuf.clear();
@@ -333,7 +333,7 @@ public final class WsHandler implements IOEventHandler {
                             startMessage(op, payload, r1, ioSession);
                             break;
                         }
-                        if (cfg.maxMessageSize > 0 && payload.remaining() > cfg.maxMessageSize) {
+                        if (cfg.getMaxMessageSize() > 0 && payload.remaining() > cfg.getMaxMessageSize()) {
                             initiateCloseAndWait(ioSession, 1009, "Message too big");
                             break;
                         }
@@ -509,7 +509,7 @@ public final class WsHandler implements IOEventHandler {
         final ByteBuffer dup = payload.asReadOnlyBuffer();
         final int n = dup.remaining();
         assemblingSize += n;
-        if (cfg.maxMessageSize > 0 && assemblingSize > cfg.maxMessageSize) {
+        if (cfg.getMaxMessageSize() > 0 && assemblingSize > cfg.getMaxMessageSize()) {
             initiateCloseAndWait(ioSession, 1009, "Message too big");
             return;
         }
@@ -659,7 +659,7 @@ public final class WsHandler implements IOEventHandler {
             } catch (final Throwable ignore) {
             }
             closingSent = true;
-            session.setSocketTimeout(cfg.closeWaitTimeout);
+            session.setSocketTimeout(cfg.getCloseWaitTimeout());
         }
         notifyCloseOnce(code, reason);
     }
@@ -783,7 +783,7 @@ public final class WsHandler implements IOEventHandler {
                 } catch (final Throwable ignore) {
                 }
                 closingSent = true;
-                session.setSocketTimeout(cfg.closeWaitTimeout);
+                session.setSocketTimeout(cfg.getCloseWaitTimeout());
             }
             notifyCloseOnce(statusCode, reason);
             f.complete(null);
