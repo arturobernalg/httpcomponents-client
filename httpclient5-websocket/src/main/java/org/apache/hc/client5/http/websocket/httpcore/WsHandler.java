@@ -803,7 +803,7 @@ public final class WsHandler implements IOEventHandler {
             synchronized (writeLock) {
                 int opcodeCopy = outOpcode == -1 ? Opcode.TEXT : Opcode.CONT;
                 int i = 0;
-                for (CharSequence data : fragments) {
+                for (final CharSequence data : fragments) {
                     final ByteBuffer plain = StandardCharsets.UTF_8.encode(data.toString());
                     final boolean lastChunk = (i == fragments.size() - 1) && finalFragment;
                     while (plain.hasRemaining()) {
@@ -828,7 +828,7 @@ public final class WsHandler implements IOEventHandler {
             synchronized (writeLock) {
                 int opcodeCopy = outOpcode == -1 ? Opcode.BINARY : Opcode.CONT;
                 int i = 0;
-                for (ByteBuffer data : fragments) {
+                for (final ByteBuffer data : fragments) {
                     final ByteBuffer roData = data.asReadOnlyBuffer();
                     final boolean lastChunk = (i == fragments.size() - 1) && finalFragment;
                     while (roData.hasRemaining()) {

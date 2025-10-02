@@ -23,11 +23,13 @@ import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpResponse;
 import org.apache.hc.core5.http.HttpStatus;
 import org.apache.hc.core5.http.URIScheme;
+import org.apache.hc.core5.http.impl.bootstrap.HttpAsyncRequester;
 import org.apache.hc.core5.http.message.BasicHttpRequest;
 import org.apache.hc.core5.http.nio.AsyncClientExchangeHandler;
 import org.apache.hc.core5.http.nio.CapacityChannel;
 import org.apache.hc.core5.http.nio.DataStreamChannel;
 import org.apache.hc.core5.http.nio.RequestChannel;
+import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.http.protocol.HttpCoreContext;
 import org.apache.hc.core5.pool.ManagedConnPool;
 import org.apache.hc.core5.reactor.IOSession;
@@ -40,16 +42,14 @@ import org.slf4j.LoggerFactory;
 /**
  * HTTP/1.1 Upgrade (RFC 6455). Uses getters on WebSocketClientConfig.
  */
-public  final class H1WebSocketProtocol implements WebSocketProtocol {
+public final class H1WebSocketProtocol implements WebSocketProtocol {
 
     private static final Logger LOG = LoggerFactory.getLogger(H1WebSocketProtocol.class);
 
     private final org.apache.hc.core5.http.impl.bootstrap.HttpAsyncRequester requester;
     private final ManagedConnPool<HttpHost, IOSession> connPool;
 
-    public H1WebSocketProtocol(
-            final org.apache.hc.core5.http.impl.bootstrap.HttpAsyncRequester requester,
-            final ManagedConnPool<HttpHost, IOSession> connPool) {
+    public H1WebSocketProtocol(final HttpAsyncRequester requester, final ManagedConnPool<HttpHost, IOSession> connPool) {
         this.requester = requester;
         this.connPool = connPool;
     }
@@ -59,7 +59,7 @@ public  final class H1WebSocketProtocol implements WebSocketProtocol {
             final URI uri,
             final WebSocketListener listener,
             final WebSocketClientConfig cfg,
-            final org.apache.hc.core5.http.protocol.HttpContext context) {
+            final HttpContext context) {
 
         Args.notNull(uri, "uri");
         Args.notNull(listener, "listener");
