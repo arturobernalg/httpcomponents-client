@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hc.client5.http.AuthenticationStrategy;
+import org.apache.hc.client5.http.ConnectAlpnProvider;
 import org.apache.hc.client5.http.EndpointInfo;
 import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.client5.http.RouteTracker;
@@ -47,6 +48,7 @@ import org.apache.hc.client5.http.auth.AuthenticationException;
 import org.apache.hc.client5.http.auth.ChallengeType;
 import org.apache.hc.client5.http.auth.MalformedChallengeException;
 import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.AlpnHeaderSupport;
 import org.apache.hc.client5.http.impl.auth.AuthCacheKeeper;
 import org.apache.hc.client5.http.impl.auth.AuthenticationHandler;
 import org.apache.hc.client5.http.impl.routing.BasicRouteDirector;
@@ -60,6 +62,7 @@ import org.apache.hc.core5.concurrent.FutureCallback;
 import org.apache.hc.core5.http.EntityDetails;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpException;
+import org.apache.hc.core5.http.HttpHeaders;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpRequest;
 import org.apache.hc.core5.http.HttpResponse;
@@ -99,11 +102,24 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
     private final AuthCacheKeeper authCacheKeeper;
     private final HttpRouteDirector routeDirector;
 
+    // NEW: optional ALPN provider
+    private final ConnectAlpnProvider alpnProvider;
+
+
     public AsyncConnectExec(
             final HttpProcessor proxyHttpProcessor,
             final AuthenticationStrategy proxyAuthStrategy,
             final SchemePortResolver schemePortResolver,
             final boolean authCachingDisabled) {
+       this(proxyHttpProcessor, proxyAuthStrategy, schemePortResolver, authCachingDisabled, null);
+    }
+
+    public AsyncConnectExec(
+            final HttpProcessor proxyHttpProcessor,
+            final AuthenticationStrategy proxyAuthStrategy,
+            final SchemePortResolver schemePortResolver,
+            final boolean authCachingDisabled,
+            final ConnectAlpnProvider alpnProvider) {
         Args.notNull(proxyHttpProcessor, "Proxy HTTP processor");
         Args.notNull(proxyAuthStrategy, "Proxy authentication strategy");
         this.proxyHttpProcessor = proxyHttpProcessor;
@@ -111,6 +127,7 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
         this.authenticator = new AuthenticationHandler();
         this.authCacheKeeper = authCachingDisabled ? null : new AuthCacheKeeper(schemePortResolver);
         this.routeDirector = BasicRouteDirector.INSTANCE;
+        this.alpnProvider = alpnProvider;
     }
 
     static class State {
@@ -174,7 +191,6 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                         public void cancelled() {
                             asyncExecCallback.failed(new InterruptedIOException());
                         }
-
                     }));
         } else {
             if (execRuntime.isEndpointConnected()) {
@@ -183,7 +199,6 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                 proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback);
             }
         }
-
     }
 
     private void proceedToNextHop(
@@ -220,7 +235,6 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
         switch (step) {
             case HttpRouteDirector.CONNECT_TARGET:
                 operation.setDependency(execRuntime.connectEndpoint(clientContext, new FutureCallback<AsyncExecRuntime>() {
-
                     @Override
                     public void completed(final AsyncExecRuntime execRuntime) {
                         tracker.connectTarget(route.isSecure());
@@ -239,13 +253,11 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                     public void cancelled() {
                         asyncExecCallback.failed(new InterruptedIOException());
                     }
-
                 }));
                 break;
 
             case HttpRouteDirector.CONNECT_PROXY:
                 operation.setDependency(execRuntime.connectEndpoint(clientContext, new FutureCallback<AsyncExecRuntime>() {
-
                     @Override
                     public void completed(final AsyncExecRuntime execRuntime) {
                         final HttpHost proxy = route.getProxyHost();
@@ -265,7 +277,6 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                     public void cancelled() {
                         asyncExecCallback.failed(new InterruptedIOException());
                     }
-
                 }));
                 break;
 
@@ -275,68 +286,15 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("{} create tunnel", exchangeId);
                 }
-                createTunnel(state, proxy, target, scope, new AsyncExecCallback() {
-
-                    @Override
-                    public AsyncDataConsumer handleResponse(final HttpResponse response, final EntityDetails entityDetails) throws HttpException, IOException {
-                        return asyncExecCallback.handleResponse(response, entityDetails);
-                    }
-
-                    @Override
-                    public void handleInformationResponse(final HttpResponse response) throws HttpException, IOException {
-                        asyncExecCallback.handleInformationResponse(response);
-                    }
-
-                    @Override
-                    public void completed() {
-                        if (!execRuntime.isEndpointConnected()) {
-                            // Remote endpoint disconnected. Need to start over
-                            if (LOG.isDebugEnabled()) {
-                                LOG.debug("{} proxy disconnected", exchangeId);
-                            }
-                            state.tracker.reset();
-                        }
-                        if (state.challenged) {
-                            if (LOG.isDebugEnabled()) {
-                                LOG.debug("{} proxy authentication required", exchangeId);
-                            }
-                            proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback);
-                        } else {
-                            if (state.tunnelRefused) {
-                                if (LOG.isDebugEnabled()) {
-                                    LOG.debug("{} tunnel refused", exchangeId);
-                                }
-                                asyncExecCallback.completed();
-                            } else {
-                                if (LOG.isDebugEnabled()) {
-                                    LOG.debug("{} tunnel to target created", exchangeId);
-                                }
-                                tracker.tunnelTarget(false);
-                                proceedToNextHop(state, request, entityProducer, scope, chain, asyncExecCallback);
-                            }
-                        }
-                    }
-
-                    @Override
-                    public void failed(final Exception cause) {
-                        execRuntime.markConnectionNonReusable();
-                        asyncExecCallback.failed(cause);
-                    }
-
-                });
+                createTunnel(state, proxy, target, route, scope, asyncExecCallback); // pass route
                 break;
 
             case HttpRouteDirector.TUNNEL_PROXY:
-                // The most simple example for this case is a proxy chain
-                // of two proxies, where P1 must be tunnelled to P2.
-                // route: Source -> P1 -> P2 -> Target (3 hops)
-                // fact:  Source -> P1 -> Target       (2 hops)
                 asyncExecCallback.failed(new HttpException("Proxy chains are not supported"));
                 break;
 
             case HttpRouteDirector.LAYER_PROTOCOL:
                 execRuntime.upgradeTls(clientContext, new FutureCallback<AsyncExecRuntime>() {
-
                     @Override
                     public void completed(final AsyncExecRuntime asyncExecRuntime) {
                         if (LOG.isDebugEnabled()) {
@@ -355,7 +313,6 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
                     public void cancelled() {
                         asyncExecCallback.failed(new InterruptedIOException());
                     }
-
                 });
                 break;
 
@@ -380,6 +337,7 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
             final State state,
             final HttpHost proxy,
             final HttpHost nextHop,
+            final HttpRoute route,                                   // NEW
             final AsyncExecChain.Scope scope,
             final AsyncExecCallback asyncExecCallback) {
 
@@ -423,8 +381,16 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
             @Override
             public void produceRequest(final RequestChannel requestChannel,
                                        final HttpContext httpContext) throws HttpException, IOException {
-                final HttpRequest connect = new BasicHttpRequest(Method.CONNECT, nextHop, nextHop.toHostString());
+                final BasicHttpRequest connect = new BasicHttpRequest(Method.CONNECT, nextHop, nextHop.toHostString());
                 connect.setVersion(HttpVersion.HTTP_1_1);
+
+                // --- RFC 7639: inject ALPN header (if provided) ----------------
+                if (alpnProvider != null) {
+                    final List<String> alpn = alpnProvider.getAlpnForTunnel(nextHop, route);
+                    if (alpn != null && !alpn.isEmpty()) {
+                        connect.addHeader(HttpHeaders.ALPN, AlpnHeaderSupport.formatValue(alpn));
+                    }
+                }
 
                 proxyHttpProcessor.process(connect, null, clientContext);
                 authenticator.addAuthResponse(proxy, ChallengeType.PROXY, connect, proxyAuthExchange, clientContext);
@@ -442,8 +408,7 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
             }
 
             @Override
-            public void consumeInformation(final HttpResponse httpResponse,
-                                           final HttpContext httpContext) throws HttpException, IOException {
+            public void consumeInformation(final HttpResponse r, final HttpContext c) throws HttpException, IOException {
             }
 
             @Override
@@ -511,7 +476,6 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
         } else {
             operation.setDependency(execRuntime.execute(exchangeId, internalExchangeHandler, clientContext));
         }
-
     }
 
     private boolean needAuthentication(
@@ -564,5 +528,4 @@ public final class AsyncConnectExec implements AsyncExecChainHandler {
             asyncExecCallback.failed(ex);
         }
     }
-
 }
