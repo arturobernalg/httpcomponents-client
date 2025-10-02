@@ -28,8 +28,10 @@
 package org.apache.hc.client5.http.impl.classic;
 
 import java.io.IOException;
+import java.util.List;
 
 import org.apache.hc.client5.http.AuthenticationStrategy;
+import org.apache.hc.client5.http.ConnectAlpnProvider;
 import org.apache.hc.client5.http.EndpointInfo;
 import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.client5.http.RouteTracker;
@@ -62,6 +64,7 @@ import org.apache.hc.core5.http.HttpVersion;
 import org.apache.hc.core5.http.Method;
 import org.apache.hc.core5.http.io.entity.ByteArrayEntity;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.http.message.AlpnHeader;
 import org.apache.hc.core5.http.message.BasicClassicHttpRequest;
 import org.apache.hc.core5.http.message.StatusLine;
 import org.apache.hc.core5.http.protocol.HttpProcessor;
@@ -89,6 +92,8 @@ public final class ConnectExec implements ExecChainHandler {
     private final AuthCacheKeeper authCacheKeeper;
     private final HttpRouteDirector routeDirector;
 
+    private final ConnectAlpnProvider alpnProvider;
+
     public ConnectExec(
             final ConnectionReuseStrategy reuseStrategy,
             final HttpProcessor proxyHttpProcessor,
@@ -104,6 +109,7 @@ public final class ConnectExec implements ExecChainHandler {
         this.authenticator = new AuthenticationHandler();
         this.authCacheKeeper = authCachingDisabled ? null : new AuthCacheKeeper(schemePortResolver);
         this.routeDirector = BasicRouteDirector.INSTANCE;
+        this.alpnProvider = alpnProvider;
     }
 
     @Override
@@ -235,6 +241,15 @@ public final class ConnectExec implements ExecChainHandler {
         final String authority = target.toHostString();
         final ClassicHttpRequest connect = new BasicClassicHttpRequest(Method.CONNECT, target, authority);
         connect.setVersion(HttpVersion.HTTP_1_1);
+
+        // --- RFC 7639: inject ALPN header (if provided) --------------------
+        if (alpnProvider != null) {
+            final List<String> alpn = alpnProvider.getAlpnForTunnel(target, route);
+            if (alpn != null && !alpn.isEmpty()) {
+                connect.addHeader(HttpHeaders.ALPN, AlpnHeader.formatValue(alpn));
+            }
+        }
+        // --------------------------------------------------------------------
 
         this.proxyHttpProcessor.process(connect, null, context);
 

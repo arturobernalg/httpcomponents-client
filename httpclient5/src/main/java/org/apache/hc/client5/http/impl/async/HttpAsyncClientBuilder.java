@@ -32,7 +32,9 @@ import java.net.ProxySelector;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -42,6 +44,7 @@ import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
 import org.apache.hc.client5.http.AuthenticationStrategy;
+import org.apache.hc.client5.http.ConnectAlpnProvider;
 import org.apache.hc.client5.http.ConnectionKeepAliveStrategy;
 import org.apache.hc.client5.http.HttpRequestRetryStrategy;
 import org.apache.hc.client5.http.SchemePortResolver;
@@ -264,6 +267,8 @@ public class HttpAsyncClientBuilder {
     private List<Closeable> closeables;
 
     private ProxySelector proxySelector;
+
+    private ConnectAlpnProvider connectAlpnProvider;
 
     /**
      * Maps {@code Content-Encoding} tokens to decoder factories in insertion order.
@@ -892,6 +897,12 @@ public class HttpAsyncClientBuilder {
         return this;
     }
 
+    public HttpAsyncClientBuilder setConnectAlpn(final String... ids) {
+        final List<String> list = ids != null && ids.length > 0 ? Arrays.asList(ids) : Collections.emptyList();
+        this.connectAlpnProvider = (t, r) -> list;
+        return this;
+    }
+
     /**
      * Request exec chain customization and extension.
      * <p>
@@ -1031,7 +1042,8 @@ public class HttpAsyncClientBuilder {
                         new DefaultHttpProcessor(new RequestTargetHost(), new RequestUserAgent(userAgentCopy)),
                         proxyAuthStrategyCopy,
                         schemePortResolver != null ? schemePortResolver : DefaultSchemePortResolver.INSTANCE,
-                        authCachingDisabled),
+                        authCachingDisabled,
+                        connectAlpnProvider),
                 ChainElement.CONNECT.name());
 
         execChainDefinition.addFirst(
