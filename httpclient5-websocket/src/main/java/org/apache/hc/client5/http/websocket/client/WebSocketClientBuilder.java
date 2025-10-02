@@ -1,18 +1,69 @@
 package org.apache.hc.client5.http.websocket.client;
 
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import java.util.concurrent.ThreadFactory;
+
+import org.apache.hc.client5.http.impl.DefaultClientConnectionReuseStrategy;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
-import org.apache.hc.client5.http.websocket.support.AsyncRequesterBootstrap;
+import org.apache.hc.core5.concurrent.DefaultThreadFactory;
+import org.apache.hc.core5.function.Callback;
+import org.apache.hc.core5.function.Decorator;
+import org.apache.hc.core5.http.ConnectionReuseStrategy;
+import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.config.CharCodingConfig;
+import org.apache.hc.core5.http.config.Http1Config;
+import org.apache.hc.core5.http.impl.HttpProcessors;
+import org.apache.hc.core5.http.impl.bootstrap.HttpAsyncRequester;
+import org.apache.hc.core5.http.impl.nio.ClientHttp1IOEventHandlerFactory;
+import org.apache.hc.core5.http.impl.nio.ClientHttp1StreamDuplexerFactory;
+import org.apache.hc.core5.http.nio.ssl.BasicClientTlsStrategy;
+import org.apache.hc.core5.http.nio.ssl.TlsStrategy;
+import org.apache.hc.core5.http.protocol.HttpProcessor;
+import org.apache.hc.core5.pool.ConnPoolListener;
+import org.apache.hc.core5.pool.DefaultDisposalCallback;
+import org.apache.hc.core5.pool.LaxConnPool;
+import org.apache.hc.core5.pool.ManagedConnPool;
+import org.apache.hc.core5.pool.PoolConcurrencyPolicy;
+import org.apache.hc.core5.pool.PoolReusePolicy;
+import org.apache.hc.core5.pool.StrictConnPool;
+import org.apache.hc.core5.reactor.IOEventHandlerFactory;
+import org.apache.hc.core5.reactor.IOReactorConfig;
+import org.apache.hc.core5.reactor.IOSession;
+import org.apache.hc.core5.reactor.IOSessionListener;
 import org.apache.hc.core5.util.Timeout;
 
-/** Builder that configures transport (pool, reactor) — not via WebSocketClientConfig. */
 public final class WebSocketClientBuilder {
 
-    private final AsyncRequesterBootstrap bootstrap = AsyncRequesterBootstrap.bootstrap();
+    private IOReactorConfig ioReactorConfig;
+    private Http1Config http1Config;
+    private CharCodingConfig charCodingConfig;
+    private HttpProcessor httpProcessor;
+    private ConnectionReuseStrategy connStrategy;
+    private int defaultMaxPerRoute;
+    private int maxTotal;
+    private Timeout timeToLive;
+    private PoolReusePolicy poolReusePolicy;
+    private PoolConcurrencyPolicy poolConcurrencyPolicy;
+    private TlsStrategy tlsStrategy;
+    private Timeout handshakeTimeout;
+    private Decorator<IOSession> ioSessionDecorator;
+    private Callback<Exception> exceptionCallback;
+    private IOSessionListener sessionListener;
+    private org.apache.hc.core5.http.impl.Http1StreamListener streamListener;
+    private ConnPoolListener<HttpHost> connPoolListener;
+    private ThreadFactory threadFactory;
+
+    private boolean systemProperties;
+
     private WebSocketClientConfig defaultConfig = WebSocketClientConfig.custom().build();
 
-    private WebSocketClientBuilder() {}
+    private WebSocketClientBuilder() {
+    }
 
-    public static WebSocketClientBuilder create() { return new WebSocketClientBuilder(); }
+    public static WebSocketClientBuilder create() {
+        return new WebSocketClientBuilder();
+    }
 
     public WebSocketClientBuilder defaultConfig(final WebSocketClientConfig cfg) {
         if (cfg != null) {
@@ -21,13 +72,176 @@ public final class WebSocketClientBuilder {
         return this;
     }
 
-    // Optional transport tuning:
-    public WebSocketClientBuilder defaultMaxPerRoute(final int n) { bootstrap.setDefaultMaxPerRoute(n); return this; }
-    public WebSocketClientBuilder maxTotal(final int n) { bootstrap.setMaxTotal(n); return this; }
-    public WebSocketClientBuilder timeToLive(final Timeout ttl) { bootstrap.setTimeToLive(ttl); return this; }
+    // Setters (stored locally)
+    public WebSocketClientBuilder setIOReactorConfig(final IOReactorConfig v) {
+        this.ioReactorConfig = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setHttp1Config(final Http1Config v) {
+        this.http1Config = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setCharCodingConfig(final CharCodingConfig v) {
+        this.charCodingConfig = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setHttpProcessor(final HttpProcessor v) {
+        this.httpProcessor = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setConnectionReuseStrategy(final ConnectionReuseStrategy v) {
+        this.connStrategy = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setDefaultMaxPerRoute(final int v) {
+        this.defaultMaxPerRoute = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setMaxTotal(final int v) {
+        this.maxTotal = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setTimeToLive(final Timeout v) {
+        this.timeToLive = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setPoolReusePolicy(final PoolReusePolicy v) {
+        this.poolReusePolicy = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setPoolConcurrencyPolicy(final PoolConcurrencyPolicy v) {
+        this.poolConcurrencyPolicy = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setTlsStrategy(final TlsStrategy v) {
+        this.tlsStrategy = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setTlsHandshakeTimeout(final Timeout v) {
+        this.handshakeTimeout = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setIOSessionDecorator(final Decorator<IOSession> v) {
+        this.ioSessionDecorator = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setExceptionCallback(final Callback<Exception> v) {
+        this.exceptionCallback = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setIOSessionListener(final IOSessionListener v) {
+        this.sessionListener = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setStreamListener(final org.apache.hc.core5.http.impl.Http1StreamListener v) {
+        this.streamListener = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setConnPoolListener(final ConnPoolListener<HttpHost> v) {
+        this.connPoolListener = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder setThreadFactory(final ThreadFactory v) {
+        this.threadFactory = v;
+        return this;
+    }
+
+    public WebSocketClientBuilder useSystemProperties() {
+        this.systemProperties = true;
+        return this;
+    }
 
     public CloseableWebSocketClient build() {
-        final AsyncRequesterBootstrap.Result r = bootstrap.createWithPool();
-        return new DefaultWebSocketClient(r.requester, r.connPool, defaultConfig);
+
+        // --- 1) Build pool ---
+        final PoolConcurrencyPolicy conc = poolConcurrencyPolicy != null ? poolConcurrencyPolicy : PoolConcurrencyPolicy.STRICT;
+        final PoolReusePolicy reuse = poolReusePolicy != null ? poolReusePolicy : PoolReusePolicy.LIFO;
+        final Timeout ttl = timeToLive != null ? timeToLive : Timeout.DISABLED;
+
+        final ManagedConnPool<HttpHost, IOSession> connPool;
+        if (conc == PoolConcurrencyPolicy.LAX) {
+            connPool = new LaxConnPool<HttpHost, IOSession>(
+                    defaultMaxPerRoute > 0 ? defaultMaxPerRoute : 20,
+                    ttl, reuse, new DefaultDisposalCallback<IOSession>(), connPoolListener);
+        } else {
+            connPool = new StrictConnPool<HttpHost, IOSession>(
+                    defaultMaxPerRoute > 0 ? defaultMaxPerRoute : 20,
+                    maxTotal > 0 ? maxTotal : 50,
+                    ttl, reuse, new DefaultDisposalCallback<IOSession>(), connPoolListener);
+        }
+
+        // --- 2) Build protocol pipeline for HTTP/1.1 handshake/upgrade ---
+        final HttpProcessor proc = httpProcessor != null ? httpProcessor : HttpProcessors.client();
+        final Http1Config h1 = http1Config != null ? http1Config : Http1Config.DEFAULT;
+        final CharCodingConfig coding = charCodingConfig != null ? charCodingConfig : CharCodingConfig.DEFAULT;
+
+        final ConnectionReuseStrategy reuseStrategyCopy = pickReuseStrategy();
+
+        final ClientHttp1StreamDuplexerFactory duplexerFactory =
+                new ClientHttp1StreamDuplexerFactory(proc, h1, coding, reuseStrategyCopy, null, null, streamListener);
+
+        final TlsStrategy tls = tlsStrategy != null ? tlsStrategy : new BasicClientTlsStrategy();
+        final IOEventHandlerFactory iohFactory =
+                new ClientHttp1IOEventHandlerFactory(duplexerFactory, tls, handshakeTimeout);
+
+        final HttpAsyncRequester requester = new HttpAsyncRequester(
+                ioReactorConfig != null ? ioReactorConfig : IOReactorConfig.DEFAULT,
+                iohFactory,
+                ioSessionDecorator,
+                exceptionCallback != null ? exceptionCallback : WebSocketLoggingExceptionCallback.INSTANCE,
+                sessionListener,
+                connPool,
+                tls,
+                handshakeTimeout
+        );
+
+        final ThreadFactory tf = (threadFactory != null)
+                ? threadFactory
+                : new DefaultThreadFactory("websocket-main", true);
+
+        return new InternalWebSocket(
+                requester,
+                connPool,
+                defaultConfig,
+                tf
+        );
+    }
+
+    private ConnectionReuseStrategy pickReuseStrategy() {
+        ConnectionReuseStrategy reuseStrategyCopy = this.connStrategy;
+        if (reuseStrategyCopy == null) {
+            if (systemProperties) {
+                final String s = getProperty("http.keepAlive", "true");
+                if ("true".equalsIgnoreCase(s)) {
+                    reuseStrategyCopy = DefaultClientConnectionReuseStrategy.INSTANCE;
+                } else {
+                    reuseStrategyCopy = (request, response, context) -> false;
+                }
+            } else {
+                reuseStrategyCopy = DefaultClientConnectionReuseStrategy.INSTANCE;
+            }
+        }
+        return reuseStrategyCopy;
+    }
+
+    private String getProperty(final String key, final String def) {
+        return AccessController.doPrivileged((PrivilegedAction<String>) () -> System.getProperty(key, def));
     }
 }

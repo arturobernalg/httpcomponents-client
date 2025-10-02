@@ -7,8 +7,7 @@ import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 
 public final class WebSocketClients {
 
-    private WebSocketClients() {
-    }
+    private WebSocketClients() {}
 
     public static WebSocketClientBuilder custom() {
         return WebSocketClientBuilder.create();

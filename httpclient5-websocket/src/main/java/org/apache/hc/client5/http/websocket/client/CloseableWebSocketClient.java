@@ -45,7 +45,7 @@ import org.apache.hc.core5.util.TimeValue;
  * @since 5.6
  */
 @Contract(threading = ThreadingBehavior.STATELESS)
-public abstract class CloseableWebSocketClient implements ModalCloseable {
+public abstract class CloseableWebSocketClient implements WebSocketClient, ModalCloseable {
 
     /**
      * Start underlying I/O. Safe to call once; subsequent calls are no-ops.
@@ -98,6 +98,7 @@ public abstract class CloseableWebSocketClient implements ModalCloseable {
         return doConnect(uri, listener, cfg, null);
     }
 
+    @Override
     public final CompletableFuture<WebSocket> connect(
             final URI uri,
             final WebSocketListener listener,
@@ -108,16 +109,4 @@ public abstract class CloseableWebSocketClient implements ModalCloseable {
         return doConnect(uri, listener, cfg, context);
     }
 
-    /**
-     * Close with the given mode (GRACEFUL/IMMEDIATE).
-     */
-    @Override
-    public abstract void close(CloseMode closeMode);
-
-    /**
-     * Convenience: graceful close.
-     */
-    public final void close() {
-        close(CloseMode.GRACEFUL);
-    }
 }
