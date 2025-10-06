@@ -71,11 +71,9 @@ public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
                 LOG.debug("Installing WsHandler on {}", ioSession);
             }
 
-            // Create and install the IOEventHandler
             final WsHandler handler = new WsHandler(ioSession, listener, cfg, chain);
             ioSession.upgrade(handler);
 
-            // Expose facade (onOpen is NOT called here)
             this.webSocket = handler.exposeWebSocket();
 
             if (callback != null) {

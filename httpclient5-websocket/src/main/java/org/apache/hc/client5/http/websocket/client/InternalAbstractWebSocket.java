@@ -10,8 +10,6 @@ import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.client5.http.websocket.client.protocol.H1WebSocketProtocol;
 import org.apache.hc.client5.http.websocket.client.protocol.H2WebSocketProtocol;
 import org.apache.hc.client5.http.websocket.client.protocol.WebSocketProtocol;
-import org.apache.hc.core5.annotation.Contract;
-import org.apache.hc.core5.annotation.ThreadingBehavior;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.impl.bootstrap.HttpAsyncRequester;
 import org.apache.hc.core5.http.protocol.HttpContext;
@@ -40,8 +38,7 @@ abstract class InternalAbstractWebSocket extends AbstractMinimalWebSocketBase {
             final ManagedConnPool<HttpHost, IOSession> connPool,
             final WebSocketClientConfig defaultConfig,
             final ThreadFactory threadFactory) {
-        super(Args.notNull(requester, "requester"),
-                threadFactory);
+        super(Args.notNull(requester, "requester"), threadFactory);
         this.connPool = Args.notNull(connPool, "connPool");
         this.defaultConfig = defaultConfig != null ? defaultConfig : WebSocketClientConfig.custom().build();
 
@@ -72,7 +69,7 @@ abstract class InternalAbstractWebSocket extends AbstractMinimalWebSocketBase {
             final WebSocketClientConfig cfgOrNull,
             final HttpContext context) {
 
-        final WebSocketClientConfig cfg = (cfgOrNull != null) ? cfgOrNull : defaultConfig;
+        final WebSocketClientConfig cfg = cfgOrNull != null ? cfgOrNull : defaultConfig;
 
         if (cfg.isAllowH2ExtendedConnect()) {
             final CompletableFuture<WebSocket> out = new CompletableFuture<>();
@@ -81,15 +78,13 @@ abstract class InternalAbstractWebSocket extends AbstractMinimalWebSocketBase {
                     out.complete(ws);
                 } else {
                     if (LOG.isDebugEnabled()) {
-                        LOG.debug("H2 extended CONNECT failed, falling back to H1: {}",
-                                ex != null ? ex.getMessage() : "unknown");
+                        LOG.debug("H2 extended CONNECT failed, falling back to H1: {}", ex != null ? ex.getMessage() : "unknown");
                     }
                     h1.connect(uri, listener, cfg, context).whenComplete((ws2, ex2) -> {
                         if (ws2 != null) {
                             out.complete(ws2);
                         } else {
-                            out.completeExceptionally(ex2 != null ? ex2 :
-                                    (ex != null ? ex : new IllegalStateException("Connect failed")));
+                            out.completeExceptionally(ex2 != null ? ex2 :ex != null ? ex : new IllegalStateException("Connect failed"));
                         }
                     });
                 }

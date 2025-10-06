@@ -40,15 +40,10 @@ public final class WsDecoder {
     private boolean rsv1, rsv2, rsv3;
     private ByteBuffer payload = ByteBuffer.allocate(0);
 
-    // Keep old 1-arg ctor strict by default so existing tests keep working.
     public WsDecoder(final int maxFrameSize) {
         this(maxFrameSize, true);
     }
 
-    /**
-     * @param strictNoExtensions when true, any RSV bit triggers 1002 unless an extension negotiated at this layer.
-     *                           When false, decoder only parses and exposes RSV flags without enforcing policy.
-     */
     public WsDecoder(final int maxFrameSize, final boolean strictNoExtensions) {
         this.maxFrameSize = maxFrameSize;
         this.strictNoExtensions = strictNoExtensions;
@@ -69,7 +64,6 @@ public final class WsDecoder {
         rsv2 = (b0 & 0x20) != 0;
         rsv3 = (b0 & 0x10) != 0;
 
-        // Enforce when strict
         if (strictNoExtensions && (rsv1 || rsv2 || rsv3)) {
             throw new WsProtocolException(1002, "RSV bits set without extension");
         }

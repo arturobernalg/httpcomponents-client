@@ -32,7 +32,7 @@ import java.util.zip.Inflater;
 
 import org.apache.hc.client5.http.websocket.core.frame.FrameHeaderBits;
 
-public final class PerMessageDeflate implements Extension {
+public final class MessageDeflate implements Extension {
     private static final byte[] TAIL = new byte[]{0x00, 0x00, (byte) 0xFF, (byte) 0xFF};
 
     private final boolean enabled;
@@ -41,11 +41,11 @@ public final class PerMessageDeflate implements Extension {
     private final Integer clientMaxWindowBits; // negotiated or null
     private final Integer serverMaxWindowBits; // negotiated or null
 
-    public PerMessageDeflate(final boolean enabled,
-                             final boolean serverNoContextTakeover,
-                             final boolean clientNoContextTakeover,
-                             final Integer clientMaxWindowBits,
-                             final Integer serverMaxWindowBits) {
+    public MessageDeflate(final boolean enabled,
+                          final boolean serverNoContextTakeover,
+                          final boolean clientNoContextTakeover,
+                          final Integer clientMaxWindowBits,
+                          final Integer serverMaxWindowBits) {
         this.enabled = enabled;
         this.serverNoContextTakeover = serverNoContextTakeover;
         this.clientNoContextTakeover = clientNoContextTakeover;
@@ -76,11 +76,11 @@ public final class PerMessageDeflate implements Extension {
             }
 
             private byte[] compressMessage(final byte[] data) {
-                return doDeflate(data, /*fin=*/true, /*stripTail=*/true, /*maybeReset=*/clientNoContextTakeover);
+                return doDeflate(data, true, true, clientNoContextTakeover);
             }
 
             private byte[] compressFragment(final byte[] data, final boolean fin) {
-                return doDeflate(data, fin, /*stripTail=*/true, /*maybeReset=*/fin && clientNoContextTakeover);
+                return doDeflate(data, fin, true,fin && clientNoContextTakeover);
             }
 
             private byte[] doDeflate(final byte[] data,

@@ -37,7 +37,7 @@ final class ExtensionChainTest {
     @Test
     void addAndUsePmce_decodeRoundTrip() throws Exception {
         final ExtensionChain chain = new ExtensionChain();
-        final PerMessageDeflate pmce = new PerMessageDeflate(true, true, true, null, null);
+        final MessageDeflate pmce = new MessageDeflate(true, true, true, null, null);
         chain.add(pmce);
 
         final byte[] data = "compress me please".getBytes(StandardCharsets.UTF_8);

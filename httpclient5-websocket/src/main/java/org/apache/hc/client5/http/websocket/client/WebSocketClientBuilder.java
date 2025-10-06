@@ -212,7 +212,7 @@ public final class WebSocketClientBuilder {
                 handshakeTimeout
         );
 
-        final ThreadFactory tf = (threadFactory != null)
+        final ThreadFactory tf = threadFactory != null
                 ? threadFactory
                 : new DefaultThreadFactory("websocket-main", true);
 
