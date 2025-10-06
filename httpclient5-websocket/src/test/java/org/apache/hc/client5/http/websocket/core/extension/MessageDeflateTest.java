@@ -37,17 +37,17 @@ import java.nio.charset.StandardCharsets;
 import org.apache.hc.client5.http.websocket.core.frame.FrameHeaderBits;
 import org.junit.jupiter.api.Test;
 
-final class PerMessageDeflateTest {
+final class MessageDeflateTest {
 
     @Test
     void rsvMask_isRSV1() {
-        final PerMessageDeflate pmce = new PerMessageDeflate(true, false, false, null, null);
+        final MessageDeflate pmce = new MessageDeflate(true, false, false, null, null);
         assertEquals(FrameHeaderBits.RSV1, pmce.rsvMask());
     }
 
     @Test
     void encode_setsRSVOnlyOnFirst() {
-        final PerMessageDeflate pmce = new PerMessageDeflate(true, false, false, null, null);
+        final MessageDeflate pmce = new MessageDeflate(true, false, false, null, null);
         final Extension.Encoder enc = pmce.newEncoder();
 
         final byte[] data = "hello".getBytes(StandardCharsets.UTF_8);
@@ -63,7 +63,7 @@ final class PerMessageDeflateTest {
 
     @Test
     void roundTrip_message() throws Exception {
-        final PerMessageDeflate pmce = new PerMessageDeflate(true, true, true, null, null);
+        final MessageDeflate pmce = new MessageDeflate(true, true, true, null, null);
         final Extension.Encoder enc = pmce.newEncoder();
         final Extension.Decoder dec = pmce.newDecoder();
 

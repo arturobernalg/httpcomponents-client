@@ -28,6 +28,7 @@ import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.ThreadingBehavior;
 import org.apache.hc.core5.http.protocol.HttpContext;
+import org.apache.hc.core5.http.protocol.HttpCoreContext;
 import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.io.ModalCloseable;
 import org.apache.hc.core5.reactor.IOReactorStatus;
@@ -86,7 +87,7 @@ public abstract class CloseableWebSocketClient implements WebSocketClient, Modal
             final WebSocketListener listener) {
         Args.notNull(uri, "URI");
         Args.notNull(listener, "WebSocketListener");
-        return doConnect(uri, listener, null, null);
+        return connect(uri, listener, WebSocketClientConfig.custom().build(), HttpCoreContext.create());
     }
 
     public final CompletableFuture<WebSocket> connect(
@@ -95,7 +96,7 @@ public abstract class CloseableWebSocketClient implements WebSocketClient, Modal
             final WebSocketClientConfig cfg) {
         Args.notNull(uri, "URI");
         Args.notNull(listener, "WebSocketListener");
-        return doConnect(uri, listener, cfg, null);
+        return connect(uri, listener, cfg, HttpCoreContext.create());
     }
 
     @Override

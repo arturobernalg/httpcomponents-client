@@ -9,16 +9,19 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.websocket.api.WebSocket;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.client5.http.websocket.core.extension.ExtensionChain;
-import org.apache.hc.client5.http.websocket.core.extension.PerMessageDeflate;
+import org.apache.hc.client5.http.websocket.core.extension.MessageDeflate;
 import org.apache.hc.client5.http.websocket.httpcore.WebSocketUpgrader;
 import org.apache.hc.client5.http.websocket.support.WebSocketRequester;
 import org.apache.hc.core5.concurrent.FutureCallback;
+import org.apache.hc.core5.http.EntityDetails;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpException;
+import org.apache.hc.core5.http.HttpHeaders;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpResponse;
 import org.apache.hc.core5.http.HttpStatus;
@@ -30,7 +33,6 @@ import org.apache.hc.core5.http.nio.CapacityChannel;
 import org.apache.hc.core5.http.nio.DataStreamChannel;
 import org.apache.hc.core5.http.nio.RequestChannel;
 import org.apache.hc.core5.http.protocol.HttpContext;
-import org.apache.hc.core5.http.protocol.HttpCoreContext;
 import org.apache.hc.core5.pool.ManagedConnPool;
 import org.apache.hc.core5.reactor.IOSession;
 import org.apache.hc.core5.reactor.ProtocolIOSession;
@@ -73,7 +75,7 @@ public final class H1WebSocketProtocol implements WebSocketProtocol {
         }
 
         final String scheme = secure ? URIScheme.HTTPS.id : URIScheme.HTTP.id;
-        final int port = uri.getPort() > 0 ? uri.getPort() : (secure ? 443 : 80);
+        final int port = uri.getPort() > 0 ? uri.getPort() : secure ? 443 : 80;
         final String host = Args.notBlank(uri.getHost(), "host");
         String path = uri.getRawPath();
         if (path == null || path.isEmpty()) {
@@ -93,10 +95,10 @@ public final class H1WebSocketProtocol implements WebSocketProtocol {
                     public void completed(final WebSocketRequester.ProtoEndpoint endpoint) {
                         try {
                             final String secKey = randomKey();
-                            final BasicHttpRequest req = new BasicHttpRequest("GET", target, fullPath);
+                            final BasicHttpRequest req = new BasicHttpRequest(HttpGet.METHOD_NAME, target, fullPath);
 
-                            req.addHeader("Connection", "Upgrade");
-                            req.addHeader("Upgrade", "websocket");
+                            req.addHeader(HttpHeaders.CONNECTION, "Upgrade");
+                            req.addHeader(HttpHeaders.UPGRADE, "websocket");
                             req.addHeader("Sec-WebSocket-Version", "13");
                             req.addHeader("Sec-WebSocket-Key", secKey);
 
@@ -138,11 +140,6 @@ public final class H1WebSocketProtocol implements WebSocketProtocol {
                                     LOG.debug("  {}: {}", h.getName(), h.getValue());
                                 }
                             }
-
-                            // No deprecated adapt(...)
-                            final HttpCoreContext ctx = (context instanceof HttpCoreContext)
-                                    ? (HttpCoreContext) context
-                                    : HttpCoreContext.create();
 
                             final AtomicBoolean done = new AtomicBoolean(false);
 
@@ -203,7 +200,7 @@ public final class H1WebSocketProtocol implements WebSocketProtocol {
 
                                 @Override
                                 public void consumeInformation(final HttpResponse response,
-                                                               final org.apache.hc.core5.http.protocol.HttpContext hc) {
+                                                               final HttpContext hc) {
                                     final int code = response.getCode();
                                     if (code == HttpStatus.SC_SWITCHING_PROTOCOLS && done.compareAndSet(false, true)) {
                                         finishUpgrade(endpoint, response, secKey, listener, cfg, result);
@@ -212,8 +209,8 @@ public final class H1WebSocketProtocol implements WebSocketProtocol {
 
                                 @Override
                                 public void consumeResponse(final HttpResponse response,
-                                                            final org.apache.hc.core5.http.EntityDetails entity,
-                                                            final org.apache.hc.core5.http.protocol.HttpContext hc) {
+                                                            final EntityDetails entity,
+                                                            final HttpContext hc) {
                                     final int code = response.getCode();
                                     if (code == HttpStatus.SC_SWITCHING_PROTOCOLS && done.compareAndSet(false, true)) {
                                         finishUpgrade(endpoint, response, secKey, listener, cfg, result);
@@ -223,7 +220,7 @@ public final class H1WebSocketProtocol implements WebSocketProtocol {
                                 }
                             };
 
-                            endpoint.execute(upgrade, null, ctx);
+                            endpoint.execute(upgrade, null, context);
 
                         } catch (final Exception ex) {
                             try {
@@ -330,7 +327,7 @@ public final class H1WebSocketProtocol implements WebSocketProtocol {
                     if (!cfg.isPerMessageDeflateEnabled()) {
                         throw new IllegalStateException("Server negotiated PMCE but client disabled it");
                     }
-                    chain.add(new PerMessageDeflate(true, serverNoCtx, clientNoCtx, clientBits, serverBits));
+                    chain.add(new MessageDeflate(true, serverNoCtx, clientNoCtx, clientBits, serverBits));
                 }
             }
 

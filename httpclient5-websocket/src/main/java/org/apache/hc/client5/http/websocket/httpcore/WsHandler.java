@@ -96,7 +96,6 @@ public final class WsHandler implements IOEventHandler {
     private final FrameWriter writer = new FrameWriter();
     private final WsDecoder decoder;
 
-    // Outbound queues (control first, then data). We enqueue OutFrame so we can release pooled buffers.
     private final ConcurrentLinkedQueue<OutFrame> ctrlOutbound = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<OutFrame> dataOutbound = new ConcurrentLinkedQueue<>();
     private OutFrame activeWrite = null;
@@ -105,18 +104,15 @@ public final class WsHandler implements IOEventHandler {
     private final WsFacade facade = new WsFacade();
     private final Object writeLock = new Object();
 
-    // Input accumulation (message framing). Grows as needed (heap); hot scratch is pooled (readBuf).
     private ByteBuffer inbuf = ByteBuffer.allocate(4096);
 
     private volatile boolean closingSent = false;
 
-    // Inbound fragmented message assembly
     private int assemblingOpcode = -1;
     private boolean assemblingCompressed = false;
     private ByteArrayOutputStream assemblingBytes = null;
     private long assemblingSize = 0L;
 
-    // Outbound application fragmentation
     private int outOpcode = -1;
 
     private final int outChunk;
@@ -805,7 +801,7 @@ public final class WsHandler implements IOEventHandler {
                 int i = 0;
                 for (final CharSequence data : fragments) {
                     final ByteBuffer plain = StandardCharsets.UTF_8.encode(data.toString());
-                    final boolean lastChunk = (i == fragments.size() - 1) && finalFragment;
+                    final boolean lastChunk = i == fragments.size() - 1 && finalFragment;
                     while (plain.hasRemaining()) {
                         final int n = Math.min(plain.remaining(), outChunk);
                         final ByteBuffer slice = sliceN(plain, n);
@@ -830,7 +826,7 @@ public final class WsHandler implements IOEventHandler {
                 int i = 0;
                 for (final ByteBuffer data : fragments) {
                     final ByteBuffer roData = data.asReadOnlyBuffer();
-                    final boolean lastChunk = (i == fragments.size() - 1) && finalFragment;
+                    final boolean lastChunk = i == fragments.size() - 1 && finalFragment;
                     while (roData.hasRemaining()) {
                         final int n = Math.min(roData.remaining(), outChunk);
                         final ByteBuffer slice = sliceN(roData, n);

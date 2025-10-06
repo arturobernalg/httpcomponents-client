@@ -56,7 +56,7 @@ public final class FrameWriter {
                 ? StandardCharsets.UTF_8.encode(reason)
                 : ByteBuffer.allocate(0);
         final ByteBuffer p = ByteBuffer.allocate(2 + reasonBuf.remaining());
-        p.put((byte) ((code >> 8) & 0xFF)).put((byte) (code & 0xFF));
+        p.put((byte) (code >> 8 & 0xFF)).put((byte) (code & 0xFF));
         if (reasonBuf.hasRemaining()) {
             p.put(reasonBuf);
         }
@@ -92,7 +92,7 @@ public final class FrameWriter {
     public ByteBuffer frameIntoWithRSV(final int opcode, final ByteBuffer payload, final boolean fin, final boolean mask, final int rsvBits, final ByteBuffer out) {
         final int len = payload == null ? 0 : payload.remaining();
         final int finBit = fin ? FIN : 0;
-        out.put((byte) (finBit | (rsvBits & (RSV1 | RSV2 | RSV3)) | (opcode & 0x0F)));
+        out.put((byte) (finBit | rsvBits & (RSV1 | RSV2 | RSV3) | opcode & 0x0F));
 
         if (len <= 125) {
             out.put((byte) ((mask ? MASK_BIT : 0) | len));
@@ -115,7 +115,7 @@ public final class FrameWriter {
             for (int i = pos; i < lim; i++) {
                 int b = payload.get(i) & 0xFF;
                 if (mask) {
-                    b ^= mkey[(i - pos) & 3];
+                    b ^= mkey[i - pos & 3];
                 }
                 out.put((byte) b);
             }

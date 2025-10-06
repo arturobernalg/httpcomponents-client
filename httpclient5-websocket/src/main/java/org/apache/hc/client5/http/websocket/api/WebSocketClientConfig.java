@@ -200,7 +200,7 @@ public final class WebSocketClientConfig {
         }
 
         public Builder setSubprotocols(final List<String> v) {
-            this.subprotocols = (v != null) ? new ArrayList<>(v) : new ArrayList<>();
+            this.subprotocols = v != null ? new ArrayList<>(v) : new ArrayList<>();
             return this;
         }
 
