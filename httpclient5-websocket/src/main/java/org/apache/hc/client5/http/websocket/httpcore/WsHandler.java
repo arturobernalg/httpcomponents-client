@@ -26,44 +26,12 @@
  */
 package org.apache.hc.client5.http.websocket.httpcore;
 
-import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CharsetDecoder;
-import java.nio.charset.CodingErrorAction;
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.hc.client5.http.websocket.api.WebSocket;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
-import org.apache.hc.client5.http.websocket.core.close.WsProtocolException;
 import org.apache.hc.client5.http.websocket.core.extension.ExtensionChain;
-import org.apache.hc.client5.http.websocket.core.frame.FrameWriter;
-import org.apache.hc.client5.http.websocket.core.frame.Opcode;
-import org.apache.hc.client5.http.websocket.core.message.CloseCodec;
-import org.apache.hc.client5.http.websocket.support.SimpleBufferPool;
-import org.apache.hc.core5.io.CloseMode;
-import org.apache.hc.core5.reactor.EventMask;
-import org.apache.hc.core5.reactor.IOEventHandler;
-import org.apache.hc.core5.reactor.IOSession;
-import org.apache.hc.core5.reactor.ProtocolIOSession;
-import org.apache.hc.core5.util.Timeout;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-/**
- * RFC6455/7692 WebSocket handler on HttpCore with pooled buffers.
- */
-import java.nio.ByteBuffer;
-
-import org.apache.hc.client5.http.websocket.api.WebSocket;
-import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
-import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.core5.http.nio.command.ShutdownCommand;
 import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.reactor.EventMask;
@@ -83,12 +51,6 @@ public final class WsHandler implements IOEventHandler {
 
     public WsHandler(final ProtocolIOSession session,
                      final WebSocketListener listener,
-                     final WebSocketClientConfig cfg) {
-        this(session, listener, cfg, null);
-    }
-
-    public WsHandler(final ProtocolIOSession session,
-                     final WebSocketListener listener,
                      final WebSocketClientConfig cfg,
                      final ExtensionChain chain) {
         this.state = new WsState(session, listener, cfg, chain);
@@ -96,7 +58,9 @@ public final class WsHandler implements IOEventHandler {
         this.inbound = new WsInbound(state, outbound);
     }
 
-    /** Expose the application WebSocket facade. */
+    /**
+     * Expose the application WebSocket facade.
+     */
     public WebSocket exposeWebSocket() {
         return outbound.facade();
     }

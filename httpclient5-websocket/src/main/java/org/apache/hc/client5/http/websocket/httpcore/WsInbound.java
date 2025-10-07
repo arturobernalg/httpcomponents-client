@@ -1,3 +1,29 @@
+/*
+ * ====================================================================
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ * ====================================================================
+ *
+ * This software consists of voluntary contributions made by many
+ * individuals on behalf of the Apache Software Foundation.  For more
+ * information on the Apache Software Foundation, please see
+ * <http://www.apache.org/>.
+ *
+ */
 package org.apache.hc.client5.http.websocket.httpcore;
 
 import java.nio.ByteBuffer;
@@ -60,14 +86,15 @@ final class WsInbound {
             } catch (final Throwable ignore) {
             }
         }
-        // Return any pooled buffers
         if (s.readBuf != null) {
             s.bufferPool.release(s.readBuf);
             s.readBuf = null;
         }
         out.drainAndRelease();
-        s.session.clearEvent(EventMask.READ | EventMask.WRITE);
+
+        ioSession.clearEvent(EventMask.READ | EventMask.WRITE);
     }
+
 
     // ---- input ----
     void onInputReady(final IOSession ioSession, final ByteBuffer src) {
@@ -111,7 +138,7 @@ final class WsInbound {
                 try {
                     has = s.decoder.decode(s.inbuf);
                 } catch (final RuntimeException rte) {
-                    final int code = (rte instanceof WsProtocolException)
+                    final int code = rte instanceof WsProtocolException
                             ? ((WsProtocolException) rte).closeCode
                             : 1002;
                     initiateCloseAndWait(ioSession, code, rte.getMessage());
@@ -385,14 +412,14 @@ final class WsInbound {
     private void initiateCloseAndWait(final IOSession ioSession, final int code, final String reason) {
         if (!s.closingSent) {
             try {
-                final ByteBuffer reasonBuf = (reason != null && !reason.isEmpty())
+                final ByteBuffer reasonBuf = reason != null && !reason.isEmpty()
                         ? StandardCharsets.UTF_8.encode(reason)
                         : ByteBuffer.allocate(0);
                 if (reasonBuf.remaining() > 123) {
                     throw new IllegalArgumentException("Close reason too long");
                 }
                 final ByteBuffer p = ByteBuffer.allocate(2 + reasonBuf.remaining());
-                p.put((byte) ((code >> 8) & 0xFF)).put((byte) (code & 0xFF));
+                p.put((byte) (code >> 8 & 0xFF)).put((byte) (code & 0xFF));
                 if (reasonBuf.hasRemaining()) {
                     p.put(reasonBuf);
                 }

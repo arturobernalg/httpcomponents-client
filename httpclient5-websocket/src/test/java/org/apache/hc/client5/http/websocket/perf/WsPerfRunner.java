@@ -201,7 +201,7 @@ public final class WsPerfRunner {
     }
 
 
-    private enum Mode {THROUGHPUT, LATENCY}
+    private enum Mode { THROUGHPUT, LATENCY }
 
     private static final class Args {
         String uri = "ws://localhost:8080/echo";
