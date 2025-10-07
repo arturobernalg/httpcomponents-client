@@ -17,6 +17,12 @@
  * specific language governing permissions and limitations
  * under the License.
  * ====================================================================
+ *
+ * This software consists of voluntary contributions made by many
+ * individuals on behalf of the Apache Software Foundation.  For more
+ * information on the Apache Software Foundation, please see
+ * <http://www.apache.org/>.
+ *
  */
 package org.apache.hc.client5.http.websocket.httpcore;
 
@@ -46,7 +52,9 @@ public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
     private final WebSocketClientConfig cfg;
     private final ExtensionChain chain;
 
-    /** The WebSocket facade created during {@link #upgrade}. */
+    /**
+     * The WebSocket facade created during {@link #upgrade}.
+     */
     private volatile WebSocket webSocket;
 
     public WebSocketUpgrader(
@@ -58,7 +66,9 @@ public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
         this.chain = chain;
     }
 
-    /** Returns the {@link WebSocket} created during {@link #upgrade}. */
+    /**
+     * Returns the {@link WebSocket} created during {@link #upgrade}.
+     */
     public WebSocket getWebSocket() {
         return webSocket;
     }

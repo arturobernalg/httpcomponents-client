@@ -28,16 +28,10 @@ package org.apache.hc.client5.http.websocket.client;
 
 import java.net.URI;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Future;
 
 import org.apache.hc.client5.http.websocket.api.WebSocket;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
-import org.apache.hc.core5.concurrent.FutureCallback;
-import org.apache.hc.core5.http.nio.AsyncPushConsumer;
-import org.apache.hc.core5.http.nio.AsyncRequestProducer;
-import org.apache.hc.core5.http.nio.AsyncResponseConsumer;
-import org.apache.hc.core5.http.nio.HandlerFactory;
 import org.apache.hc.core5.http.protocol.HttpContext;
 
 public interface WebSocketClient {
