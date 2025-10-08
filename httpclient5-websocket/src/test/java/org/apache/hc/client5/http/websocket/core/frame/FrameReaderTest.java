@@ -36,8 +36,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
-import org.apache.hc.client5.http.websocket.core.close.WsProtocolException;
-import org.apache.hc.client5.http.websocket.httpcore.WsDecoder;
+import org.apache.hc.client5.http.websocket.core.exceptions.WebSocketProtocolException;
+import org.apache.hc.client5.http.websocket.transport.WebSocketFrameDecoder;
 import org.junit.jupiter.api.Test;
 
 class FrameReaderTest {
@@ -69,9 +69,9 @@ class FrameReaderTest {
     @Test
     void decode_small_text_unmasked() {
         final ByteBuffer f = serverTextFrame("hello");
-        final WsDecoder d = new WsDecoder(8192);
+        final WebSocketFrameDecoder d = new WebSocketFrameDecoder(8192);
         assertTrue(d.decode(f));
-        assertEquals(Opcode.TEXT, d.opcode());
+        assertEquals(FrameOpcode.TEXT, d.opcode());
         assertTrue(d.fin());
         assertFalse(d.rsv1());
         assertEquals("hello", java.nio.charset.StandardCharsets.UTF_8.decode(d.payload()).toString());
@@ -90,9 +90,9 @@ class FrameReaderTest {
         f.put(p);
         f.flip();
 
-        final WsDecoder d = new WsDecoder(4096);
+        final WebSocketFrameDecoder d = new WebSocketFrameDecoder(4096);
         assertTrue(d.decode(f));
-        assertEquals(Opcode.BINARY, d.opcode());
+        assertEquals(FrameOpcode.BINARY, d.opcode());
         final ByteBuffer payload = d.payload();
         final byte[] got = new byte[p.length];
         payload.get(got);
@@ -111,7 +111,7 @@ class FrameReaderTest {
         f.put(p);
         f.flip();
 
-        final WsDecoder d = new WsDecoder(len + 64);
+        final WebSocketFrameDecoder d = new WebSocketFrameDecoder(len + 64);
         assertTrue(d.decode(f));
         assertEquals(len, d.payload().remaining());
     }
@@ -125,8 +125,8 @@ class FrameReaderTest {
         f.putInt(0x11223344);
         f.flip();
 
-        final WsDecoder d = new WsDecoder(1024);
-        assertThrows(WsProtocolException.class, () -> d.decode(f));
+        final WebSocketFrameDecoder d = new WebSocketFrameDecoder(1024);
+        assertThrows(WebSocketProtocolException.class, () -> d.decode(f));
     }
 
     @Test
@@ -136,9 +136,9 @@ class FrameReaderTest {
         f.put((byte) 0x00); // no mask, len=0
         f.flip();
 
-        final WsDecoder d = new WsDecoder(1024); // strict by default
-        final WsProtocolException ex =
-                assertThrows(WsProtocolException.class, () -> d.decode(f));
+        final WebSocketFrameDecoder d = new WebSocketFrameDecoder(1024); // strict by default
+        final WebSocketProtocolException ex =
+                assertThrows(WebSocketProtocolException.class, () -> d.decode(f));
         assertEquals(1002, ex.closeCode);
     }
 
@@ -149,7 +149,7 @@ class FrameReaderTest {
         f.put((byte) 0x7E); // says 126 (extended), but no length bytes present
         f.flip();
 
-        final WsDecoder d = new WsDecoder(1024);
+        final WebSocketFrameDecoder d = new WebSocketFrameDecoder(1024);
         final int pos = f.position();
         assertFalse(d.decode(f));
         assertEquals(pos, f.position(), "decoder must reset position on incomplete frame");
@@ -163,8 +163,8 @@ class FrameReaderTest {
         f.putLong(-1L);
         f.flip();
 
-        final WsDecoder d = new WsDecoder(1024);
-        assertThrows(WsProtocolException.class, () -> d.decode(f));
+        final WebSocketFrameDecoder d = new WebSocketFrameDecoder(1024);
+        assertThrows(WebSocketProtocolException.class, () -> d.decode(f));
     }
 
     @Test
@@ -177,7 +177,7 @@ class FrameReaderTest {
         f.put(new byte[len]);
         f.flip();
 
-        final WsDecoder d = new WsDecoder(1024); // max frame size smaller than len
-        assertThrows(WsProtocolException.class, () -> d.decode(f));
+        final WebSocketFrameDecoder d = new WebSocketFrameDecoder(1024); // max frame size smaller than len
+        assertThrows(WebSocketProtocolException.class, () -> d.decode(f));
     }
 }

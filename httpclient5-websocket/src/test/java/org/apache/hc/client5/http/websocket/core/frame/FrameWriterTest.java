@@ -89,11 +89,11 @@ class FrameWriterTest {
 
     @Test
     void text_small_masked_roundtrip() {
-        final FrameWriter w = new FrameWriter();
+        final WebSocketFrameWriter w = new WebSocketFrameWriter();
         final ByteBuffer f = w.text("hello", true);
         final Parsed p = parse(f);
         assertTrue(p.fin);
-        assertEquals(Opcode.TEXT, p.opcode);
+        assertEquals(FrameOpcode.TEXT, p.opcode);
         assertTrue(p.mask, "client frame must be masked");
         assertEquals(5, p.len);
         assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), unmask(p));
@@ -106,12 +106,12 @@ class FrameWriterTest {
             payload[i] = (byte) (i & 0xFF);
         }
 
-        final FrameWriter w = new FrameWriter();
+        final WebSocketFrameWriter w = new WebSocketFrameWriter();
         final ByteBuffer f = w.binary(ByteBuffer.wrap(payload), true);
 
         final Parsed p = parse(f);
         assertTrue(p.mask);
-        assertEquals(Opcode.BINARY, p.opcode);
+        assertEquals(FrameOpcode.BINARY, p.opcode);
         assertEquals(300, p.len);
         assertArrayEquals(payload, unmask(p));
     }
@@ -122,36 +122,36 @@ class FrameWriterTest {
         final byte[] payload = new byte[len];
         java.util.Arrays.fill(payload, (byte) 0xA5);
 
-        final FrameWriter w = new FrameWriter();
+        final WebSocketFrameWriter w = new WebSocketFrameWriter();
         final ByteBuffer f = w.binary(ByteBuffer.wrap(payload), true);
 
         final Parsed p = parse(f);
         assertTrue(p.mask);
-        assertEquals(Opcode.BINARY, p.opcode);
+        assertEquals(FrameOpcode.BINARY, p.opcode);
         assertEquals(len, p.len);
         assertArrayEquals(payload, unmask(p));
     }
 
     @Test
     void rsv1_set_with_frameWithRSV() {
-        final FrameWriter w = new FrameWriter();
+        final WebSocketFrameWriter w = new WebSocketFrameWriter();
         final ByteBuffer payload = StandardCharsets.UTF_8.encode("x");
         // Use RSV1 bit
-        final ByteBuffer f = w.frameWithRSV(Opcode.TEXT, payload, true, true, RSV1);
+        final ByteBuffer f = w.frameWithRSV(FrameOpcode.TEXT, payload, true, true, RSV1);
         final Parsed p = parse(f);
         assertTrue(p.fin);
-        assertEquals(Opcode.TEXT, p.opcode);
+        assertEquals(FrameOpcode.TEXT, p.opcode);
         assertTrue((p.b0 & RSV1) != 0, "RSV1 must be set");
         assertArrayEquals("x".getBytes(StandardCharsets.UTF_8), unmask(p));
     }
 
     @Test
     void close_frame_contains_code_and_reason() {
-        final FrameWriter w = new FrameWriter();
+        final WebSocketFrameWriter w = new WebSocketFrameWriter();
         final ByteBuffer f = w.close(1000, "done");
         final Parsed p = parse(f);
         assertTrue(p.mask);
-        assertEquals(Opcode.CLOSE, p.opcode);
+        assertEquals(FrameOpcode.CLOSE, p.opcode);
         assertTrue(p.len >= 2);
 
         final byte[] raw = unmask(p);
@@ -172,12 +172,12 @@ class FrameWriterTest {
         payload.put(reason);
         payload.flip();
 
-        final FrameWriter w = new FrameWriter();
+        final WebSocketFrameWriter w = new WebSocketFrameWriter();
         final ByteBuffer f = w.closeEcho(payload);
         final Parsed p = parse(f);
 
         assertTrue(p.mask);
-        assertEquals(Opcode.CLOSE, p.opcode);
+        assertEquals(FrameOpcode.CLOSE, p.opcode);
         assertEquals(2 + reason.length, p.len);
 
         final byte[] got = unmask(p);

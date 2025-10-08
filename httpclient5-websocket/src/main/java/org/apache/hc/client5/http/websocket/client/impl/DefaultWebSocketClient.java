@@ -24,27 +24,28 @@
  * <http://www.apache.org/>.
  *
  */
-package org.apache.hc.client5.http.websocket.core.extension;
+package org.apache.hc.client5.http.websocket.client.impl;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import java.util.concurrent.ThreadFactory;
 
-import java.nio.charset.StandardCharsets;
+import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
+import org.apache.hc.core5.annotation.Contract;
+import org.apache.hc.core5.annotation.Internal;
+import org.apache.hc.core5.annotation.ThreadingBehavior;
+import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.impl.bootstrap.HttpAsyncRequester;
+import org.apache.hc.core5.pool.ManagedConnPool;
+import org.apache.hc.core5.reactor.IOSession;
 
-import org.junit.jupiter.api.Test;
+@Contract(threading = ThreadingBehavior.SAFE_CONDITIONAL)
+@Internal
+public class DefaultWebSocketClient extends InternalWebSocketClientBase {
 
-final class ExtensionChainTest {
-
-    @Test
-    void addAndUsePmce_decodeRoundTrip() throws Exception {
-        final ExtensionChain chain = new ExtensionChain();
-        final PerMessageDeflate pmce = new PerMessageDeflate(true, true, true, null, null);
-        chain.add(pmce);
-
-        final byte[] data = "compress me please".getBytes(StandardCharsets.UTF_8);
-
-        final WebSocketExtensionChain.Encoded enc = pmce.newEncoder().encode(data, true, true);
-        final byte[] back = chain.newDecodeChain().decode(enc.payload);
-
-        assertArrayEquals(data, back);
+    public DefaultWebSocketClient(
+            final HttpAsyncRequester requester,
+            final ManagedConnPool<HttpHost, IOSession> connPool,
+            final WebSocketClientConfig defaultConfig,
+            final ThreadFactory threadFactory) {
+        super(requester, connPool, defaultConfig, threadFactory);
     }
 }

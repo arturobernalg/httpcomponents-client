@@ -24,27 +24,13 @@
  * <http://www.apache.org/>.
  *
  */
-package org.apache.hc.client5.http.websocket.core.extension;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-
-import java.nio.charset.StandardCharsets;
-
-import org.junit.jupiter.api.Test;
-
-final class ExtensionChainTest {
-
-    @Test
-    void addAndUsePmce_decodeRoundTrip() throws Exception {
-        final ExtensionChain chain = new ExtensionChain();
-        final PerMessageDeflate pmce = new PerMessageDeflate(true, true, true, null, null);
-        chain.add(pmce);
-
-        final byte[] data = "compress me please".getBytes(StandardCharsets.UTF_8);
-
-        final WebSocketExtensionChain.Encoded enc = pmce.newEncoder().encode(data, true, true);
-        final byte[] back = chain.newDecodeChain().decode(enc.payload);
-
-        assertArrayEquals(data, back);
-    }
-}
+/**
+ * Message-level helpers and codecs.
+ *
+ * <p>Utilities for parsing and validating message semantics (e.g., CLOSE
+ * status code and reason handling).</p>
+ *
+ * @since 5.6
+ */
+package org.apache.hc.client5.http.websocket.core.exceptions;

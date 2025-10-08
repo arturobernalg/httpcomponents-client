@@ -32,6 +32,8 @@ import java.util.concurrent.ThreadFactory;
 
 import org.apache.hc.client5.http.impl.DefaultClientConnectionReuseStrategy;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
+import org.apache.hc.client5.http.websocket.client.impl.DefaultWebSocketClient;
+import org.apache.hc.client5.http.websocket.client.impl.logging.WsLoggingExceptionCallback;
 import org.apache.hc.core5.concurrent.DefaultThreadFactory;
 import org.apache.hc.core5.function.Callback;
 import org.apache.hc.core5.function.Decorator;
@@ -203,14 +205,14 @@ public final class WebSocketClientBuilder {
 
         final ManagedConnPool<HttpHost, IOSession> connPool;
         if (conc == PoolConcurrencyPolicy.LAX) {
-            connPool = new LaxConnPool<HttpHost, IOSession>(
+            connPool = new LaxConnPool<>(
                     defaultMaxPerRoute > 0 ? defaultMaxPerRoute : 20,
                     ttl, reuse, new DefaultDisposalCallback<IOSession>(), connPoolListener);
         } else {
-            connPool = new StrictConnPool<HttpHost, IOSession>(
+            connPool = new StrictConnPool<>(
                     defaultMaxPerRoute > 0 ? defaultMaxPerRoute : 20,
                     maxTotal > 0 ? maxTotal : 50,
-                    ttl, reuse, new DefaultDisposalCallback<IOSession>(), connPoolListener);
+                    ttl, reuse, new DefaultDisposalCallback<>(), connPoolListener);
         }
 
         // --- 2) Build protocol pipeline for HTTP/1.1 handshake/upgrade ---
@@ -231,7 +233,7 @@ public final class WebSocketClientBuilder {
                 ioReactorConfig != null ? ioReactorConfig : IOReactorConfig.DEFAULT,
                 iohFactory,
                 ioSessionDecorator,
-                exceptionCallback != null ? exceptionCallback : WebSocketLoggingExceptionCallback.INSTANCE,
+                exceptionCallback != null ? exceptionCallback : WsLoggingExceptionCallback.INSTANCE,
                 sessionListener,
                 connPool,
                 tls,
@@ -242,7 +244,7 @@ public final class WebSocketClientBuilder {
                 ? threadFactory
                 : new DefaultThreadFactory("websocket-main", true);
 
-        return new InternalWebSocket(
+        return new DefaultWebSocketClient(
                 requester,
                 connPool,
                 defaultConfig,

@@ -24,27 +24,18 @@
  * <http://www.apache.org/>.
  *
  */
-package org.apache.hc.client5.http.websocket.core.extension;
+package org.apache.hc.client5.http.websocket.core.exceptions;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 
-import java.nio.charset.StandardCharsets;
+import org.apache.hc.core5.annotation.Internal;
 
-import org.junit.jupiter.api.Test;
+@Internal
+public final class WebSocketProtocolException extends RuntimeException {
 
-final class ExtensionChainTest {
+    public final int closeCode;
 
-    @Test
-    void addAndUsePmce_decodeRoundTrip() throws Exception {
-        final ExtensionChain chain = new ExtensionChain();
-        final PerMessageDeflate pmce = new PerMessageDeflate(true, true, true, null, null);
-        chain.add(pmce);
-
-        final byte[] data = "compress me please".getBytes(StandardCharsets.UTF_8);
-
-        final WebSocketExtensionChain.Encoded enc = pmce.newEncoder().encode(data, true, true);
-        final byte[] back = chain.newDecodeChain().decode(enc.payload);
-
-        assertArrayEquals(data, back);
+    public WebSocketProtocolException(final int closeCode, final String message) {
+        super(message);
+        this.closeCode = closeCode;
     }
 }

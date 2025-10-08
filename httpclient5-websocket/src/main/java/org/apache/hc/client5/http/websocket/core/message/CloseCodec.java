@@ -27,64 +27,126 @@
 package org.apache.hc.client5.http.websocket.core.message;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CharsetDecoder;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+
+import org.apache.hc.core5.annotation.Internal;
 
 /**
  * Helpers for RFC6455 CLOSE parsing & validation.
  */
+@Internal
 public final class CloseCodec {
 
     private CloseCodec() {
     }
 
-    public static int readCloseCode(final ByteBuffer p) {
-        if (p.remaining() >= 2) {
-            final int b1 = p.get() & 0xFF;
-            final int b2 = p.get() & 0xFF;
-            return b1 << 8 | b2;
+    // ---- Wire helpers (you already had readCloseCode/Reason) ----------------
+
+    public static int readCloseCode(final ByteBuffer payloadRO) {
+        if (payloadRO == null || payloadRO.remaining() < 2) {
+            return 1005; // “no status code present”
         }
-        return 1005; // no status
+        final int b1 = payloadRO.get() & 0xFF;
+        final int b2 = payloadRO.get() & 0xFF;
+        return b1 << 8 | b2;
     }
 
-    public static String readCloseReason(final ByteBuffer p) {
-        if (p.remaining() == 0) {
+    public static String readCloseReason(final ByteBuffer payloadRO) {
+        if (payloadRO == null || !payloadRO.hasRemaining()) {
             return "";
         }
-        final CharsetDecoder dec = StandardCharsets.UTF_8.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT);
-        try {
-            dec.decode(p.asReadOnlyBuffer());
-            return StandardCharsets.UTF_8.decode(p.slice()).toString();
-        } catch (final CharacterCodingException e) {
-            return ""; // handler will usually react with 1007 when validating
-        }
+        final ByteBuffer dup = payloadRO.slice();
+        return StandardCharsets.UTF_8.decode(dup).toString();
+    }
+
+    // ---- RFC validation (sender & receiver) ---------------------------------
+
+    /**
+     * RFC 6455 §7.4.2: MUST NOT appear on the wire.
+     */
+    private static boolean isForbiddenOnWire(final int code) {
+        return code == 1005 || code == 1006 || code == 1015;
     }
 
     /**
-     * RFC6455 valid received status codes.
+     * Codes defined by RFC 6455 to SEND (and likewise valid to receive).
      */
-    public static boolean isValidCloseCodeReceived(final int code) {
-        if (code < 1000) {
-            return false;
-        }
+    private static boolean isRfcDefined(final int code) {
         switch (code) {
             case 1000: // normal
             case 1001: // going away
             case 1002: // protocol error
             case 1003: // unsupported data
-            case 1007: // invalid payload
+            case 1007: // invalid payload data
             case 1008: // policy violation
             case 1009: // message too big
             case 1010: // mandatory extension
             case 1011: // internal error
                 return true;
-            // disallowed on wire: 1004, 1005, 1006, 1015
             default:
-                return code >= 3000 && code <= 4999;
+                return false;
         }
+    }
+
+    /**
+     * Application/reserved range that may be sent by endpoints.
+     */
+    private static boolean isAppRange(final int code) {
+        return code >= 3000 && code <= 4999;
+    }
+
+    /**
+     * Validate a code we intend to PUT ON THE WIRE (sender-side).
+     */
+    public static boolean isValidToSend(final int code) {
+        if (code < 0) {
+            return false;
+        }
+        if (isForbiddenOnWire(code)) {
+            return false;
+        }
+        return isRfcDefined(code) || isAppRange(code);
+    }
+
+    /**
+     * Validate a code we PARSED FROM THE WIRE (receiver-side).
+     */
+    public static boolean isValidToReceive(final int code) {
+        // 1005, 1006, 1015 must not appear on the wire
+        if (isForbiddenOnWire(code)) {
+            return false;
+        }
+        // Same allowed sets otherwise
+        return isRfcDefined(code) || isAppRange(code);
+    }
+
+    // ---- Reason handling: max 123 bytes (2 bytes used by code) --------------
+
+    /**
+     * Returns a UTF-8 string truncated to ≤ 123 bytes, preserving code-points.
+     */
+    public static String truncateReasonUtf8(final String reason) {
+        if (reason == null || reason.isEmpty()) {
+            return "";
+        }
+        final byte[] bytes = reason.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length <= 123) {
+            return reason;
+        }
+        // Truncate without breaking multibyte chars: walk code points.
+        final String s = reason;
+        int i = 0;
+        int byteCount = 0;
+        while (i < s.length()) {
+            final int cp = s.codePointAt(i);
+            final int charCount = Character.charCount(cp);
+            final int extra = new String(Character.toChars(cp)).getBytes(StandardCharsets.UTF_8).length;
+            if (byteCount + extra > 123) {
+                break;
+            }
+            byteCount += extra;
+            i += charCount;
+        }
+        return s.substring(0, i);
     }
 }
