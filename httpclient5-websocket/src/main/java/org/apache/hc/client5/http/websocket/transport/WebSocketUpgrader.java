@@ -44,9 +44,9 @@ import org.slf4j.LoggerFactory;
  * The caller performs notification after {@code switchProtocol(...)} completes.</p>
  */
 @Internal
-public final class HttpCoreWebSocketUpgrader implements ProtocolUpgradeHandler {
+public final class WebSocketUpgrader implements ProtocolUpgradeHandler {
 
-    private static final Logger LOG = LoggerFactory.getLogger(HttpCoreWebSocketUpgrader.class);
+    private static final Logger LOG = LoggerFactory.getLogger(WebSocketUpgrader.class);
 
     private final WebSocketListener listener;
     private final WebSocketClientConfig cfg;
@@ -57,7 +57,7 @@ public final class HttpCoreWebSocketUpgrader implements ProtocolUpgradeHandler {
      */
     private volatile WebSocket webSocket;
 
-    public HttpCoreWebSocketUpgrader(
+    public WebSocketUpgrader(
             final WebSocketListener listener,
             final WebSocketClientConfig cfg,
             final ExtensionChain chain) {
