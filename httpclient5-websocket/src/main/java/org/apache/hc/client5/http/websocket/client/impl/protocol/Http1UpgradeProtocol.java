@@ -41,7 +41,7 @@ import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.client5.http.websocket.core.extension.ExtensionChain;
 import org.apache.hc.client5.http.websocket.core.extension.PerMessageDeflate;
-import org.apache.hc.client5.http.websocket.transport.HttpCoreWebSocketUpgrader;
+import org.apache.hc.client5.http.websocket.transport.WebSocketUpgrader;
 import org.apache.hc.client5.http.websocket.client.impl.connector.WebSocketEndpointConnector;
 import org.apache.hc.core5.annotation.Internal;
 import org.apache.hc.core5.concurrent.FutureCallback;
@@ -360,7 +360,7 @@ public final class Http1UpgradeProtocol implements WebSocketProtocolStrategy {
             }
 
             final ProtocolIOSession ioSession = endpoint.getProtocolIOSession();
-            final HttpCoreWebSocketUpgrader upgrader = new HttpCoreWebSocketUpgrader(listener, cfg, chain);
+            final WebSocketUpgrader upgrader = new WebSocketUpgrader(listener, cfg, chain);
             ioSession.registerProtocol("websocket", upgrader);
             ioSession.switchProtocol("websocket", new FutureCallback<ProtocolIOSession>() {
                 @Override
