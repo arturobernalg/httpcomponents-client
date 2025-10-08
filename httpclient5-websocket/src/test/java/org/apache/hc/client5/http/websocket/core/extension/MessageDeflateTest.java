@@ -41,19 +41,19 @@ final class MessageDeflateTest {
 
     @Test
     void rsvMask_isRSV1() {
-        final MessageDeflate pmce = new MessageDeflate(true, false, false, null, null);
+        final PerMessageDeflate pmce = new PerMessageDeflate(true, false, false, null, null);
         assertEquals(FrameHeaderBits.RSV1, pmce.rsvMask());
     }
 
     @Test
     void encode_setsRSVOnlyOnFirst() {
-        final MessageDeflate pmce = new MessageDeflate(true, false, false, null, null);
-        final Extension.Encoder enc = pmce.newEncoder();
+        final PerMessageDeflate pmce = new PerMessageDeflate(true, false, false, null, null);
+        final WebSocketExtensionChain.Encoder enc = pmce.newEncoder();
 
         final byte[] data = "hello".getBytes(StandardCharsets.UTF_8);
 
-        final Extension.Encoded first = enc.encode(data, true, false);
-        final Extension.Encoded cont = enc.encode(data, false, true);
+        final WebSocketExtensionChain.Encoded first = enc.encode(data, true, false);
+        final WebSocketExtensionChain.Encoded cont = enc.encode(data, false, true);
 
         assertTrue(first.setRsvOnFirst, "RSV on first fragment");
         assertFalse(cont.setRsvOnFirst, "no RSV on continuation");
@@ -63,9 +63,9 @@ final class MessageDeflateTest {
 
     @Test
     void roundTrip_message() throws Exception {
-        final MessageDeflate pmce = new MessageDeflate(true, true, true, null, null);
-        final Extension.Encoder enc = pmce.newEncoder();
-        final Extension.Decoder dec = pmce.newDecoder();
+        final PerMessageDeflate pmce = new PerMessageDeflate(true, true, true, null, null);
+        final WebSocketExtensionChain.Encoder enc = pmce.newEncoder();
+        final WebSocketExtensionChain.Decoder dec = pmce.newDecoder();
 
         final String s = "The quick brown fox jumps over the lazy dog. "
                 + "The quick brown fox jumps over the lazy dog.";

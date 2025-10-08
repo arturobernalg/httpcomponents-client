@@ -24,26 +24,41 @@
  * <http://www.apache.org/>.
  *
  */
-package org.apache.hc.client5.http.websocket.core.frame;
+package org.apache.hc.client5.http.websocket.client.impl.protocol;
 
+import java.net.URI;
+import java.util.concurrent.CompletableFuture;
+
+import org.apache.hc.client5.http.websocket.api.WebSocket;
+import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
+import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.core5.annotation.Internal;
+import org.apache.hc.core5.http.protocol.HttpContext;
 
 /**
- * WebSocket frame header bit masks (RFC 6455 §5.2).
+ * RFC 8441 (HTTP/2 Extended CONNECT) placeholder.
+ * No-args ctor (matches your build error). Falls back to H1.
  */
 @Internal
-public final class FrameHeaderBits {
-    private FrameHeaderBits() {
+public final class Http2ExtendedConnectProtocol implements WebSocketProtocolStrategy {
+
+    public static final class H2NotAvailable extends RuntimeException {
+        public H2NotAvailable(final String msg) {
+            super(msg);
+        }
     }
 
-    // First header byte
-    public static final int FIN = 0x80;
-    public static final int RSV1 = 0x40;
-    public static final int RSV2 = 0x20;
-    public static final int RSV3 = 0x10;
-    // low 4 bits (0x0F) are opcode
+    public Http2ExtendedConnectProtocol() {
+    }
 
-    // Second header byte
-    public static final int MASK_BIT = 0x80;  // client->server payload mask bit
-    // low 7 bits (0x7F) are payload len indicator
+    @Override
+    public CompletableFuture<WebSocket> connect(
+            final URI uri,
+            final WebSocketListener listener,
+            final WebSocketClientConfig cfg,
+            final HttpContext context) {
+        final CompletableFuture<WebSocket> f = new CompletableFuture<>();
+        f.completeExceptionally(new H2NotAvailable("HTTP/2 Extended CONNECT not wired yet"));
+        return f;
+    }
 }

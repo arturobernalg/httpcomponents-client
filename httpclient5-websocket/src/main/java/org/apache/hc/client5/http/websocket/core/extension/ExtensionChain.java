@@ -29,14 +29,17 @@ package org.apache.hc.client5.http.websocket.core.extension;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.hc.core5.annotation.Internal;
+
 /**
  * Simple single-step chain; if multiple extensions are added they are applied in order.
  * Only the FIRST extension can contribute the RSV bit (RSV1 in practice).
  */
+@Internal
 public final class ExtensionChain {
-    private final List<Extension> exts = new ArrayList<>();
+    private final List<WebSocketExtensionChain> exts = new ArrayList<>();
 
-    public void add(final Extension e) {
+    public void add(final WebSocketExtensionChain e) {
         if (e != null) {
             exts.add(e);
         }
@@ -50,8 +53,8 @@ public final class ExtensionChain {
      * App-thread encoder chain.
      */
     public EncodeChain newEncodeChain() {
-        final List<Extension.Encoder> encs = new ArrayList<>(exts.size());
-        for (final Extension e : exts) {
+        final List<WebSocketExtensionChain.Encoder> encs = new ArrayList<>(exts.size());
+        for (final WebSocketExtensionChain e : exts) {
             encs.add(e.newEncoder());
         }
         return new EncodeChain(encs);
@@ -61,8 +64,8 @@ public final class ExtensionChain {
      * I/O-thread decoder chain.
      */
     public DecodeChain newDecodeChain() {
-        final List<Extension.Decoder> decs = new ArrayList<>(exts.size());
-        for (final Extension e : exts) {
+        final List<WebSocketExtensionChain.Decoder> decs = new ArrayList<>(exts.size());
+        for (final WebSocketExtensionChain e : exts) {
             decs.add(e.newDecoder());
         }
         return new DecodeChain(decs);
@@ -71,9 +74,9 @@ public final class ExtensionChain {
     // ----------------------
 
     public static final class EncodeChain {
-        private final List<Extension.Encoder> encs;
+        private final List<WebSocketExtensionChain.Encoder> encs;
 
-        public EncodeChain(final List<Extension.Encoder> encs) {
+        public EncodeChain(final List<WebSocketExtensionChain.Encoder> encs) {
             this.encs = encs;
         }
 
@@ -87,8 +90,8 @@ public final class ExtensionChain {
             byte[] out = data;
             boolean setRsv1 = false;
             boolean firstExt = true;
-            for (final Extension.Encoder e : encs) {
-                final Extension.Encoded res = e.encode(out, first, fin);
+            for (final WebSocketExtensionChain.Encoder e : encs) {
+                final WebSocketExtensionChain.Encoded res = e.encode(out, first, fin);
                 out = res.payload;
                 if (first && firstExt && res.setRsvOnFirst) {
                     setRsv1 = true;
@@ -110,9 +113,9 @@ public final class ExtensionChain {
     }
 
     public static final class DecodeChain {
-        private final List<Extension.Decoder> decs;
+        private final List<WebSocketExtensionChain.Decoder> decs;
 
-        public DecodeChain(final List<Extension.Decoder> decs) {
+        public DecodeChain(final List<WebSocketExtensionChain.Decoder> decs) {
             this.decs = decs;
         }
 

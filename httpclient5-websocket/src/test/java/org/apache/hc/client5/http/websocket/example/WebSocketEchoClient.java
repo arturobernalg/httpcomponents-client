@@ -37,8 +37,8 @@ import org.apache.hc.client5.http.websocket.api.WebSocket;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.client5.http.websocket.client.CloseableWebSocketClient;
-import org.apache.hc.client5.http.websocket.client.WebSocketClients;
-import org.apache.hc.core5.io.CloseMode;
+import org.apache.hc.client5.http.websocket.client.WebSocketClientBuilder;
+import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
 
 public final class WebSocketEchoClient {
@@ -56,9 +56,14 @@ public final class WebSocketEchoClient {
                 .allowH2ExtendedConnect(false)
                 .build();
 
-        try (final CloseableWebSocketClient client = WebSocketClients.createDefault()) {
+        try (final CloseableWebSocketClient client = WebSocketClientBuilder.create()
+                .defaultConfig(cfg)
+                .useSystemProperties()
+                .build()) {
+
             System.out.println("[TEST] connecting: " + uri);
             client.start();
+
             client.connect(uri, new WebSocketListener() {
                 private WebSocket ws;
 
@@ -113,8 +118,11 @@ public final class WebSocketEchoClient {
                 System.exit(1);
             }
 
-            // Optional: explicit mode (try-with-resources already calls GRACEFUL)
-         //   client.close(CloseMode.IMMEDIATE);
+            // Tidy shutdown: ask for shutdown, then wait briefly for the reactor to stop.
+            // Try-with-resources will still call close(GRACEFUL) at the end.
+            client.initiateShutdown();
+            client.awaitShutdown(TimeValue.ofSeconds(2));
         }
     }
 }
+

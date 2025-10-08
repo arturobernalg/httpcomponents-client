@@ -24,26 +24,36 @@
  * <http://www.apache.org/>.
  *
  */
-package org.apache.hc.client5.http.websocket.core.frame;
+package org.apache.hc.client5.http.websocket.client.impl.protocol;
 
+import java.net.URI;
+import java.util.concurrent.CompletableFuture;
+
+import org.apache.hc.client5.http.websocket.api.WebSocket;
+import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
+import org.apache.hc.client5.http.websocket.api.WebSocketListener;
 import org.apache.hc.core5.annotation.Internal;
+import org.apache.hc.core5.http.protocol.HttpContext;
 
 /**
- * WebSocket frame header bit masks (RFC 6455 §5.2).
+ * Minimal pluggable protocol strategy. One impl for H1 (RFC6455),
+ * one for H2 Extended CONNECT (RFC8441).
  */
 @Internal
-public final class FrameHeaderBits {
-    private FrameHeaderBits() {
-    }
+public interface WebSocketProtocolStrategy {
 
-    // First header byte
-    public static final int FIN = 0x80;
-    public static final int RSV1 = 0x40;
-    public static final int RSV2 = 0x20;
-    public static final int RSV3 = 0x10;
-    // low 4 bits (0x0F) are opcode
-
-    // Second header byte
-    public static final int MASK_BIT = 0x80;  // client->server payload mask bit
-    // low 7 bits (0x7F) are payload len indicator
+    /**
+     * Establish a WebSocket connection using a specific HTTP transport/protocol.
+     *
+     * @param uri      ws:// or wss:// target
+     * @param listener user listener for WS events
+     * @param cfg      client config (timeouts, subprotocols, PMCE offer, etc.)
+     * @param context  optional HttpContext (may be {@code null})
+     * @return future completing with a connected {@link WebSocket} or exceptionally on failure
+     */
+    CompletableFuture<WebSocket> connect(
+            URI uri,
+            WebSocketListener listener,
+            WebSocketClientConfig cfg,
+            HttpContext context);
 }

@@ -24,27 +24,30 @@
  * <http://www.apache.org/>.
  *
  */
-package org.apache.hc.client5.http.websocket.core.extension;
+package org.apache.hc.client5.http.websocket.client.impl.logging;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import org.apache.hc.core5.annotation.Internal;
+import org.apache.hc.core5.function.Callback;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
+@Internal
+public class WsLoggingExceptionCallback implements Callback<Exception> {
 
-import org.junit.jupiter.api.Test;
+    /**
+     * Singleton instance of LoggingExceptionCallback.
+     */
+    public static final WsLoggingExceptionCallback INSTANCE = new WsLoggingExceptionCallback();
 
-final class ExtensionChainTest {
+    private static final Logger LOG = LoggerFactory.getLogger("org.apache.hc.client5.http.websocket.client");
 
-    @Test
-    void addAndUsePmce_decodeRoundTrip() throws Exception {
-        final ExtensionChain chain = new ExtensionChain();
-        final PerMessageDeflate pmce = new PerMessageDeflate(true, true, true, null, null);
-        chain.add(pmce);
-
-        final byte[] data = "compress me please".getBytes(StandardCharsets.UTF_8);
-
-        final WebSocketExtensionChain.Encoded enc = pmce.newEncoder().encode(data, true, true);
-        final byte[] back = chain.newDecodeChain().decode(enc.payload);
-
-        assertArrayEquals(data, back);
+    private WsLoggingExceptionCallback() {
     }
+
+    @Override
+    public void execute(final Exception ex) {
+        LOG.error(ex.getMessage(), ex);
+    }
+
 }
+
