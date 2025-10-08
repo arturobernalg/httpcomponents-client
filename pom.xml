@@ -84,6 +84,7 @@
     <micrometer.tracing.version>1.5.2</micrometer.tracing.version>
     <otel.version>1.52.0</otel.version>     <!-- already used elsewhere -->
     <commons-compress.version>1.26.2</commons-compress.version>
+    <jetty.version>9.4.54.v20240208</jetty.version>
   </properties>
 
   <dependencyManagement>
@@ -127,6 +128,11 @@
       <dependency>
         <groupId>org.apache.httpcomponents.client5</groupId>
         <artifactId>httpclient5-fluent</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.httpcomponents.client5</groupId>
+        <artifactId>httpclient5-websocket</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -256,6 +262,22 @@
         <artifactId>brotli4j</artifactId>
         <version>${brotli4j.version}</version>
         <optional>true</optional>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.jetty</groupId>
+        <artifactId>jetty-servlet</artifactId>
+        <version>${jetty.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.jetty.websocket</groupId>
+        <artifactId>websocket-server</artifactId>
+        <version>${jetty.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.jetty.http2</groupId>
+        <artifactId>http2-server</artifactId>
+        <version>${jetty.version}</version>
+        <scope>test</scope>
       </dependency>
     </dependencies>
   </dependencyManagement>

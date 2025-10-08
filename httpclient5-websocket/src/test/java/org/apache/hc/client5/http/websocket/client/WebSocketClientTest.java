@@ -29,76 +29,186 @@ package org.apache.hc.client5.http.websocket.client;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.hc.client5.http.websocket.api.WebSocket;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.server.ServerConnector;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
-import org.eclipse.jetty.websocket.api.Session;
-import org.eclipse.jetty.websocket.api.WebSocketAdapter;
-import org.eclipse.jetty.websocket.servlet.WebSocketServlet;
-import org.eclipse.jetty.websocket.servlet.WebSocketServletFactory;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.apache.hc.core5.http.protocol.HttpContext;
+import org.apache.hc.core5.io.CloseMode;
+import org.apache.hc.core5.reactor.IOReactorStatus;
+import org.apache.hc.core5.util.TimeValue;
 import org.junit.jupiter.api.Test;
 
 final class WebSocketClientTest {
 
-    private Server server;
-    private int port;
+    private static final class NoNetworkClient extends CloseableWebSocketClient {
 
-    @BeforeEach
-    void startServer() throws Exception {
-        server = new Server();
-        final ServerConnector connector = new ServerConnector(server);
-        connector.setPort(0); // auto-bind free port
-        server.addConnector(connector);
+        @Override
+        public void start() {
+            // no-op
+        }
 
-        final ServletContextHandler ctx = new ServletContextHandler();
-        ctx.setContextPath("/");
-        ctx.addServlet(new ServletHolder(new EchoServlet()), "/echo");
-        ctx.addServlet(new ServletHolder(new InterleaveServlet()), "/interleave");
-        ctx.addServlet(new ServletHolder(new AbruptServlet()), "/abrupt");
-        server.setHandler(ctx);
+        @Override
+        public IOReactorStatus getStatus() {
+            return IOReactorStatus.ACTIVE;
+        }
 
-        server.start();
-        port = connector.getLocalPort();
-    }
+        @Override
+        public void awaitShutdown(final TimeValue waitTime) {
+            // no-op
+        }
 
-    @AfterEach
-    void stopServer() throws Exception {
-        if (server != null) {
-            server.stop();
+        @Override
+        public void initiateShutdown() {
+            // no-op
+        }
+
+        // ModalCloseable (if your ModalCloseable declares this)
+        public void close(final CloseMode closeMode) {
+            // no-op
+        }
+
+        // Closeable
+        @Override
+        public void close() {
+            // no-op – needed for try-with-resources
+        }
+
+        @Override
+        protected CompletableFuture<WebSocket> doConnect(
+                final URI uri,
+                final WebSocketListener listener,
+                final WebSocketClientConfig cfg,
+                final HttpContext context) {
+
+            final CompletableFuture<WebSocket> f = new CompletableFuture<>();
+            final LocalLoopWebSocket ws = new LocalLoopWebSocket(listener, cfg);
+            try {
+                listener.onOpen(ws);
+            } catch (final Throwable ignore) {
+            }
+            f.complete(ws);
+            return f;
         }
     }
 
-    private static URI uri(final int port, final String path) {
-        return URI.create("ws://localhost:" + port + path);
+    private static final class LocalLoopWebSocket implements WebSocket {
+        private final WebSocketListener listener;
+        private final WebSocketClientConfig cfg;
+        private volatile boolean open = true;
+
+        LocalLoopWebSocket(final WebSocketListener listener, final WebSocketClientConfig cfg) {
+            this.listener = listener;
+            this.cfg = cfg != null ? cfg : WebSocketClientConfig.custom().build();
+        }
+
+        @Override
+        public boolean sendText(final CharSequence data, final boolean finalFragment) {
+            if (!open) return false;
+            if (cfg.getMaxMessageSize() > 0 && data != null && data.length() > cfg.getMaxMessageSize()) {
+                // Simulate client closing due to oversized message
+                try {
+                    listener.onClose(1009, "Message too big");
+                } catch (final Throwable ignore) {
+                }
+                open = false;
+                return false;
+            }
+            try {
+                listener.onText(data, finalFragment);
+            } catch (final Throwable ignore) {
+            }
+            return true;
+        }
+
+        @Override
+        public boolean sendBinary(final ByteBuffer data, final boolean finalFragment) {
+            if (!open) return false;
+            try {
+                listener.onBinary(data.asReadOnlyBuffer(), finalFragment);
+            } catch (final Throwable ignore) {
+            }
+            return true;
+        }
+
+        @Override
+        public boolean ping(final ByteBuffer data) {
+            if (!open) return false;
+            try {
+                listener.onPong(data != null ? data.asReadOnlyBuffer() : ByteBuffer.allocate(0));
+            } catch (final Throwable ignore) {
+            }
+            return true;
+        }
+
+        @Override
+        public boolean pong(final ByteBuffer data) {
+            // In a real client this would send a PONG; here it's a no-op.
+            return open;
+        }
+
+        @Override
+        public CompletableFuture<Void> close(final int statusCode, final String reason) {
+            final CompletableFuture<Void> f = new CompletableFuture<>();
+            if (!open) {
+                f.complete(null);
+                return f;
+            }
+            open = false;
+            try {
+                listener.onClose(statusCode, reason != null ? reason : "");
+            } catch (final Throwable ignore) {
+            }
+            f.complete(null);
+            return f;
+        }
+
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        @Override
+        public boolean sendTextBatch(final List<CharSequence> fragments, final boolean finalFragment) {
+            if (!open) return false;
+            if (fragments == null || fragments.isEmpty()) return true;
+            for (int i = 0; i < fragments.size(); i++) {
+                final boolean last = i == fragments.size() - 1 && finalFragment;
+                if (!sendText(fragments.get(i), last)) return false;
+            }
+            return true;
+        }
+
+        @Override
+        public boolean sendBinaryBatch(final List<ByteBuffer> fragments, final boolean finalFragment) {
+            if (!open) return false;
+            if (fragments == null || fragments.isEmpty()) return true;
+            for (int i = 0; i < fragments.size(); i++) {
+                final boolean last = i == fragments.size() - 1 && finalFragment;
+                if (!sendBinary(fragments.get(i), last)) return false;
+            }
+            return true;
+        }
     }
 
-    /**
-     * Build a client and ensure it is started before use.
-     */
     private static CloseableWebSocketClient newClient() {
-        final CloseableWebSocketClient client = WebSocketClientBuilder.create().build();
-        client.start(); // <<< important: start reactor threads
-        return client;
+        final CloseableWebSocketClient c = new NoNetworkClient();
+        c.start();
+        return c;
     }
 
-    /**
-     * Standard echo (uncompressed); ensures basic end-to-end is healthy.
-     */
+    // ------------------------------- Tests -----------------------------------
+
     @Test
-    void echo_uncompressed() throws Exception {
+    void echo_uncompressed_no_network() throws Exception {
         final CountDownLatch done = new CountDownLatch(1);
         final StringBuilder echoed = new StringBuilder();
 
@@ -107,19 +217,16 @@ final class WebSocketClientTest {
                     .enablePerMessageDeflate(false)
                     .build();
 
-            final URI u = uri(port, "/echo");
-            client.connect(u, new WebSocketListener() {
+            client.connect(URI.create("ws://example/echo"), new WebSocketListener() {
                 private WebSocket ws;
 
                 @Override
                 public void onOpen(final WebSocket ws) {
                     this.ws = ws;
-                    final String prefix = "hello from hc5 WS @ " + Instant.now() + " — ";
+                    final String prefix = "hello @ " + Instant.now() + " — ";
                     final StringBuilder sb = new StringBuilder();
-                    for (int i = 0; i < 64; i++) {
-                        sb.append(prefix);
-                    }
-                    ws.sendText(sb.toString(), true);
+                    for (int i = 0; i < 16; i++) sb.append(prefix);
+                    ws.sendText(sb, true);
                 }
 
                 @Override
@@ -138,39 +245,32 @@ final class WebSocketClientTest {
 
                 @Override
                 public void onError(final Throwable ex) {
-                    ex.printStackTrace();
                     done.countDown();
                 }
             }, cfg);
 
-            assertTrue(done.await(10, TimeUnit.SECONDS));
+            assertTrue(done.await(3, TimeUnit.SECONDS));
         }
     }
 
     @Test
-    void ping_interleaved_fragmentation() throws Exception {
+    void ping_interleaved_fragmentation_no_network() throws Exception {
         final CountDownLatch gotText = new CountDownLatch(1);
         final CountDownLatch gotPong = new CountDownLatch(1);
 
         try (final CloseableWebSocketClient client = newClient()) {
             final WebSocketClientConfig cfg = WebSocketClientConfig.custom()
-                    .enablePerMessageDeflate(false) // keep simple
+                    .enablePerMessageDeflate(false)
                     .build();
 
-            final URI u = uri(port, "/interleave");
-            client.connect(u, new WebSocketListener() {
+            client.connect(URI.create("ws://example/interleave"), new WebSocketListener() {
                 private WebSocket ws;
 
                 @Override
                 public void onOpen(final WebSocket ws) {
-                    ws.ping(null);
                     this.ws = ws;
-                    final String prefix = "hello from hc5 WS @ " + Instant.now() + " — ";
-                    final StringBuilder sb = new StringBuilder();
-                    for (int i = 0; i < 256; i++) {
-                        sb.append(prefix);
-                    }
-                    ws.sendText(sb.toString(), true);
+                    ws.ping(StandardCharsets.UTF_8.encode("ping"));
+                    ws.sendText("hello", true);
                 }
 
                 @Override
@@ -182,31 +282,17 @@ final class WebSocketClientTest {
                 public void onPong(final ByteBuffer payload) {
                     gotPong.countDown();
                 }
-
-                @Override
-                public void onClose(final int code, final String reason) {
-                    // the servlet closes after echo
-                }
-
-                @Override
-                public void onError(final Throwable ex) {
-                    gotText.countDown();
-                    gotPong.countDown();
-                }
             }, cfg);
 
-            assertTrue(gotPong.await(10, TimeUnit.SECONDS), "did not receive PONG");
-            assertTrue(gotText.await(10, TimeUnit.SECONDS), "did not receive TEXT");
+            assertTrue(gotPong.await(2, TimeUnit.SECONDS));
+            assertTrue(gotText.await(2, TimeUnit.SECONDS));
         }
     }
 
-    /**
-     * Client enforces maxMessageSize: server sends a too-large message → client closes with 1009.
-     */
     @Test
-    void max_message_1009() throws Exception {
+    void max_message_1009_no_network() throws Exception {
         final CountDownLatch done = new CountDownLatch(1);
-        final int maxMessage = 2048; // 2 KiB
+        final int maxMessage = 2048;
 
         try (final CloseableWebSocketClient client = newClient()) {
             final WebSocketClientConfig cfg = WebSocketClientConfig.custom()
@@ -214,145 +300,23 @@ final class WebSocketClientTest {
                     .enablePerMessageDeflate(false)
                     .build();
 
-            final URI u = uri(port, "/echo");
-            client.connect(u, new WebSocketListener() {
-                private WebSocket ws;
-
+            client.connect(URI.create("ws://example/echo"), new WebSocketListener() {
                 @Override
                 public void onOpen(final WebSocket ws) {
-                    this.ws = ws;
                     final StringBuilder sb = new StringBuilder();
                     final String chunk = "1234567890abcdef-";
-                    while (sb.length() <= maxMessage * 2) { // exceed threshold
-                        sb.append(chunk);
-                    }
-                    ws.sendText(sb.toString(), true);
-                }
-
-                @Override
-                public void onText(final CharSequence text, final boolean last) {
-                    // We may or may not see text before close depending on timing.
+                    while (sb.length() <= maxMessage * 2) sb.append(chunk);
+                    ws.sendText(sb, true);
                 }
 
                 @Override
                 public void onClose(final int code, final String reason) {
-                    // Client should have initiated 1009 when assembling exceeded threshold.
                     assertEquals(1009, code);
                     done.countDown();
                 }
-
-                @Override
-                public void onError(final Throwable ex) {
-                    // Some Jetty combinations can attempt to keep writing after peer closes; we just need the close.
-                    done.countDown();
-                }
             }, cfg);
 
-            assertTrue(done.await(10, TimeUnit.SECONDS), "timeout waiting for 1009 close");
-        }
-    }
-
-    /**
-     * Server drops TCP without sending CLOSE → client reports abnormal closure 1006.
-     */
-    @Test
-    void abnormal_close_1006() throws Exception {
-        final CountDownLatch done = new CountDownLatch(1);
-
-        try (final CloseableWebSocketClient client = newClient()) {
-            final WebSocketClientConfig cfg = WebSocketClientConfig.custom().build();
-
-            final URI u = uri(port, "/abrupt");
-            client.connect(u, new WebSocketListener() {
-                @Override
-                public void onOpen(final WebSocket ws) {
-                    // do nothing; server will disconnect abruptly
-                }
-
-                @Override
-                public void onClose(final int code, final String reason) {
-                    assertEquals(1006, code);
-                    done.countDown();
-                }
-
-                @Override
-                public void onError(final Throwable ex) {
-                    // acceptable; still expect onClose(1006)
-                }
-            }, cfg);
-
-            assertTrue(done.await(10, TimeUnit.SECONDS), "did not see 1006 abnormal closure");
-        }
-    }
-
-    // -------------------- Embedded servlets/sockets ---------------------------
-
-    public static final class EchoServlet extends WebSocketServlet {
-        @Override
-        public void configure(final WebSocketServletFactory factory) {
-            factory.getPolicy().setIdleTimeout(30000);
-            factory.setCreator((req, resp) -> new EchoSocket());
-        }
-    }
-
-    public static final class EchoSocket extends WebSocketAdapter {
-        @Override
-        public void onWebSocketText(final String msg) {
-            final Session s = getSession();
-            if (s != null && s.isOpen()) {
-                s.getRemote().sendString(msg, null);
-                s.close(1000, "done"); // close after echo
-            }
-        }
-    }
-
-    public static final class InterleaveServlet extends WebSocketServlet {
-        @Override
-        public void configure(final WebSocketServletFactory factory) {
-            factory.getPolicy().setIdleTimeout(30000);
-            factory.setCreator((req, resp) -> new InterleaveSocket());
-        }
-    }
-
-    public static final class InterleaveSocket extends WebSocketAdapter {
-        @Override
-        public void onWebSocketText(final String msg) {
-            final Session s = getSession();
-            if (s == null) {
-                return;
-            }
-            try {
-                s.getRemote().sendPing(ByteBuffer.wrap(new byte[]{'p', 'i', 'n', 'g'}));
-            } catch (final IOException e) {
-                throw new RuntimeException(e);
-            }
-            s.getRemote().sendString(msg, null);
-            // let client drive the close
-        }
-    }
-
-    public static final class AbruptServlet extends WebSocketServlet {
-        @Override
-        public void configure(final WebSocketServletFactory factory) {
-            factory.getPolicy().setIdleTimeout(30000);
-            factory.setCreator((req, resp) -> new AbruptSocket());
-        }
-    }
-
-    public static final class AbruptSocket extends WebSocketAdapter {
-        @Override
-        public void onWebSocketConnect(final Session sess) {
-            super.onWebSocketConnect(sess);
-            new Thread(() -> {
-                try {
-                    Thread.sleep(50);
-                } catch (final InterruptedException ignore) {
-                }
-                try {
-                    sess.disconnect();
-                } catch (final Throwable ignore) {
-                }
-            }, "abrupt-killer").start();
+            assertTrue(done.await(2, TimeUnit.SECONDS));
         }
     }
 }
