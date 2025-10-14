@@ -34,7 +34,9 @@ import java.util.List;
 import org.apache.hc.client5.http.cookie.CommonCookieAttributeHandler;
 import org.apache.hc.client5.http.cookie.Cookie;
 import org.apache.hc.client5.http.cookie.CookieOrigin;
+import org.apache.hc.client5.http.cookie.CookieSpec;
 import org.apache.hc.client5.http.cookie.MalformedCookieException;
+import org.apache.hc.client5.http.cookie.Rfc6265bisCookieSpec;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.message.BasicHeader;
 import org.junit.jupiter.api.Assertions;
@@ -97,33 +99,49 @@ class TestRFC6265CookieSpec {
 
     @Test
     void testParseCookieMissingName() throws Exception {
-        final RFC6265CookieSpec cookiespec = new RFC6265CookieSpec();
+        final CookieSpec spec = new Rfc6265bisCookieSpec();
+        final CookieOrigin origin = new CookieOrigin("example.com", 80, "/", false);
 
-        final Header header = new BasicHeader("Set-Cookie", "=blah ; this = stuff;");
-        final CookieOrigin origin = new CookieOrigin("host", 80, "/path/", true);
-        final List<Cookie> cookies = cookiespec.parse(header, origin);
-        Assertions.assertEquals(0, cookies.size());
+        // "=bar" -> cookie-name is "", cookie-value is "bar"
+        final Header h = new BasicHeader("Set-Cookie", "=bar; Path=/");
+        final List<Cookie> cookies = spec.parse(h, origin);
+
+        Assertions.assertEquals(1, cookies.size());
+        final Cookie c = cookies.get(0);
+        Assertions.assertEquals("", c.getName());
+        Assertions.assertEquals("bar", c.getValue());
     }
 
     @Test
     void testParseCookieMissingValue1() throws Exception {
-        final RFC6265CookieSpec cookiespec = new RFC6265CookieSpec();
+        final CookieSpec spec = new Rfc6265bisCookieSpec();
+        final CookieOrigin origin = new CookieOrigin("example.com", 80, "/", false);
 
-        final Header header = new BasicHeader("Set-Cookie", "blah");
-        final CookieOrigin origin = new CookieOrigin("host", 80, "/path/", true);
-        final List<Cookie> cookies = cookiespec.parse(header, origin);
-        Assertions.assertEquals(0, cookies.size());
+        // "a=" -> cookie-name "a", cookie-value ""
+        final Header h = new BasicHeader("Set-Cookie", "a=; Path=/");
+        final List<Cookie> cookies = spec.parse(h, origin);
+
+        Assertions.assertEquals(1, cookies.size());
+        Assertions.assertEquals("a", cookies.get(0).getName());
+        Assertions.assertEquals("", cookies.get(0).getValue());
     }
 
     @Test
-    void testParseCookieMissingValue2() {
-        final RFC6265CookieSpec cookiespec = new RFC6265CookieSpec();
+    void testParseCookieMissingValue2() throws Exception {
+        final CookieSpec spec = new Rfc6265bisCookieSpec();
+        final CookieOrigin origin = new CookieOrigin("example.com", 80, "/", false);
 
-        final Header header = new BasicHeader("Set-Cookie", "blah;");
-        final CookieOrigin origin = new CookieOrigin("host", 80, "/path/", true);
-        Assertions.assertThrows(MalformedCookieException.class, () ->
-                cookiespec.parse(header, origin));
+        // "a" (no '=') -> cookie-name "", cookie-value "a"
+        final Header h = new BasicHeader("Set-Cookie", "a; Path=/");
+
+        Assertions.assertDoesNotThrow(() -> spec.parse(h, origin));
+        final List<Cookie> cookies = spec.parse(h, origin);
+
+        Assertions.assertEquals(1, cookies.size());
+        Assertions.assertEquals("", cookies.get(0).getName());
+        Assertions.assertEquals("a", cookies.get(0).getValue());
     }
+
 
     @Test
     void testParseCookieEmptyValue() throws Exception {

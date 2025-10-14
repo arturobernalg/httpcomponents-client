@@ -59,7 +59,7 @@ import org.apache.hc.core5.util.Tokenizer;
  * @since 4.5
  */
 @Contract(threading = ThreadingBehavior.SAFE)
-public class RFC6265CookieSpec implements CookieSpec {
+    public class RFC6265CookieSpec implements CookieSpec {
 
     private final static char PARAM_DELIMITER = ';';
     private final static char COMMA_CHAR = ',';
@@ -67,8 +67,6 @@ public class RFC6265CookieSpec implements CookieSpec {
     private final static char DQUOTE_CHAR = '"';
     private final static char ESCAPE_CHAR = '\\';
 
-    // IMPORTANT!
-    // These private static variables must be treated as immutable and never exposed outside this class
     private static final Tokenizer.Delimiter TOKEN_DELIMS = Tokenizer.delimiters(EQUAL_CHAR, PARAM_DELIMITER);
     private static final Tokenizer.Delimiter VALUE_DELIMS = Tokenizer.delimiters(PARAM_DELIMITER);
     private static final Tokenizer.Delimiter SPECIAL_CHARS = Tokenizer.delimiters(' ',
@@ -78,27 +76,35 @@ public class RFC6265CookieSpec implements CookieSpec {
     private final Map<String, CookieAttributeHandler> attribHandlerMap;
     private final Tokenizer tokenParser;
 
+    private static final int MAX_NAME_VALUE_LEN = 4096;
+    private static final int MAX_ATTR_VALUE_LEN = 1024;
+
+    private static boolean isCtlExcludingHtab(final char ch) {
+        return ch >= 0x00 && ch <= 0x08 || ch >= 0x0A && ch <= 0x1F || ch == 0x7F;
+    }
+
+    private static boolean headerContainsCtlExcludingHtab(final CharArrayBuffer buf, final int from, final int to) {
+        for (int i = from; i < to; i++) {
+            if (isCtlExcludingHtab(buf.charAt(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+
     protected RFC6265CookieSpec(final CommonCookieAttributeHandler... handlers) {
         super();
         this.attribHandlers = handlers.clone();
         this.attribHandlerMap = new ConcurrentHashMap<>(handlers.length);
-        for (final CommonCookieAttributeHandler handler: handlers) {
+        for (final CommonCookieAttributeHandler handler : handlers) {
             this.attribHandlerMap.put(handler.getAttributeName().toLowerCase(Locale.ROOT), handler);
         }
         this.tokenParser = Tokenizer.INSTANCE;
     }
 
     static String getDefaultPath(final CookieOrigin origin) {
-        String defaultPath = origin.getPath();
-        int lastSlashIndex = defaultPath.lastIndexOf('/');
-        if (lastSlashIndex >= 0) {
-            if (lastSlashIndex == 0) {
-                //Do not remove the very first slash
-                lastSlashIndex = 1;
-            }
-            defaultPath = defaultPath.substring(0, lastSlashIndex);
-        }
-        return defaultPath;
+        return CookieSpecBase.getDefaultPath(origin);
     }
 
     static String getDefaultDomain(final CookieOrigin origin) {
@@ -106,17 +112,21 @@ public class RFC6265CookieSpec implements CookieSpec {
     }
 
     @Override
-    public final List<Cookie> parse(final Header header, final CookieOrigin origin) throws MalformedCookieException {
+    public final List<Cookie> parse(final Header header, final CookieOrigin origin)
+            throws MalformedCookieException {
         Args.notNull(header, "Header");
         Args.notNull(origin, "Cookie origin");
         if (!header.getName().equalsIgnoreCase("Set-Cookie")) {
             throw new MalformedCookieException("Unrecognized cookie header: '" + header + "'");
         }
+
         final CharArrayBuffer buffer;
         final Tokenizer.Cursor cursor;
+        final int valuePos;
         if (header instanceof FormattedHeader) {
             buffer = ((FormattedHeader) header).getBuffer();
-            cursor = new Tokenizer.Cursor(((FormattedHeader) header).getValuePos(), buffer.length());
+            valuePos = ((FormattedHeader) header).getValuePos();
+            cursor = new Tokenizer.Cursor(valuePos, buffer.length());
         } else {
             final String s = header.getValue();
             if (s == null) {
@@ -124,53 +134,94 @@ public class RFC6265CookieSpec implements CookieSpec {
             }
             buffer = new CharArrayBuffer(s.length());
             buffer.append(s);
+            valuePos = 0;
             cursor = new Tokenizer.Cursor(0, buffer.length());
         }
-        final String name = tokenParser.parseToken(buffer, cursor, TOKEN_DELIMS);
-        if (name.isEmpty()) {
+
+        // 6265bis §5.6 (first step): reject CTLs (excluding HTAB)
+        if (headerContainsCtlExcludingHtab(buffer, valuePos, buffer.length())) {
+            return Collections.emptyList(); // ignore the set-cookie entirely
+        }
+
+        // name-value-pair (with nameless support)
+        cursor.getPos();
+        final String firstToken = tokenParser.parseToken(buffer, cursor, TOKEN_DELIMS);
+        if (firstToken.isEmpty() && cursor.atEnd()) {
             return Collections.emptyList();
         }
+        final String cookieName;
+        final String cookieValue;
+
         if (cursor.atEnd()) {
+            // "Set-Cookie: token" -> ("", "token")
+            cookieName = "";
+            cookieValue = firstToken;
+        } else {
+            final char delim = buffer.charAt(cursor.getPos());
+            if (delim == EQUAL_CHAR) {
+                cursor.updatePos(cursor.getPos() + 1);
+                final String val = tokenParser.parseValue(buffer, cursor, VALUE_DELIMS);
+                cookieName = firstToken;
+                cookieValue = val;
+                if (!cursor.atEnd() && buffer.charAt(cursor.getPos()) == PARAM_DELIMITER) {
+                    cursor.updatePos(cursor.getPos() + 1);
+                }
+            } else {
+                // No '=', treat name-value as value, and continue into attributes if present
+                cookieName = "";
+                cookieValue = firstToken;
+                if (delim == PARAM_DELIMITER) {
+                    cursor.updatePos(cursor.getPos() + 1);
+                }
+            }
+        }
+
+        // 6265bis §5.6 / §5.7: length guard on name+value
+        if (cookieName.length() + cookieValue.length() > MAX_NAME_VALUE_LEN) {
             return Collections.emptyList();
         }
-        final int valueDelim = buffer.charAt(cursor.getPos());
-        cursor.updatePos(cursor.getPos() + 1);
-        if (valueDelim != '=') {
-            throw new MalformedCookieException("Cookie value is invalid: '" + header + "'");
-        }
-        final String value = tokenParser.parseValue(buffer, cursor, VALUE_DELIMS);
-        if (!cursor.atEnd()) {
-            cursor.updatePos(cursor.getPos() + 1);
-        }
-        final BasicClientCookie cookie = new BasicClientCookie(name, value);
+
+        final BasicClientCookie cookie = new BasicClientCookie(cookieName, cookieValue);
         cookie.setPath(getDefaultPath(origin));
         cookie.setDomain(getDefaultDomain(origin));
         cookie.setCreationDate(Instant.now());
 
         final Map<String, String> attribMap = new LinkedHashMap<>();
         while (!cursor.atEnd()) {
-            final String paramName = tokenParser.parseToken(buffer, cursor, TOKEN_DELIMS)
-                    .toLowerCase(Locale.ROOT);
-            String paramValue = null;
+            cursor.getPos();
+            final String rawName = tokenParser.parseToken(buffer, cursor, TOKEN_DELIMS);
+            if (rawName.isEmpty()) break;
+            final String paramName = rawName.toLowerCase(Locale.ROOT);
+
+            boolean hasEq = false;
             if (!cursor.atEnd()) {
-                final int paramDelim = buffer.charAt(cursor.getPos());
-                cursor.updatePos(cursor.getPos() + 1);
-                if (paramDelim == EQUAL_CHAR) {
-                    paramValue = tokenParser.parseToken(buffer, cursor, VALUE_DELIMS);
-                    if (!cursor.atEnd()) {
-                        cursor.updatePos(cursor.getPos() + 1);
-                    }
-                }
+                final char delim = buffer.charAt(cursor.getPos());
+                if (delim == EQUAL_CHAR) { hasEq = true; cursor.updatePos(cursor.getPos() + 1); }
+                else if (delim == PARAM_DELIMITER) { cursor.updatePos(cursor.getPos() + 1); }
             }
-            cookie.setAttribute(paramName, paramValue);
-            attribMap.put(paramName, paramValue);
+
+            if (hasEq) {
+                final String v = tokenParser.parseValue(buffer, cursor, VALUE_DELIMS);
+                if (!cursor.atEnd() && buffer.charAt(cursor.getPos()) == PARAM_DELIMITER) {
+                    cursor.updatePos(cursor.getPos() + 1);
+                }
+                if (v != null && v.length() <= MAX_ATTR_VALUE_LEN) {
+                    cookie.setAttribute(paramName, v);
+                    attribMap.put(paramName, v);
+                } // else: ignore this cookie-av
+            } else {
+                // flag attribute
+                cookie.setAttribute(paramName, null);
+                attribMap.put(paramName, null);
+            }
         }
+
         // Ignore 'Expires' if 'Max-Age' is present
         if (attribMap.containsKey(Cookie.MAX_AGE_ATTR)) {
             attribMap.remove(Cookie.EXPIRES_ATTR);
         }
 
-        for (final Map.Entry<String, String> entry: attribMap.entrySet()) {
+        for (final Map.Entry<String, String> entry : attribMap.entrySet()) {
             final String paramName = entry.getKey();
             final String paramValue = entry.getValue();
             final CookieAttributeHandler handler = this.attribHandlerMap.get(paramName);
@@ -187,7 +238,7 @@ public class RFC6265CookieSpec implements CookieSpec {
             throws MalformedCookieException {
         Args.notNull(cookie, "Cookie");
         Args.notNull(origin, "Cookie origin");
-        for (final CookieAttributeHandler handler: this.attribHandlers) {
+        for (final CookieAttributeHandler handler : this.attribHandlers) {
             handler.validate(cookie, origin);
         }
     }
@@ -196,7 +247,7 @@ public class RFC6265CookieSpec implements CookieSpec {
     public final boolean match(final Cookie cookie, final CookieOrigin origin) {
         Args.notNull(cookie, "Cookie");
         Args.notNull(origin, "Cookie origin");
-        for (final CookieAttributeHandler handler: this.attribHandlers) {
+        for (final CookieAttributeHandler handler : this.attribHandlers) {
             if (!handler.match(cookie, origin)) {
                 return false;
             }
