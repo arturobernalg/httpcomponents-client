@@ -30,46 +30,6 @@ import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
-/**
- * Client-side WebSocket endpoint.
- *
- * <p>This interface represents an established WebSocket connection as seen by
- * application code. Instances are created by {@link org.apache.hc.client5.http.websocket.client.WebSocketClient}
- * after a successful HTTP Upgrade handshake (RFC&nbsp;6455).</p>
- *
- * <h3>Thread-safety</h3>
- * <p>All methods are safe to invoke from multiple threads. Calls return immediately;
- * outgoing data is enqueued and written asynchronously by the I/O reactor.</p>
- *
- * <h3>Masking and fragmentation</h3>
- * <ul>
- *   <li>Client frames are masked automatically (RFC&nbsp;6455 §5.3).</li>
- *   <li>When {@code finalFragment} is {@code false}, the implementation sends a
- *       data fragment (TEXT/BINARY) and continues the message with CONT frames
- *       until a fragment with {@code finalFragment == true} is sent.</li>
- * </ul>
- *
- * <h3>Control frames</h3>
- * <ul>
- *   <li>{@link #ping(ByteBuffer)} sends a PING control frame with an optional payload
- *       up to 125 bytes (RFC&nbsp;6455 §5.5.2). A corresponding PONG is delivered
- *       to {@code WebSocketListener#onPong}.</li>
- *   <li>When {@code WebSocketClientConfig.autoPong} is enabled, incoming PINGs are
- *       answered automatically by the implementation.</li>
- * </ul>
- *
- * <h3>Close handshake</h3>
- * <p>{@link #close(int, String)} initiates the close handshake (RFC&nbsp;6455 §1.4, §5.5.1).
- * After a CLOSE is sent, the connection will ignore further data frames and
- * complete gracefully once the peer's CLOSE is received or a close-wait timeout
- * elapses.</p>
- *
- * <h3>Backpressure</h3>
- * <p>Sending methods return {@code boolean}: {@code true} if the frame was accepted
- * for asynchronous delivery; {@code false} if the connection is already closing/closed.</p>
- *
- * @since 5.6
- */
 public interface WebSocket {
 
     /**

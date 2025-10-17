@@ -82,10 +82,11 @@ public final class ExtensionChain {
 
         /**
          * Encode one fragment through the chain; note RSV flag for the first extension.
+         * Returns {@link WebSocketExtensionChain.Encoded}.
          */
-        public Enc encode(final byte[] data, final boolean first, final boolean fin) {
+        public WebSocketExtensionChain.Encoded encode(final byte[] data, final boolean first, final boolean fin) {
             if (encs.isEmpty()) {
-                return new Enc(data, false);
+                return new WebSocketExtensionChain.Encoded(data, false);
             }
             byte[] out = data;
             boolean setRsv1 = false;
@@ -98,17 +99,7 @@ public final class ExtensionChain {
                 }
                 firstExt = false;
             }
-            return new Enc(out, setRsv1);
-        }
-
-        public static final class Enc {
-            public final byte[] payload;
-            public final boolean setRsv1;
-
-            public Enc(final byte[] payload, final boolean setRsv1) {
-                this.payload = payload;
-                this.setRsv1 = setRsv1;
-            }
+            return new WebSocketExtensionChain.Encoded(out, setRsv1);
         }
     }
 
@@ -131,4 +122,3 @@ public final class ExtensionChain {
         }
     }
 }
-
