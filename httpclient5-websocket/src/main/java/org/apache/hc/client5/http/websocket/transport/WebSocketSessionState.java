@@ -26,10 +26,10 @@
  */
 package org.apache.hc.client5.http.websocket.transport;
 
-
 import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
@@ -70,7 +70,7 @@ final class WebSocketSessionState {
 
     // Flags / locks
     final AtomicBoolean open = new AtomicBoolean(true);
-    final Object writeLock = new Object();
+    final ReentrantLock writeLock = new ReentrantLock();   // <— changed from Object to ReentrantLock
     volatile boolean closingSent = false;
 
     // Message assembly

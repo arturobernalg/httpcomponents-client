@@ -64,9 +64,6 @@ public final class WebSocketFrameWriter {
 
     // -- Control frames (FIN=true, payload ≤ 125, never compressed) -----------
 
-    /**
-     * RFC: payload ≤ 125; FIN must be true.
-     */
     public ByteBuffer ping(final ByteBuffer payloadOrNull) {
         final ByteBuffer p = payloadOrNull == null ? ByteBuffer.allocate(0) : payloadOrNull.asReadOnlyBuffer();
         if (p.remaining() > 125) {
@@ -87,14 +84,11 @@ public final class WebSocketFrameWriter {
         if (!CloseCodec.isValidToSend(code)) {
             throw new IllegalArgumentException("Invalid close code to send: " + code);
         }
-
-        // Ensure reason fits RFC (≤123 bytes UTF-8)
         final String safeReason = CloseCodec.truncateReasonUtf8(reason);
         final ByteBuffer reasonBuf = safeReason.isEmpty()
                 ? ByteBuffer.allocate(0)
                 : StandardCharsets.UTF_8.encode(safeReason);
 
-        // (defensive) enforce total payload ≤ 125
         if (reasonBuf.remaining() > 123) {
             throw new IllegalArgumentException("Close reason too long (UTF-8 bytes > 123)");
         }
@@ -109,9 +103,6 @@ public final class WebSocketFrameWriter {
         return frame(FrameOpcode.CLOSE, p, true, true);
     }
 
-    /**
-     * Echo an inbound CLOSE (payload is already a read-only slice from inbound).
-     */
     public ByteBuffer closeEcho(final ByteBuffer payload) {
         final ByteBuffer p = payload == null ? ByteBuffer.allocate(0) : payload.asReadOnlyBuffer();
         if (p.remaining() > 125) {
@@ -137,9 +128,6 @@ public final class WebSocketFrameWriter {
         return out;
     }
 
-    /**
-     * Build into provided buffer (must have enough remaining).
-     */
     public ByteBuffer frameInto(final int opcode, final ByteBuffer payload, final boolean fin,
                                 final boolean mask, final ByteBuffer out) {
         return frameIntoWithRSV(opcode, payload, fin, mask, 0, out);
@@ -149,7 +137,6 @@ public final class WebSocketFrameWriter {
                                        final boolean mask, final int rsvBits, final ByteBuffer out) {
         final int len = payload == null ? 0 : payload.remaining();
 
-        // Control frames: FIN=true, length ≤125 (enforced by callers; assert again defensively)
         if (FrameOpcode.isControl(opcode)) {
             if (!fin) {
                 throw new IllegalArgumentException("Control frames must not be fragmented (FIN=false)");
@@ -162,36 +149,33 @@ public final class WebSocketFrameWriter {
             }
         }
 
-        // 1st byte
         final int finBit = fin ? FIN : 0;
         out.put((byte) (finBit | rsvBits & (RSV1 | RSV2 | RSV3) | opcode & 0x0F));
 
-        // 2nd byte (+ extended length)
         if (len <= 125) {
             out.put((byte) ((mask ? MASK_BIT : 0) | len));
         } else if (len <= 0xFFFF) {
             out.put((byte) ((mask ? MASK_BIT : 0) | 126));
-            out.putShort((short) len); // big-endian by default
+            out.putShort((short) len);
         } else {
             out.put((byte) ((mask ? MASK_BIT : 0) | 127));
-            out.putLong(len & 0x7FFF_FFFF_FFFF_FFFFL); // positive length only
+            out.putLong(len & 0x7FFF_FFFF_FFFF_FFFFL);
         }
 
-        // Masking key (client -> server MUST be masked)
         int[] mkey = null;
         if (mask) {
             mkey = new int[]{rnd(), rnd(), rnd(), rnd()};
             out.put((byte) mkey[0]).put((byte) mkey[1]).put((byte) mkey[2]).put((byte) mkey[3]);
         }
 
-        // Payload (masked if required)
         if (len > 0) {
             final ByteBuffer src = payload.asReadOnlyBuffer();
+            int i = 0; // simpler, safer mask index
             while (src.hasRemaining()) {
                 int b = src.get() & 0xFF;
                 if (mask) {
-                    final int idx = out.position() - (2 /*hdr*/ + (len <= 125 ? 0 : len <= 0xFFFF ? 2 : 8) + 4) & 3;
-                    b ^= mkey[idx];
+                    b ^= mkey[i & 3];
+                    i++;
                 }
                 out.put((byte) b);
             }

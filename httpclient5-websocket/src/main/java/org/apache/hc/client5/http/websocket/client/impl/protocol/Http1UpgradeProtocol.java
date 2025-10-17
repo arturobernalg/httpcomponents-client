@@ -39,10 +39,10 @@ import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.websocket.api.WebSocket;
 import org.apache.hc.client5.http.websocket.api.WebSocketClientConfig;
 import org.apache.hc.client5.http.websocket.api.WebSocketListener;
+import org.apache.hc.client5.http.websocket.client.impl.connector.WebSocketEndpointConnector;
 import org.apache.hc.client5.http.websocket.core.extension.ExtensionChain;
 import org.apache.hc.client5.http.websocket.core.extension.PerMessageDeflate;
 import org.apache.hc.client5.http.websocket.transport.WebSocketUpgrader;
-import org.apache.hc.client5.http.websocket.client.impl.connector.WebSocketEndpointConnector;
 import org.apache.hc.core5.annotation.Internal;
 import org.apache.hc.core5.concurrent.FutureCallback;
 import org.apache.hc.core5.http.EntityDetails;
@@ -291,7 +291,6 @@ public final class Http1UpgradeProtocol implements WebSocketProtocolStrategy {
             if (upgrade == null || !"websocket".equalsIgnoreCase(upgrade.trim())) {
                 throw new IllegalStateException("Missing/invalid Upgrade header: " + upgrade);
             }
-
             if (!containsToken(response, "Connection", "Upgrade")) {
                 throw new IllegalStateException("Missing/invalid Connection header");
             }
@@ -315,15 +314,21 @@ public final class Http1UpgradeProtocol implements WebSocketProtocolStrategy {
             final ExtensionChain chain = new ExtensionChain();
             final String ext = headerValue(response, "Sec-WebSocket-Extensions");
             if (ext != null && !ext.isEmpty()) {
-                boolean pmce = false, serverNoCtx = false, clientNoCtx = false;
+                boolean pmceSeen = false, serverNoCtx = false, clientNoCtx = false;
                 Integer clientBits = null, serverBits = null;
 
-                for (final String raw : ext.split(",")) {
-                    final String[] parts = raw.trim().split(";");
-                    if (!"permessage-deflate".equalsIgnoreCase(parts[0].trim())) {
-                        continue;
+                final String[] tokens = ext.split(",");
+                for (final String raw0 : tokens) {
+                    final String raw = raw0.trim();
+                    final String[] parts = raw.split(";");
+                    final String token = parts[0].trim().toLowerCase();
+
+                    // Only permessage-deflate is supported
+                    if (!"permessage-deflate".equals(token)) {
+                        throw new IllegalStateException("Server selected unsupported extension: " + token);
                     }
-                    pmce = true;
+                    pmceSeen = true;
+
                     for (int i = 1; i < parts.length; i++) {
                         final String p = parts[i].trim();
                         final int eq = p.indexOf('=');
@@ -334,24 +339,35 @@ public final class Http1UpgradeProtocol implements WebSocketProtocolStrategy {
                                 clientNoCtx = true;
                             }
                         } else {
-                            final String k = p.substring(0, eq).trim(), v = p.substring(eq + 1).trim();
+                            final String k = p.substring(0, eq).trim();
+                            String v = p.substring(eq + 1).trim();
+                            if (v.length() >= 2 && v.charAt(0) == '"' && v.charAt(v.length() - 1) == '"') {
+                                v = v.substring(1, v.length() - 1); // strip quotes if any
+                            }
                             if ("client_max_window_bits".equalsIgnoreCase(k)) {
                                 try {
                                     clientBits = Integer.parseInt(v);
-                                } catch (final NumberFormatException ignore) {
+                                    if (clientBits < 8 || clientBits > 15) {
+                                        throw new IllegalStateException("client_max_window_bits out of range: " + clientBits);
+                                    }
+                                } catch (final NumberFormatException nfe) {
+                                    throw new IllegalStateException("Invalid client_max_window_bits: " + v, nfe);
                                 }
                             } else if ("server_max_window_bits".equalsIgnoreCase(k)) {
                                 try {
                                     serverBits = Integer.parseInt(v);
-                                } catch (final NumberFormatException ignore) {
+                                    if (serverBits < 8 || serverBits > 15) {
+                                        throw new IllegalStateException("server_max_window_bits out of range: " + serverBits);
+                                    }
+                                } catch (final NumberFormatException nfe) {
+                                    throw new IllegalStateException("Invalid server_max_window_bits: " + v, nfe);
                                 }
                             }
                         }
                     }
-                    break;
                 }
 
-                if (pmce) {
+                if (pmceSeen) {
                     if (!cfg.isPerMessageDeflateEnabled()) {
                         throw new IllegalStateException("Server negotiated PMCE but client disabled it");
                     }
@@ -426,7 +442,7 @@ public final class Http1UpgradeProtocol implements WebSocketProtocolStrategy {
 
     private static String expectedAccept(final String key) throws Exception {
         final MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
-        sha1.update((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes(StandardCharsets.ISO_8859_1));
+        sha1.update((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes(StandardCharsets.US_ASCII));
         return java.util.Base64.getEncoder().encodeToString(sha1.digest());
     }
 }

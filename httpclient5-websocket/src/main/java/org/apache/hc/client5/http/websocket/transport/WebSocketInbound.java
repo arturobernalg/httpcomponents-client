@@ -93,23 +93,17 @@ final class WebSocketInbound {
             s.readBuf = null;
         }
         out.drainAndRelease();
-
         ioSession.clearEvent(EventMask.READ | EventMask.WRITE);
     }
-
 
     // ---- input ----
     void onInputReady(final IOSession ioSession, final ByteBuffer src) {
         try {
-            if (!s.open.get()) {
-                return;
-            }
+            if (!s.open.get()) return;
+
             if (s.readBuf == null) {
                 s.readBuf = s.bufferPool.acquire();
-                if (s.readBuf == null) {
-                    // Pool exhausted or tearing down
-                    return;
-                }
+                if (s.readBuf == null) return;
             }
             if (src != null && src.hasRemaining()) {
                 appendToInbuf(src);
@@ -147,9 +141,7 @@ final class WebSocketInbound {
                     s.inbuf.clear();
                     return;
                 }
-                if (!has) {
-                    break;
-                }
+                if (!has) break;
 
                 final int op = s.decoder.opcode();
                 final boolean fin = s.decoder.fin();
@@ -217,20 +209,32 @@ final class WebSocketInbound {
                         } else if (len >= 2) {
                             final ByteBuffer dup = ro.slice();
                             code = CloseCodec.readCloseCode(dup);
-                            reason = CloseCodec.readCloseReason(dup);
 
-                            // >>> Validate the received code here <<<
                             if (!CloseCodec.isValidToReceive(code)) {
                                 initiateCloseAndWait(ioSession, 1002, "Invalid close code: " + code);
                                 s.inbuf.clear();
                                 return;
+                            }
+
+                            // Strict UTF-8 validation of close reason
+                            if (dup.hasRemaining()) {
+                                final CharsetDecoder dec = StandardCharsets.UTF_8
+                                        .newDecoder()
+                                        .onMalformedInput(CodingErrorAction.REPORT)
+                                        .onUnmappableCharacter(CodingErrorAction.REPORT);
+                                try {
+                                    reason = dec.decode(dup.asReadOnlyBuffer()).toString();
+                                } catch (final CharacterCodingException badUtf8) {
+                                    initiateCloseAndWait(ioSession, 1007, "Invalid UTF-8 in close reason");
+                                    s.inbuf.clear();
+                                    return;
+                                }
                             }
                         }
 
                         notifyCloseOnce(code, reason);
 
                         if (!s.closingSent) {
-                            // Echo exactly what the peer sent (may be empty if len == 0)
                             out.enqueueCtrl(out.pooledCloseEcho(ro));
                             s.closingSent = true;
                             s.session.setSocketTimeout(s.cfg.getCloseWaitTimeout());
@@ -304,9 +308,7 @@ final class WebSocketInbound {
 
     // ---- helpers ----
     private void appendToInbuf(final ByteBuffer src) {
-        if (src == null || !src.hasRemaining()) {
-            return;
-        }
+        if (src == null || !src.hasRemaining()) return;
         if (s.inbuf.remaining() < src.remaining()) {
             final int need = s.inbuf.position() + src.remaining();
             final int newCap = Math.max(s.inbuf.capacity() * 2, need);
@@ -373,10 +375,8 @@ final class WebSocketInbound {
                 } catch (final Throwable ignore) {
                 }
             } catch (final CharacterCodingException cce) {
-                try {
-                    s.listener.onError(cce);
-                } catch (final Throwable ignore) {
-                }
+                initiateCloseAndWait(s.session, 1007, "Invalid UTF-8 in text message");
+                return;
             }
         } else if (op == FrameOpcode.BINARY) {
             try {
@@ -398,10 +398,8 @@ final class WebSocketInbound {
                 } catch (final Throwable ignore) {
                 }
             } catch (final CharacterCodingException cce) {
-                try {
-                    s.listener.onError(cce);
-                } catch (final Throwable ignore) {
-                }
+                initiateCloseAndWait(s.session, 1007, "Invalid UTF-8 in text message");
+                return;
             }
         } else if (op == FrameOpcode.BINARY) {
             try {
