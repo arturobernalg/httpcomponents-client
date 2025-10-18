@@ -50,44 +50,26 @@ import org.slf4j.LoggerFactory;
 /**
  * Minimal internal WS client: owns requester + pool, no extra closeables.
  */
-@Internal
 abstract class InternalWebSocketClientBase extends AbstractWebSocketClient {
-
-    private static final Logger LOG = LoggerFactory.getLogger(InternalWebSocketClientBase.class);
 
     private final WebSocketClientConfig defaultConfig;
     private final ManagedConnPool<HttpHost, IOSession> connPool;
 
     private final WebSocketProtocolStrategy h1;
-    private final WebSocketProtocolStrategy h2;
+    private final WebSocketProtocolStrategy h2; // may be null
 
     InternalWebSocketClientBase(
-            final HttpAsyncRequester requester,
+            final HttpAsyncRequester h1Requester,
+            final HttpAsyncRequester h2RequesterOrNull,
             final ManagedConnPool<HttpHost, IOSession> connPool,
             final WebSocketClientConfig defaultConfig,
             final ThreadFactory threadFactory) {
-        super(Args.notNull(requester, "requester"), threadFactory);
+        super(Args.notNull(h1Requester, "h1Requester"), threadFactory);
         this.connPool = Args.notNull(connPool, "connPool");
         this.defaultConfig = defaultConfig != null ? defaultConfig : WebSocketClientConfig.custom().build();
 
-        this.h1 = newH1Protocol(requester, connPool);
-        this.h2 = newH2Protocol();
-    }
-
-    /**
-     * HTTP/1.1 Upgrade protocol
-     */
-    protected WebSocketProtocolStrategy newH1Protocol(
-            final HttpAsyncRequester requester,
-            final ManagedConnPool<HttpHost, IOSession> connPool) {
-        return new Http1UpgradeProtocol(requester, connPool);
-    }
-
-    /**
-     * HTTP/2 Extended CONNECT protocol (stub by default)
-     */
-    protected WebSocketProtocolStrategy newH2Protocol() {
-        return new Http2ExtendedConnectProtocol();
+        this.h1 = new Http1UpgradeProtocol(h1Requester, connPool);
+        this.h2 = h2RequesterOrNull != null ? new Http2ExtendedConnectProtocol(h2RequesterOrNull, connPool) : null;
     }
 
     @Override
@@ -99,22 +81,35 @@ abstract class InternalWebSocketClientBase extends AbstractWebSocketClient {
 
         final WebSocketClientConfig cfg = cfgOrNull != null ? cfgOrNull : defaultConfig;
 
-        if (cfg.isAllowH2ExtendedConnect()) {
+        // Selection policy:
+        // - requireH2 => must use H2
+        // - allowH2ExtendedConnect => try H2 first, fall back to H1 if allowed
+        // - preferH2 => try H2, fall back to H1
+        // - otherwise use H1
+        final boolean mustH2 = cfg.isRequireH2();
+        final boolean tryH2 = cfg.isAllowH2ExtendedConnect() || cfg.isPreferH2();
+
+        if (mustH2) {
+            if (h2 == null) {
+                final CompletableFuture<WebSocket> f = new CompletableFuture<>();
+                f.completeExceptionally(new Http2ExtendedConnectProtocol.H2NotAvailable("H2 not configured"));
+                return f;
+            }
+            return h2.connect(uri, listener, cfg, context);
+        }
+
+        if (tryH2 && h2 != null) {
             final CompletableFuture<WebSocket> out = new CompletableFuture<>();
             h2.connect(uri, listener, cfg, context).whenComplete((ws, ex) -> {
                 if (ws != null) {
                     out.complete(ws);
-                } else {
-                    if (LOG.isDebugEnabled()) {
-                        LOG.debug("H2 extended CONNECT failed, falling back to H1: {}", ex != null ? ex.getMessage() : "unknown");
-                    }
+                } else if (!cfg.isDisableH1Fallback()) {
                     h1.connect(uri, listener, cfg, context).whenComplete((ws2, ex2) -> {
-                        if (ws2 != null) {
-                            out.complete(ws2);
-                        } else {
-                            out.completeExceptionally(ex2 != null ? ex2 : ex != null ? ex : new IllegalStateException("Connect failed"));
-                        }
+                        if (ws2 != null) out.complete(ws2);
+                        else out.completeExceptionally(ex2 != null ? ex2 : ex != null ? ex : new IllegalStateException("Connect failed"));
                     });
+                } else {
+                    out.completeExceptionally(ex != null ? ex : new IllegalStateException("H2 connect failed"));
                 }
             });
             return out;
@@ -125,10 +120,8 @@ abstract class InternalWebSocketClientBase extends AbstractWebSocketClient {
 
     @Override
     protected void internalClose(final CloseMode closeMode) {
-        try {
-            connPool.close(closeMode != null ? closeMode : CloseMode.GRACEFUL);
-        } catch (final Exception ex) {
-            LOG.warn("Error closing pool: {}", ex.getMessage(), ex);
-        }
+        try { connPool.close(closeMode != null ? closeMode : CloseMode.GRACEFUL); }
+        catch (final Exception ignore) { }
     }
 }
+

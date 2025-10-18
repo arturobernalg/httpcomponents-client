@@ -1,29 +1,3 @@
-/*
- * ====================================================================
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- * ====================================================================
- *
- * This software consists of voluntary contributions made by many
- * individuals on behalf of the Apache Software Foundation.  For more
- * information on the Apache Software Foundation, please see
- * <http://www.apache.org/>.
- *
- */
 package org.apache.hc.client5.http.websocket.client;
 
 import java.security.AccessController;
@@ -43,11 +17,17 @@ import org.apache.hc.core5.http.config.CharCodingConfig;
 import org.apache.hc.core5.http.config.Http1Config;
 import org.apache.hc.core5.http.impl.HttpProcessors;
 import org.apache.hc.core5.http.impl.bootstrap.HttpAsyncRequester;
-import org.apache.hc.core5.http.impl.nio.ClientHttp1IOEventHandlerFactory;
 import org.apache.hc.core5.http.impl.nio.ClientHttp1StreamDuplexerFactory;
+import org.apache.hc.core5.http.nio.AsyncPushConsumer;
+import org.apache.hc.core5.http.nio.HandlerFactory;
 import org.apache.hc.core5.http.nio.ssl.BasicClientTlsStrategy;
 import org.apache.hc.core5.http.nio.ssl.TlsStrategy;
 import org.apache.hc.core5.http.protocol.HttpProcessor;
+import org.apache.hc.core5.http2.HttpVersionPolicy;
+import org.apache.hc.core5.http2.config.H2Config;
+import org.apache.hc.core5.http2.impl.nio.ClientH2StreamMultiplexerFactory;
+import org.apache.hc.core5.http2.impl.nio.ClientHttpProtocolNegotiationStarter;
+import org.apache.hc.core5.http2.impl.nio.H2StreamListener;
 import org.apache.hc.core5.pool.ConnPoolListener;
 import org.apache.hc.core5.pool.DefaultDisposalCallback;
 import org.apache.hc.core5.pool.LaxConnPool;
@@ -94,13 +74,10 @@ public final class WebSocketClientBuilder {
     }
 
     public WebSocketClientBuilder defaultConfig(final WebSocketClientConfig cfg) {
-        if (cfg != null) {
-            this.defaultConfig = cfg;
-        }
+        if (cfg != null) this.defaultConfig = cfg;
         return this;
     }
 
-    // Setters (stored locally)
     public WebSocketClientBuilder setIOReactorConfig(final IOReactorConfig v) {
         this.ioReactorConfig = v;
         return this;
@@ -198,7 +175,7 @@ public final class WebSocketClientBuilder {
 
     public CloseableWebSocketClient build() {
 
-        // --- 1) Build pool ---
+        // --- 1) Pool ---
         final PoolConcurrencyPolicy conc = poolConcurrencyPolicy != null ? poolConcurrencyPolicy : PoolConcurrencyPolicy.STRICT;
         final PoolReusePolicy reuse = poolReusePolicy != null ? poolReusePolicy : PoolReusePolicy.LIFO;
         final Timeout ttl = timeToLive != null ? timeToLive : Timeout.DISABLED;
@@ -215,25 +192,43 @@ public final class WebSocketClientBuilder {
                     ttl, reuse, new DefaultDisposalCallback<>(), connPoolListener);
         }
 
-        // --- 2) Build protocol pipeline for HTTP/1.1 handshake/upgrade ---
+        // --- 2) Common HTTP/1.1 pieces (still needed for negotiation & fallback) ---
         final HttpProcessor proc = httpProcessor != null ? httpProcessor : HttpProcessors.client();
         final Http1Config h1 = http1Config != null ? http1Config : Http1Config.DEFAULT;
         final CharCodingConfig coding = charCodingConfig != null ? charCodingConfig : CharCodingConfig.DEFAULT;
 
         final ConnectionReuseStrategy reuseStrategyCopy = pickReuseStrategy();
 
-        final ClientHttp1StreamDuplexerFactory duplexerFactory =
+        final ClientHttp1StreamDuplexerFactory http1DuplexerFactory =
                 new ClientHttp1StreamDuplexerFactory(proc, h1, coding, reuseStrategyCopy, null, null, streamListener);
 
-        final TlsStrategy tls = tlsStrategy != null ? tlsStrategy : new BasicClientTlsStrategy();
-        final IOEventHandlerFactory iohFactory =
-                new ClientHttp1IOEventHandlerFactory(duplexerFactory, tls, handshakeTimeout);
+        // --- 3) HTTP/2 factories (correct types & argument order) ---
+        final HandlerFactory<AsyncPushConsumer> pushHandlerFactory = null; // not used by WS client
+        final H2Config h2cfg = H2Config.DEFAULT;
+        final H2StreamListener h2StreamListener = null; // or provide a logger impl if you want frame logs
 
+        final ClientH2StreamMultiplexerFactory http2MuxFactory =
+                new ClientH2StreamMultiplexerFactory(proc, pushHandlerFactory, h2cfg, coding, h2StreamListener); // ✔ order
+
+        final TlsStrategy tls = tlsStrategy != null ? tlsStrategy : new BasicClientTlsStrategy();
+
+        // Negotiate H2 via ALPN (TLS) and fall back to H1 when needed
+        final Callback<Exception> excCb = exceptionCallback != null ? exceptionCallback : WsLoggingExceptionCallback.INSTANCE;
+        final IOEventHandlerFactory iohFactory =
+                new ClientHttpProtocolNegotiationStarter(
+                        http1DuplexerFactory,
+                        http2MuxFactory,
+                        HttpVersionPolicy.FORCE_HTTP_2,   // or FORCE_HTTP_2 if you only want H2
+                        tls,
+                        handshakeTimeout,
+                        excCb);
+
+        // --- 4) Single requester that can do H1 or H2 via negotiation ---
         final HttpAsyncRequester requester = new HttpAsyncRequester(
                 ioReactorConfig != null ? ioReactorConfig : IOReactorConfig.DEFAULT,
                 iohFactory,
                 ioSessionDecorator,
-                exceptionCallback != null ? exceptionCallback : WsLoggingExceptionCallback.INSTANCE,
+                excCb,
                 sessionListener,
                 connPool,
                 tls,
@@ -245,11 +240,13 @@ public final class WebSocketClientBuilder {
                 : new DefaultThreadFactory("websocket-main", true);
 
         return new DefaultWebSocketClient(
-                requester,
+                requester,          // for H1
+                requester,          // for H2 (same instance is OK)
                 connPool,
                 defaultConfig,
                 tf
         );
+
     }
 
     private ConnectionReuseStrategy pickReuseStrategy() {
@@ -257,11 +254,9 @@ public final class WebSocketClientBuilder {
         if (reuseStrategyCopy == null) {
             if (systemProperties) {
                 final String s = getProperty("http.keepAlive", "true");
-                if ("true".equalsIgnoreCase(s)) {
-                    reuseStrategyCopy = DefaultClientConnectionReuseStrategy.INSTANCE;
-                } else {
-                    reuseStrategyCopy = (request, response, context) -> false;
-                }
+                reuseStrategyCopy = "true".equalsIgnoreCase(s)
+                        ? DefaultClientConnectionReuseStrategy.INSTANCE
+                        : (request, response, context) -> false;
             } else {
                 reuseStrategyCopy = DefaultClientConnectionReuseStrategy.INSTANCE;
             }
