@@ -34,7 +34,6 @@ import java.util.concurrent.TimeUnit;
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.ThreadingBehavior;
 import org.apache.hc.core5.http.HttpHost;
-import org.apache.hc.core5.util.Args;
 import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
 
@@ -67,15 +66,13 @@ public class RequestConfig implements Cloneable {
     private final boolean protocolUpgradeEnabled;
     private final Path unixDomainSocket;
 
-    private final ExpectContinueTrigger expectContinueTrigger;
 
     /**
      * Intended for CDI compatibility
     */
     protected RequestConfig() {
         this(false, null, null, false, false, 0, false, null, null,
-                DEFAULT_CONNECTION_REQUEST_TIMEOUT, null, null, DEFAULT_CONN_KEEP_ALIVE, false, false, false, null,
-                ExpectContinueTrigger.ALWAYS);
+                DEFAULT_CONNECTION_REQUEST_TIMEOUT, null, null, DEFAULT_CONN_KEEP_ALIVE, false, false, false, null);
     }
 
     RequestConfig(
@@ -95,8 +92,7 @@ public class RequestConfig implements Cloneable {
             final boolean contentCompressionEnabled,
             final boolean hardCancellationEnabled,
             final boolean protocolUpgradeEnabled,
-            final Path unixDomainSocket,
-            final ExpectContinueTrigger expectContinueTrigger) {
+            final Path unixDomainSocket) {
         super();
         this.expectContinueEnabled = expectContinueEnabled;
         this.proxy = proxy;
@@ -115,7 +111,6 @@ public class RequestConfig implements Cloneable {
         this.hardCancellationEnabled = hardCancellationEnabled;
         this.protocolUpgradeEnabled = protocolUpgradeEnabled;
         this.unixDomainSocket = unixDomainSocket;
-        this.expectContinueTrigger = expectContinueTrigger;
     }
 
     /**
@@ -240,8 +235,12 @@ public class RequestConfig implements Cloneable {
         return unixDomainSocket;
     }
 
+    /**
+     * @deprecated Do not use. To be removed
+     */
+    @Deprecated
     public ExpectContinueTrigger getExpectContinueTrigger() {
-        return expectContinueTrigger;
+        return ExpectContinueTrigger.ALWAYS;
     }
 
     @Override
@@ -318,7 +317,6 @@ public class RequestConfig implements Cloneable {
         private boolean hardCancellationEnabled;
         private boolean protocolUpgradeEnabled;
         private Path unixDomainSocket;
-        private ExpectContinueTrigger expectContinueTrigger;
 
         Builder() {
             super();
@@ -329,7 +327,6 @@ public class RequestConfig implements Cloneable {
             this.contentCompressionEnabled = true;
             this.hardCancellationEnabled = true;
             this.protocolUpgradeEnabled = true;
-            this.expectContinueTrigger = ExpectContinueTrigger.ALWAYS;
         }
 
         /**
@@ -685,9 +682,10 @@ public class RequestConfig implements Cloneable {
          * @return this builder
          * @see ExpectContinueTrigger
          * @since 5.6
+         * @deprecated Do not use. To be removed
          */
+        @Deprecated
         public Builder setExpectContinueTrigger(final ExpectContinueTrigger trigger) {
-            this.expectContinueTrigger = Args.notNull(trigger, "ExpectContinueTrigger");
             return this;
         }
 
@@ -709,8 +707,7 @@ public class RequestConfig implements Cloneable {
                     contentCompressionEnabled,
                     hardCancellationEnabled,
                     protocolUpgradeEnabled,
-                    unixDomainSocket,
-                    expectContinueTrigger);
+                    unixDomainSocket);
         }
 
     }

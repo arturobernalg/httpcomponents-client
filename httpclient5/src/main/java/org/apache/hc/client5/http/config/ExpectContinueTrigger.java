@@ -31,9 +31,10 @@ package org.apache.hc.client5.http.config;
  * {@code Expect: 100-continue} request header when
  * {@link org.apache.hc.client5.http.config.RequestConfig#isExpectContinueEnabled()
  * expect-continue support} is enabled.
- *
+ * @deprecated
  * @since 5.6
  */
+@Deprecated
 public enum ExpectContinueTrigger {
 
     /**
