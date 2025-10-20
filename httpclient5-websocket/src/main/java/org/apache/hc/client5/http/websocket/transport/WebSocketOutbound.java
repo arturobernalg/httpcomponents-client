@@ -10,19 +10,7 @@
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
  * ====================================================================
- *
- * This software consists of voluntary contributions made by many
- * individuals on behalf of the Apache Software Foundation.  For more
- * information on the Apache Software Foundation, please see
- * <http://www.apache.org/>.
- *
  */
 package org.apache.hc.client5.http.websocket.transport;
 
@@ -30,11 +18,8 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.hc.client5.http.websocket.api.WebSocket;
-import org.apache.hc.client5.http.websocket.core.extension.WebSocketExtensionChain;
-import org.apache.hc.client5.http.websocket.core.frame.FrameHeaderBits;
 import org.apache.hc.client5.http.websocket.core.frame.FrameOpcode;
 import org.apache.hc.client5.http.websocket.core.message.CloseCodec;
 import org.apache.hc.core5.annotation.Internal;
@@ -44,6 +29,7 @@ import org.apache.hc.core5.reactor.IOSession;
 
 /**
  * Outbound path: frame building, queues, writing, and the app-facing WebSocket facade.
+ * This version intentionally avoids any PMCE/RSV usage to maximize H1 compatibility.
  */
 @Internal
 final class WebSocketOutbound {
@@ -51,7 +37,6 @@ final class WebSocketOutbound {
     static final class OutFrame {
         final ByteBuffer buf;
         final boolean pooled;
-
         OutFrame(final ByteBuffer buf, final boolean pooled) {
             this.buf = buf;
             this.pooled = pooled;
@@ -124,8 +109,7 @@ final class WebSocketOutbound {
         } catch (final Exception ex) {
             try {
                 s.listener.onError(ex);
-            } catch (final Throwable ignore) {
-            }
+            } catch (final Throwable ignore) { }
             ioSession.close(CloseMode.GRACEFUL);
         }
     }
@@ -179,22 +163,6 @@ final class WebSocketOutbound {
         }
     }
 
-    OutFrame pooledFrameWithRSV(final int opcode, final ByteBuffer payload, final boolean fin, final boolean setRsv1) {
-        final int rsv = setRsv1 ? FrameHeaderBits.RSV1 : 0;
-        final int payloadLen = payload != null ? payload.remaining() : 0;
-        final int headerExtra = payloadLen <= 125 ? 0 : payloadLen <= 0xFFFF ? 2 : 8;
-        final int need = 2 + headerExtra + 4 + payloadLen;
-        final ByteBuffer target = need <= s.bufferPool.bufferSize() ? s.bufferPool.acquire() : null;
-
-        if (target != null) {
-            final ByteBuffer built = s.writer.frameIntoWithRSV(opcode, payload, fin, true, rsv, target);
-            built.flip();
-            return new OutFrame(built, true);
-        } else {
-            return new OutFrame(s.writer.frameWithRSV(opcode, payload, fin, true, rsv), false);
-        }
-    }
-
     OutFrame pooledCloseEcho(final ByteBuffer payload) {
         final int payloadLen = payload != null ? payload.remaining() : 0;
         final int need = 2 + (payloadLen <= 125 ? 0 : payloadLen <= 0xFFFF ? 2 : 8) + 4 + payloadLen;
@@ -225,44 +193,25 @@ final class WebSocketOutbound {
         }
 
         private boolean sendData(final int opcode, final ByteBuffer data, final boolean fin) {
-            final ReentrantLock lock = s.writeLock;
-            lock.lock();
-            try {
-                final boolean compressionOn = s.encChain != null;
-                int opcodeCopy = opcode;
-                boolean first = s.outOpcode == -1; // first frame of this message?
-
+            synchronized (s.writeLock) {
+                int opcodeCopy = (s.outOpcode == -1) ? opcode : FrameOpcode.CONT;
                 if (s.outOpcode == -1) {
                     s.outOpcode = opcodeCopy;
                 }
 
-                final ByteBuffer remaining = data;
-                while (remaining.hasRemaining()) {
-                    final int n = Math.min(remaining.remaining(), s.outChunk);
-                    final ByteBuffer slice = sliceN(remaining, n);
-                    final boolean lastChunk = !remaining.hasRemaining() && fin;
-
-                    if (!compressionOn) {
-                        enqueueData(pooledFrame(opcodeCopy, slice, lastChunk));
-                    } else {
-                        final byte[] in = toBytes(slice);
-                        final WebSocketExtensionChain.Encoded enc =
-                                s.encChain.encode(in, first, lastChunk);
-                        final ByteBuffer encBuf = ByteBuffer.wrap(enc.payload);
-                        final boolean setRsv1 = first && enc.setRsvOnFirst;
-                        enqueueData(pooledFrameWithRSV(opcodeCopy, encBuf, lastChunk, setRsv1));
-                    }
-
+                // RFC-correct fragmentation: TEXT/BINARY for first frame; CONT for the rest; FIN only on the very last slice.
+                while (data.hasRemaining()) {
+                    final int n = Math.min(data.remaining(), s.outChunk);
+                    final ByteBuffer slice = sliceN(data, n);
+                    final boolean lastSlice = !data.hasRemaining() && fin;
+                    enqueueData(pooledFrame(opcodeCopy, slice, lastSlice));
                     opcodeCopy = FrameOpcode.CONT;
-                    first = false;
                 }
 
                 if (fin) {
                     s.outOpcode = -1;
                 }
                 return true;
-            } finally {
-                lock.unlock();
             }
         }
 
@@ -274,13 +223,6 @@ final class WebSocketOutbound {
             src.limit(oldLimit);
             src.position(newLimit);
             return slice;
-        }
-
-        private byte[] toBytes(final ByteBuffer buf) {
-            final ByteBuffer b = buf.asReadOnlyBuffer();
-            final byte[] out = new byte[b.remaining()];
-            b.get(out);
-            return out;
         }
 
         @Override
@@ -307,6 +249,7 @@ final class WebSocketOutbound {
                 return f;
             }
 
+            // Validate what we send (but do not force-close locally yet).
             if (!CloseCodec.isValidToSend(statusCode)) {
                 f.completeExceptionally(new IllegalArgumentException("Invalid close code to send: " + statusCode));
                 return f;
@@ -329,15 +272,10 @@ final class WebSocketOutbound {
 
                 enqueueCtrl(pooledFrame(FrameOpcode.CLOSE, p.asReadOnlyBuffer(), true));
                 s.closingSent = true;
-                s.session.setSocketTimeout(s.cfg.getCloseWaitTimeout());
+                s.session.setSocketTimeout(s.cfg.getCloseWaitTimeout()); // allow peer to echo CLOSE
             }
 
-            if (s.open.getAndSet(false)) {
-                try {
-                    s.listener.onClose(statusCode, reason == null ? "" : CloseCodec.truncateReasonUtf8(reason));
-                } catch (final Throwable ignore) {
-                }
-            }
+            // Do NOT call listener.onClose here; inbound will do it on peer CLOSE or disconnect.
             f.complete(null);
             return f;
         }
@@ -350,85 +288,47 @@ final class WebSocketOutbound {
         @Override
         public boolean sendTextBatch(final List<CharSequence> fragments, final boolean finalFragment) {
             if (!s.open.get() || s.closingSent || fragments == null || fragments.isEmpty()) return false;
-            final ReentrantLock lock = s.writeLock;
-            lock.lock();
-            try {
-                final boolean compressionOn = s.encChain != null;
-                int opcodeCopy = s.outOpcode == -1 ? FrameOpcode.TEXT : FrameOpcode.CONT;
-                boolean first = s.outOpcode == -1;
+            synchronized (s.writeLock) {
+                int opcodeCopy = (s.outOpcode == -1) ? FrameOpcode.TEXT : FrameOpcode.CONT;
                 if (s.outOpcode == -1) s.outOpcode = opcodeCopy;
 
                 for (int i = 0; i < fragments.size(); i++) {
                     final CharSequence data = fragments.get(i);
                     final ByteBuffer plain = StandardCharsets.UTF_8.encode(data.toString());
-                    final ByteBuffer remaining = plain;
-                    while (remaining.hasRemaining()) {
-                        final int n = Math.min(remaining.remaining(), s.outChunk);
-                        final ByteBuffer slice = sliceN(remaining, n);
+                    while (plain.hasRemaining()) {
+                        final int n = Math.min(plain.remaining(), s.outChunk);
+                        final ByteBuffer slice = sliceN(plain, n);
                         final boolean isLastFragment = i == fragments.size() - 1;
-                        final boolean lastChunk = !remaining.hasRemaining() && isLastFragment && finalFragment;
-
-                        if (!compressionOn) {
-                            enqueueData(pooledFrame(opcodeCopy, slice, lastChunk));
-                        } else {
-                            final byte[] in = toBytes(slice);
-                            final WebSocketExtensionChain.Encoded enc =
-                                    s.encChain.encode(in, first, lastChunk);
-                            final ByteBuffer encBuf = ByteBuffer.wrap(enc.payload);
-                            final boolean setRsv1 = first && enc.setRsvOnFirst;
-                            enqueueData(pooledFrameWithRSV(opcodeCopy, encBuf, lastChunk, setRsv1));
-                        }
-
+                        final boolean lastSlice = !plain.hasRemaining() && isLastFragment && finalFragment;
+                        enqueueData(pooledFrame(opcodeCopy, slice, lastSlice));
                         opcodeCopy = FrameOpcode.CONT;
-                        first = false;
                     }
                 }
                 if (finalFragment) s.outOpcode = -1;
                 return true;
-            } finally {
-                lock.unlock();
             }
         }
 
         @Override
         public boolean sendBinaryBatch(final List<ByteBuffer> fragments, final boolean finalFragment) {
             if (!s.open.get() || s.closingSent || fragments == null || fragments.isEmpty()) return false;
-            final ReentrantLock lock = s.writeLock;
-            lock.lock();
-            try {
-                final boolean compressionOn = s.encChain != null;
-                int opcodeCopy = s.outOpcode == -1 ? FrameOpcode.BINARY : FrameOpcode.CONT;
-                boolean first = s.outOpcode == -1;
+            synchronized (s.writeLock) {
+                int opcodeCopy = (s.outOpcode == -1) ? FrameOpcode.BINARY : FrameOpcode.CONT;
                 if (s.outOpcode == -1) s.outOpcode = opcodeCopy;
 
                 for (int i = 0; i < fragments.size(); i++) {
                     final ByteBuffer ro = fragments.get(i).asReadOnlyBuffer();
-                    final ByteBuffer remaining = ro;
-                    while (remaining.hasRemaining()) {
-                        final int n = Math.min(remaining.remaining(), s.outChunk);
-                        final ByteBuffer slice = sliceN(remaining, n);
+                    while (ro.hasRemaining()) {
+                        final int n = Math.min(ro.remaining(), s.outChunk);
+                        final ByteBuffer slice = sliceN(ro, n);
                         final boolean isLastFragment = i == fragments.size() - 1;
-                        final boolean lastChunk = !remaining.hasRemaining() && isLastFragment && finalFragment;
-
-                        if (!compressionOn) {
-                            enqueueData(pooledFrame(opcodeCopy, slice, lastChunk));
-                        } else {
-                            final byte[] in = toBytes(slice);
-                            final WebSocketExtensionChain.Encoded enc =
-                                    s.encChain.encode(in, first, lastChunk);
-                            final ByteBuffer encBuf = ByteBuffer.wrap(enc.payload);
-                            final boolean setRsv1 = first && enc.setRsvOnFirst;
-                            enqueueData(pooledFrameWithRSV(opcodeCopy, encBuf, lastChunk, setRsv1));
-                        }
-
+                        final boolean lastSlice = !ro.hasRemaining() && isLastFragment && finalFragment;
+                        enqueueData(pooledFrame(opcodeCopy, slice, lastSlice));
                         opcodeCopy = FrameOpcode.CONT;
-                        first = false;
                     }
                 }
                 if (finalFragment) s.outOpcode = -1;
                 return true;
-            } finally {
-                lock.unlock();
             }
         }
     }

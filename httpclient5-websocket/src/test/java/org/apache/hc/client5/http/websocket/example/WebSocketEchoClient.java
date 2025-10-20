@@ -58,7 +58,6 @@ public final class WebSocketEchoClient {
 
         try (final CloseableWebSocketClient client = WebSocketClientBuilder.create()
                 .defaultConfig(cfg)
-                .useSystemProperties()
                 .build()) {
 
             System.out.println("[TEST] connecting: " + uri);
