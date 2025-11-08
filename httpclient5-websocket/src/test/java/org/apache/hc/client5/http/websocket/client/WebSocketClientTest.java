@@ -112,7 +112,9 @@ final class WebSocketClientTest {
 
         @Override
         public boolean sendText(final CharSequence data, final boolean finalFragment) {
-            if (!open) return false;
+            if (!open) {
+                return false;
+            }
             if (cfg.getMaxMessageSize() > 0 && data != null && data.length() > cfg.getMaxMessageSize()) {
                 // Simulate client closing due to oversized message
                 try {
@@ -131,7 +133,9 @@ final class WebSocketClientTest {
 
         @Override
         public boolean sendBinary(final ByteBuffer data, final boolean finalFragment) {
-            if (!open) return false;
+            if (!open) {
+                return false;
+            }
             try {
                 listener.onBinary(data.asReadOnlyBuffer(), finalFragment);
             } catch (final Throwable ignore) {
@@ -141,7 +145,9 @@ final class WebSocketClientTest {
 
         @Override
         public boolean ping(final ByteBuffer data) {
-            if (!open) return false;
+            if (!open) {
+                return false;
+            }
             try {
                 listener.onPong(data != null ? data.asReadOnlyBuffer() : ByteBuffer.allocate(0));
             } catch (final Throwable ignore) {
@@ -178,22 +184,34 @@ final class WebSocketClientTest {
 
         @Override
         public boolean sendTextBatch(final List<CharSequence> fragments, final boolean finalFragment) {
-            if (!open) return false;
-            if (fragments == null || fragments.isEmpty()) return true;
+            if (!open) {
+                return false;
+            }
+            if (fragments == null || fragments.isEmpty()) {
+                return true;
+            }
             for (int i = 0; i < fragments.size(); i++) {
                 final boolean last = i == fragments.size() - 1 && finalFragment;
-                if (!sendText(fragments.get(i), last)) return false;
+                if (!sendText(fragments.get(i), last)) {
+                    return false;
+                }
             }
             return true;
         }
 
         @Override
         public boolean sendBinaryBatch(final List<ByteBuffer> fragments, final boolean finalFragment) {
-            if (!open) return false;
-            if (fragments == null || fragments.isEmpty()) return true;
+            if (!open) {
+                return false;
+            }
+            if (fragments == null || fragments.isEmpty()) {
+                return true;
+            }
             for (int i = 0; i < fragments.size(); i++) {
                 final boolean last = i == fragments.size() - 1 && finalFragment;
-                if (!sendBinary(fragments.get(i), last)) return false;
+                if (!sendBinary(fragments.get(i), last)) {
+                    return false;
+                }
             }
             return true;
         }
@@ -225,7 +243,9 @@ final class WebSocketClientTest {
                     this.ws = ws;
                     final String prefix = "hello @ " + Instant.now() + " — ";
                     final StringBuilder sb = new StringBuilder();
-                    for (int i = 0; i < 16; i++) sb.append(prefix);
+                    for (int i = 0; i < 16; i++) {
+                        sb.append(prefix);
+                    }
                     ws.sendText(sb, true);
                 }
 
@@ -305,7 +325,9 @@ final class WebSocketClientTest {
                 public void onOpen(final WebSocket ws) {
                     final StringBuilder sb = new StringBuilder();
                     final String chunk = "1234567890abcdef-";
-                    while (sb.length() <= maxMessage * 2) sb.append(chunk);
+                    while (sb.length() <= maxMessage * 2) {
+                        sb.append(chunk);
+                    }
                     ws.sendText(sb, true);
                 }
 

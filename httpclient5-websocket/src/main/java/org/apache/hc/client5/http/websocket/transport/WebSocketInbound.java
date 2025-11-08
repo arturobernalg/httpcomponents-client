@@ -99,11 +99,15 @@ final class WebSocketInbound {
     // ---- input ----
     void onInputReady(final IOSession ioSession, final ByteBuffer src) {
         try {
-            if (!s.open.get()) return;
+            if (!s.open.get()) {
+                return;
+            }
 
             if (s.readBuf == null) {
                 s.readBuf = s.bufferPool.acquire();
-                if (s.readBuf == null) return;
+                if (s.readBuf == null) {
+                    return;
+                }
             }
             if (src != null && src.hasRemaining()) {
                 appendToInbuf(src);
@@ -141,7 +145,9 @@ final class WebSocketInbound {
                     s.inbuf.clear();
                     return;
                 }
-                if (!has) break;
+                if (!has) {
+                    break;
+                }
 
                 final int op = s.decoder.opcode();
                 final boolean fin = s.decoder.fin();
@@ -308,7 +314,9 @@ final class WebSocketInbound {
 
     // ---- helpers ----
     private void appendToInbuf(final ByteBuffer src) {
-        if (src == null || !src.hasRemaining()) return;
+        if (src == null || !src.hasRemaining()) {
+            return;
+        }
         if (s.inbuf.remaining() < src.remaining()) {
             final int need = s.inbuf.position() + src.remaining();
             final int newCap = Math.max(s.inbuf.capacity() * 2, need);

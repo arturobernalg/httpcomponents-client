@@ -82,7 +82,6 @@ public final class WebSocketFrameDecoder {
 
         opcode = b0 & 0x0F;
 
-        // Optional: reject reserved/unknown opcodes early (RFC 6455 §5.2)
         if (opcode != 0 && opcode != 1 && opcode != 2 && opcode != 8 && opcode != 9 && opcode != 10) {
             throw new WebSocketProtocolException(1002, "Reserved/unknown opcode: " + opcode);
         }

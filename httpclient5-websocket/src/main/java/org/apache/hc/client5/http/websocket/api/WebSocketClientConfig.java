@@ -68,6 +68,10 @@ public final class WebSocketClientConfig {
     private final boolean requireH2;
     private final boolean disableH1Fallback;
 
+
+
+    private final int maxOutboundControlQueue;
+
     private WebSocketClientConfig(
             final Timeout connectTimeout,
             final List<String> subprotocols,
@@ -87,7 +91,8 @@ public final class WebSocketClientConfig {
             final boolean preferH2,
             final boolean allowH2ExtendedConnect,
             final boolean requireH2,
-            final boolean disableH1Fallback) {
+            final boolean disableH1Fallback,
+            final int maxOutboundControlQueue) {
 
         this.connectTimeout = connectTimeout;
         this.subprotocols = subprotocols != null
@@ -110,6 +115,7 @@ public final class WebSocketClientConfig {
         this.allowH2ExtendedConnect = allowH2ExtendedConnect;
         this.requireH2 = requireH2;
         this.disableH1Fallback = disableH1Fallback;
+        this.maxOutboundControlQueue = maxOutboundControlQueue;
     }
 
     // ---- getters used across your code ----
@@ -189,6 +195,10 @@ public final class WebSocketClientConfig {
         return disableH1Fallback;
     }
 
+    public int getMaxOutboundControlQueue() {
+        return maxOutboundControlQueue;
+    }
+
     // ---- builder ----
     public static Builder custom() {
         return new Builder();
@@ -219,6 +229,7 @@ public final class WebSocketClientConfig {
         private boolean allowH2ExtendedConnect = false;
         private boolean requireH2 = false;
         private boolean disableH1Fallback = false;
+        private int maxOutboundControlQueue = 256;
 
         public Builder setConnectTimeout(final Timeout v) {
             this.connectTimeout = v;
@@ -315,6 +326,11 @@ public final class WebSocketClientConfig {
             return this;
         }
 
+        public Builder setMaxOutboundControlQueue(final int v) {
+            this.maxOutboundControlQueue = v;
+            return this;
+        }
+
         public WebSocketClientConfig build() {
             if (maxFrameSize <= 0) {
                 throw new IllegalArgumentException("maxFrameSize > 0");
@@ -338,7 +354,7 @@ public final class WebSocketClientConfig {
                     maxFrameSize, outgoingChunkSize, maxFramesPerTick,
                     ioPoolCapacity, directBuffers,
                     autoPong, closeWaitTimeout, maxMessageSize,
-                    preferH2, allowH2ExtendedConnect, requireH2, disableH1Fallback
+                    preferH2, allowH2ExtendedConnect, requireH2, disableH1Fallback, maxOutboundControlQueue
             );
         }
     }

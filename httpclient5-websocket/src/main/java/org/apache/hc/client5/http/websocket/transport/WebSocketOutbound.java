@@ -10,7 +10,19 @@
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  * ====================================================================
+ *
+ * This software consists of voluntary contributions made by many
+ * individuals on behalf of the Apache Software Foundation.  For more
+ * information on the Apache Software Foundation, please see
+ * <http://www.apache.org/>.
+ *
  */
 package org.apache.hc.client5.http.websocket.transport;
 
@@ -114,11 +126,34 @@ final class WebSocketOutbound {
         }
     }
 
-    // ---- Queue helpers ----
-    void enqueueCtrl(final OutFrame frame) {
-        s.ctrlOutbound.add(frame);
+    boolean enqueueCtrl(final OutFrame frame) {
+        if (!s.open.get() || s.closingSent) {
+            return false;
+        }
+        final boolean isClose = isCloseFrame(frame);
+
+        // Soft cap only applies to non-CLOSE control frames.
+        final int cap = s.cfg.getMaxOutboundControlQueue();
+        if (!isClose && cap > 0 && s.ctrlOutbound.size() >= cap) {
+            return false;
+        }
+
+        final boolean accepted = s.ctrlOutbound.offer(frame);
+        if (!accepted && !isClose) {
+            return false;
+        }
+
         s.session.setEvent(EventMask.WRITE);
         s.session.setEventMask(EventMask.READ | EventMask.WRITE);
+        return true;
+    }
+
+    private static boolean isCloseFrame(final OutFrame frame) {
+        final ByteBuffer buf = frame.buf;
+        final int pos = buf.position(); // do not modify position
+        final byte b0 = buf.get(pos);   // FIN/RSV/opcode
+        final int opcode = b0 & 0x0F;
+        return opcode == FrameOpcode.CLOSE;
     }
 
     void enqueueData(final OutFrame frame) {
@@ -181,14 +216,18 @@ final class WebSocketOutbound {
 
         @Override
         public boolean sendText(final CharSequence data, final boolean finalFragment) {
-            if (!s.open.get() || s.closingSent) return false;
+            if (!s.open.get() || s.closingSent) {
+                return false;
+            }
             final ByteBuffer plain = StandardCharsets.UTF_8.encode(data.toString());
             return sendData(FrameOpcode.TEXT, plain, finalFragment);
         }
 
         @Override
         public boolean sendBinary(final ByteBuffer data, final boolean finalFragment) {
-            if (!s.open.get() || s.closingSent) return false;
+            if (!s.open.get() || s.closingSent) {
+                return false;
+            }
             return sendData(FrameOpcode.BINARY, data.asReadOnlyBuffer(), finalFragment);
         }
 
@@ -227,16 +266,24 @@ final class WebSocketOutbound {
 
         @Override
         public boolean ping(final ByteBuffer data) {
-            if (!s.open.get() || s.closingSent) return false;
-            if (data != null && data.remaining() > 125) return false;
+            if (!s.open.get() || s.closingSent) {
+                return false;
+            }
+            if (data != null && data.remaining() > 125) {
+                return false;
+            }
             enqueueCtrl(pooledFrame(FrameOpcode.PING, data == null ? ByteBuffer.allocate(0) : data.asReadOnlyBuffer(), true));
             return true;
         }
 
         @Override
         public boolean pong(final ByteBuffer data) {
-            if (!s.open.get() || s.closingSent) return false;
-            if (data != null && data.remaining() > 125) return false;
+            if (!s.open.get() || s.closingSent) {
+                return false;
+            }
+            if (data != null && data.remaining() > 125) {
+                return false;
+            }
             enqueueCtrl(pooledFrame(FrameOpcode.PONG, data == null ? ByteBuffer.allocate(0) : data.asReadOnlyBuffer(), true));
             return true;
         }
@@ -287,10 +334,14 @@ final class WebSocketOutbound {
 
         @Override
         public boolean sendTextBatch(final List<CharSequence> fragments, final boolean finalFragment) {
-            if (!s.open.get() || s.closingSent || fragments == null || fragments.isEmpty()) return false;
+            if (!s.open.get() || s.closingSent || fragments == null || fragments.isEmpty()) {
+                return false;
+            }
             synchronized (s.writeLock) {
                 int opcodeCopy = (s.outOpcode == -1) ? FrameOpcode.TEXT : FrameOpcode.CONT;
-                if (s.outOpcode == -1) s.outOpcode = opcodeCopy;
+                if (s.outOpcode == -1) {
+                    s.outOpcode = opcodeCopy;
+                }
 
                 for (int i = 0; i < fragments.size(); i++) {
                     final CharSequence data = fragments.get(i);
@@ -304,17 +355,23 @@ final class WebSocketOutbound {
                         opcodeCopy = FrameOpcode.CONT;
                     }
                 }
-                if (finalFragment) s.outOpcode = -1;
+                if (finalFragment) {
+                    s.outOpcode = -1;
+                }
                 return true;
             }
         }
 
         @Override
         public boolean sendBinaryBatch(final List<ByteBuffer> fragments, final boolean finalFragment) {
-            if (!s.open.get() || s.closingSent || fragments == null || fragments.isEmpty()) return false;
+            if (!s.open.get() || s.closingSent || fragments == null || fragments.isEmpty()) {
+                return false;
+            }
             synchronized (s.writeLock) {
                 int opcodeCopy = (s.outOpcode == -1) ? FrameOpcode.BINARY : FrameOpcode.CONT;
-                if (s.outOpcode == -1) s.outOpcode = opcodeCopy;
+                if (s.outOpcode == -1) {
+                    s.outOpcode = opcodeCopy;
+                }
 
                 for (int i = 0; i < fragments.size(); i++) {
                     final ByteBuffer ro = fragments.get(i).asReadOnlyBuffer();
@@ -327,7 +384,9 @@ final class WebSocketOutbound {
                         opcodeCopy = FrameOpcode.CONT;
                     }
                 }
-                if (finalFragment) s.outOpcode = -1;
+                if (finalFragment) {
+                    s.outOpcode = -1;
+                }
                 return true;
             }
         }
