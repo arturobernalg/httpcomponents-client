@@ -72,13 +72,16 @@ public class RequestConfig implements Cloneable {
      */
     private final PriorityValue h2Priority;
 
+
+    private final Timeout h2StreamTimeout;
+
     /**
      * Intended for CDI compatibility
     */
     protected RequestConfig() {
         this(false, null, null, false, false, 0, false, null, null,
                 DEFAULT_CONNECTION_REQUEST_TIMEOUT, null, null, DEFAULT_CONN_KEEP_ALIVE, false, false, false, null,
-                null);
+                null, null);
     }
 
     RequestConfig(
@@ -99,7 +102,8 @@ public class RequestConfig implements Cloneable {
             final boolean hardCancellationEnabled,
             final boolean protocolUpgradeEnabled,
             final Path unixDomainSocket,
-            final PriorityValue h2Priority) {
+            final PriorityValue h2Priority,
+            final Timeout h2StreamTimeout) {
         super();
         this.expectContinueEnabled = expectContinueEnabled;
         this.proxy = proxy;
@@ -119,6 +123,7 @@ public class RequestConfig implements Cloneable {
         this.protocolUpgradeEnabled = protocolUpgradeEnabled;
         this.unixDomainSocket = unixDomainSocket;
         this.h2Priority = h2Priority;
+        this.h2StreamTimeout = h2StreamTimeout;
     }
 
     /**
@@ -257,6 +262,10 @@ public class RequestConfig implements Cloneable {
         return (RequestConfig) super.clone();
     }
 
+    public Timeout getH2StreamTimeout() {
+        return h2StreamTimeout;
+    }
+
     @Override
     public String toString() {
         final StringBuilder builder = new StringBuilder();
@@ -329,6 +338,7 @@ public class RequestConfig implements Cloneable {
         private boolean protocolUpgradeEnabled;
         private Path unixDomainSocket;
         private PriorityValue h2Priority;
+        private Timeout h2StreamTimeout;
 
         Builder() {
             super();
@@ -696,6 +706,24 @@ public class RequestConfig implements Cloneable {
             return this;
         }
 
+        /**
+         * Per message / per HTTP/2 stream timeout.
+         * <p>
+         * For HTTP/1.x this behaves like a total exchange deadline
+         * (request + response) and does <strong>not</strong> change the
+         * underlying socket timeout.
+         * <p>
+         * For HTTP/2 this is intended to be enforced per stream so that a
+         * slow or stuck stream can be failed without closing the entire
+         * connection.
+         *
+         * @since 5.6
+         */
+        public Builder setH2StreamTimeout(final Timeout h2StreamTimeout) {
+            this.h2StreamTimeout = h2StreamTimeout;
+            return this;
+        }
+
         public RequestConfig build() {
             return new RequestConfig(
                     expectContinueEnabled,
@@ -715,7 +743,8 @@ public class RequestConfig implements Cloneable {
                     hardCancellationEnabled,
                     protocolUpgradeEnabled,
                     unixDomainSocket,
-                    h2Priority);
+                    h2Priority,
+                    h2StreamTimeout);
         }
 
     }

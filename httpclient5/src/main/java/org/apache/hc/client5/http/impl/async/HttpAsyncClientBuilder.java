@@ -271,6 +271,8 @@ public class HttpAsyncClientBuilder {
 
     private boolean priorityHeaderDisabled;
 
+    private boolean h2StreamTimeoutEnabled;
+
 
     /**
      * Maps {@code Content-Encoding} tokens to decoder factories in insertion order.
@@ -924,6 +926,22 @@ public class HttpAsyncClientBuilder {
         return this;
     }
 
+    /**
+     * Enables per HTTP/2 stream timeout handling via {@link H2StreamTimeoutAsyncExec}.
+     * <p>
+     * When enabled, the async exec chain installs {@code h2-stream-timeout}
+     * before the protocol layer. The handler enforces per-stream timeouts
+     * configured on {@link RequestConfig} via {@link RequestConfig#getH2StreamTimeout()}
+     * without tearing down the underlying HTTP/2 connection.
+     *
+     * @return this builder
+     * @since 5.6
+     */
+    public final HttpAsyncClientBuilder enableH2StreamTimeout() {
+        this.h2StreamTimeoutEnabled = true;
+        return this;
+    }
+
 
     /**
      * Request exec chain customization and extension.
@@ -1075,6 +1093,11 @@ public class HttpAsyncClientBuilder {
             addExecInterceptorBefore(ChainElement.PROTOCOL.name(), "early-hints",
                     new EarlyHintsAsyncExec(earlyHintsListener));
         }
+
+        if (h2StreamTimeoutEnabled) {
+            addExecInterceptorBefore(ChainElement.PROTOCOL.name(), "h2-stream-timeout", new H2StreamTimeoutAsyncExec());
+        }
+
 
         execChainDefinition.addFirst(
                 new AsyncProtocolExec(
