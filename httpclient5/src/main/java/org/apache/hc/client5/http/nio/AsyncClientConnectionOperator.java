@@ -40,6 +40,7 @@ import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.net.NamedEndpoint;
 import org.apache.hc.core5.reactor.ConnectionInitiator;
 import org.apache.hc.core5.util.Timeout;
+import org.apache.hc.client5.http.socket.VsockAddress;
 
 /**
  * Connection operator that performs connection connect and upgrade operations.
@@ -131,6 +132,42 @@ public interface AsyncClientConnectionOperator {
         }
         return connect(connectionInitiator, endpointHost, localAddress, connectTimeout,
             attachment, callback);
+    }
+
+    /**
+     * Initiates operation to create a connection to the remote endpoint using
+     * the provided {@link ConnectionInitiator}.
+     *
+     * @param connectionInitiator the connection initiator.
+     * @param endpointHost the address of the remote endpoint.
+     * @param unixDomainSocket the path to the UDS through which to connect, or {@code null}.
+     * @param vsockAddress the AF_VSOCK address through which to connect, or {@code null}.
+     * @param endpointName the name of the remote endpoint, if different from the endpoint host name,
+     *                   {@code null} otherwise. Usually taken from the request URU authority.
+     * @param localAddress the address of the local endpoint.
+     * @param connectTimeout the timeout of the connect operation.
+     * @param attachment the attachment, which can be any object representing custom parameter
+     *                    of the operation.
+     * @param context the execution context.
+     * @param callback the future result callback.
+     * @since 5.7
+     */
+    default Future<ManagedAsyncClientConnection> connect(
+            ConnectionInitiator connectionInitiator,
+            HttpHost endpointHost,
+            Path unixDomainSocket,
+            VsockAddress vsockAddress,
+            NamedEndpoint endpointName,
+            SocketAddress localAddress,
+            Timeout connectTimeout,
+            Object attachment,
+            HttpContext context,
+            FutureCallback<ManagedAsyncClientConnection> callback) {
+        if (vsockAddress != null) {
+            throw new UnsupportedOperationException(getClass().getName() + " does not support AF_VSOCK");
+        }
+        return connect(connectionInitiator, endpointHost, unixDomainSocket, endpointName, localAddress, connectTimeout,
+            attachment, context, callback);
     }
 
     /**

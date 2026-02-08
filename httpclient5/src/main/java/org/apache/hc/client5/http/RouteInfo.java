@@ -30,6 +30,7 @@ package org.apache.hc.client5.http;
 import java.net.InetAddress;
 import java.nio.file.Path;
 
+import org.apache.hc.client5.http.socket.VsockAddress;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.net.NamedEndpoint;
 
@@ -96,6 +97,16 @@ public interface RouteInfo {
      * @return  the path to the Unix domain socket, or {@code null} if none
      */
     default Path getUnixDomainSocket() {
+        return null;
+    }
+
+    /**
+     * Obtains the AF_VSOCK address through which to connect to the target host.
+     *
+     * @return  the AF_VSOCK address, or {@code null} if none
+     * @since 5.7
+     */
+    default VsockAddress getVsockAddress() {
         return null;
     }
 

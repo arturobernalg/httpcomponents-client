@@ -38,6 +38,7 @@ import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http2.priority.PriorityValue;
 import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
+import org.apache.hc.client5.http.socket.VsockAddress;
 
 /**
  *  Immutable class encapsulating request configuration items.
@@ -67,6 +68,7 @@ public class RequestConfig implements Cloneable {
     private final boolean hardCancellationEnabled;
     private final boolean protocolUpgradeEnabled;
     private final Path unixDomainSocket;
+    private final VsockAddress vsockAddress;
     /**
      * HTTP/2 Priority header value to emit when using H2+. Null means “don’t emit”.
      */
@@ -78,7 +80,7 @@ public class RequestConfig implements Cloneable {
     protected RequestConfig() {
         this(false, null, null, false, false, 0, false, null, null,
                 DEFAULT_CONNECTION_REQUEST_TIMEOUT, null, null, DEFAULT_CONN_KEEP_ALIVE, false, false, false, null,
-                null);
+                null, null);
     }
 
     RequestConfig(
@@ -99,6 +101,7 @@ public class RequestConfig implements Cloneable {
             final boolean hardCancellationEnabled,
             final boolean protocolUpgradeEnabled,
             final Path unixDomainSocket,
+            final VsockAddress vsockAddress,
             final PriorityValue h2Priority) {
         super();
         this.expectContinueEnabled = expectContinueEnabled;
@@ -118,6 +121,7 @@ public class RequestConfig implements Cloneable {
         this.hardCancellationEnabled = hardCancellationEnabled;
         this.protocolUpgradeEnabled = protocolUpgradeEnabled;
         this.unixDomainSocket = unixDomainSocket;
+        this.vsockAddress = vsockAddress;
         this.h2Priority = h2Priority;
     }
 
@@ -244,6 +248,15 @@ public class RequestConfig implements Cloneable {
     }
 
     /**
+     * @see Builder#setVsockAddress(VsockAddress)
+     *
+     * @since 5.7
+     */
+    public VsockAddress getVsockAddress() {
+        return vsockAddress;
+    }
+
+    /**
      * Returns the HTTP/2+ priority preference for this request or {@code null} if unset.
      * @since 5.6
      */
@@ -278,6 +291,7 @@ public class RequestConfig implements Cloneable {
         builder.append(", hardCancellationEnabled=").append(hardCancellationEnabled);
         builder.append(", protocolUpgradeEnabled=").append(protocolUpgradeEnabled);
         builder.append(", unixDomainSocket=").append(unixDomainSocket);
+        builder.append(", vsockAddress=").append(vsockAddress);
         builder.append(", h2Priority=").append(h2Priority);
         builder.append("]");
         return builder.toString();
@@ -306,6 +320,7 @@ public class RequestConfig implements Cloneable {
             .setHardCancellationEnabled(config.isHardCancellationEnabled())
             .setProtocolUpgradeEnabled(config.isProtocolUpgradeEnabled())
             .setUnixDomainSocket(config.getUnixDomainSocket())
+            .setVsockAddress(config.getVsockAddress())
             .setH2Priority(config.getH2Priority());
     }
 
@@ -328,6 +343,7 @@ public class RequestConfig implements Cloneable {
         private boolean hardCancellationEnabled;
         private boolean protocolUpgradeEnabled;
         private Path unixDomainSocket;
+        private VsockAddress vsockAddress;
         private PriorityValue h2Priority;
 
         Builder() {
@@ -687,6 +703,24 @@ public class RequestConfig implements Cloneable {
         }
 
         /**
+         * Sets the AF_VSOCK address to use for the connection.
+         * <p>
+         * When set, the connection will use AF_VSOCK instead of a TCP socket.
+         * This is useful for host ↔ VM or microVM IPC (for example Firecracker or QEMU).
+         * </p>
+         * <p>
+         * Default: {@code null}
+         * </p>
+         *
+         * @return this instance.
+         * @since 5.7
+         */
+        public Builder setVsockAddress(final VsockAddress vsockAddress) {
+            this.vsockAddress = vsockAddress;
+            return this;
+        }
+
+        /**
          * Sets HTTP/2+ request priority. If {@code null}, the header is not emitted.
          * @since 5.6
          */
@@ -697,6 +731,9 @@ public class RequestConfig implements Cloneable {
         }
 
         public RequestConfig build() {
+            if (unixDomainSocket != null && vsockAddress != null) {
+                throw new IllegalStateException("unixDomainSocket and vsockAddress are mutually exclusive");
+            }
             return new RequestConfig(
                     expectContinueEnabled,
                     proxy,
@@ -715,6 +752,7 @@ public class RequestConfig implements Cloneable {
                     hardCancellationEnabled,
                     protocolUpgradeEnabled,
                     unixDomainSocket,
+                    vsockAddress,
                     h2Priority);
         }
 

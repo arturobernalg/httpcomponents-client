@@ -42,6 +42,7 @@ import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.net.NamedEndpoint;
 import org.apache.hc.core5.util.Args;
 import org.apache.hc.core5.util.LangUtils;
+import org.apache.hc.client5.http.socket.VsockAddress;
 
 /**
  * Connection route definition for HTTP requests.
@@ -69,6 +70,9 @@ public final class HttpRoute implements RouteInfo, Cloneable {
     /** The path to the UDS to connect to, if any. */
     private final Path unixDomainSocket;
 
+    /** The AF_VSOCK address to connect to, if any. */
+    private final VsockAddress vsockAddress;
+
     /** Whether the the route is tunnelled through the proxy. */
     private final TunnelType tunnelled;
 
@@ -83,6 +87,7 @@ public final class HttpRoute implements RouteInfo, Cloneable {
               final InetAddress local,
               final List<HttpHost> proxies,
               final Path unixDomainSocket,
+              final VsockAddress vsockAddress,
               final boolean secure,
               final TunnelType tunnelled,
               final LayerType layered) {
@@ -92,6 +97,7 @@ public final class HttpRoute implements RouteInfo, Cloneable {
         this.targetHost = targetHost;
         this.localAddress = local;
         this.unixDomainSocket = unixDomainSocket;
+        this.vsockAddress = vsockAddress;
         if (proxies != null && !proxies.isEmpty()) {
             this.proxyChain = new ArrayList<>(proxies);
         } else {
@@ -103,8 +109,13 @@ public final class HttpRoute implements RouteInfo, Cloneable {
         this.secure = secure;
         this.tunnelled = tunnelled != null ? tunnelled : TunnelType.PLAIN;
         this.layered = layered != null ? layered : LayerType.PLAIN;
+        if (this.unixDomainSocket != null && this.vsockAddress != null) {
+            throw new UnsupportedOperationException("unixDomainSocket and vsockAddress are mutually exclusive");
+        }
         if (this.unixDomainSocket != null) {
             validateUdsArguments();
+        } else if (this.vsockAddress != null) {
+            validateVsockArguments();
         }
     }
 
@@ -117,6 +128,18 @@ public final class HttpRoute implements RouteInfo, Cloneable {
             throw new UnsupportedOperationException("Layering is not supported over a UDS connection");
         } else if (this.tunnelled != TunnelType.PLAIN) {
             throw new UnsupportedOperationException("Tunnelling is not supported over a UDS connection");
+        }
+    }
+
+    private void validateVsockArguments() {
+        if (this.localAddress != null) {
+            throw new UnsupportedOperationException("A localAddress cannot be specified for a VSOCK connection");
+        } else if (this.proxyChain != null) {
+            throw new UnsupportedOperationException("Proxies are not supported over a VSOCK connection");
+        } else if (this.layered != LayerType.PLAIN) {
+            throw new UnsupportedOperationException("Layering is not supported over a VSOCK connection");
+        } else if (this.tunnelled != TunnelType.PLAIN) {
+            throw new UnsupportedOperationException("Tunnelling is not supported over a VSOCK connection");
         }
     }
 
@@ -135,7 +158,7 @@ public final class HttpRoute implements RouteInfo, Cloneable {
      */
     public HttpRoute(final HttpHost target, final InetAddress local, final HttpHost[] proxies,
                      final boolean secure, final TunnelType tunnelled, final LayerType layered) {
-        this(target, null, local, proxies != null ? Arrays.asList(proxies) : null, null,
+        this(target, null, local, proxies != null ? Arrays.asList(proxies) : null, null, null,
                 secure, tunnelled, layered);
     }
 
@@ -157,7 +180,7 @@ public final class HttpRoute implements RouteInfo, Cloneable {
      */
     public HttpRoute(final HttpHost target, final NamedEndpoint targetName, final InetAddress local, final HttpHost[] proxies,
                      final boolean secure, final TunnelType tunnelled, final LayerType layered) {
-        this(target, targetName, local, proxies != null ? Arrays.asList(proxies) : null, null,
+        this(target, targetName, local, proxies != null ? Arrays.asList(proxies) : null, null, null,
                 secure, tunnelled, layered);
     }
 
@@ -180,7 +203,7 @@ public final class HttpRoute implements RouteInfo, Cloneable {
      */
     public HttpRoute(final HttpHost target, final InetAddress local, final HttpHost proxy,
                      final boolean secure, final TunnelType tunnelled, final LayerType layered) {
-        this(target, null, local, proxy != null ? Collections.singletonList(proxy) : null, null,
+        this(target, null, local, proxy != null ? Collections.singletonList(proxy) : null, null, null,
                 secure, tunnelled, layered);
     }
 
@@ -195,7 +218,7 @@ public final class HttpRoute implements RouteInfo, Cloneable {
      *                  {@code false} otherwise
      */
     public HttpRoute(final HttpHost target, final InetAddress local, final boolean secure) {
-        this(target, null, local, Collections.emptyList(), null, secure, TunnelType.PLAIN, LayerType.PLAIN);
+        this(target, null, local, Collections.emptyList(), null, null, secure, TunnelType.PLAIN, LayerType.PLAIN);
     }
 
     /**
@@ -211,7 +234,7 @@ public final class HttpRoute implements RouteInfo, Cloneable {
      * @since 5.4
      */
     public HttpRoute(final HttpHost target, final NamedEndpoint targetName, final InetAddress local, final boolean secure) {
-        this(target, targetName, local, Collections.emptyList(), null, secure, TunnelType.PLAIN, LayerType.PLAIN);
+        this(target, targetName, local, Collections.emptyList(), null, null, secure, TunnelType.PLAIN, LayerType.PLAIN);
     }
 
     /**
@@ -237,7 +260,34 @@ public final class HttpRoute implements RouteInfo, Cloneable {
      * @since 5.6
      */
     public HttpRoute(final HttpHost target, final boolean secure, final Path unixDomainSocket) {
-        this(target, null, null, Collections.emptyList(), unixDomainSocket, secure,
+        this(target, null, null, Collections.emptyList(), unixDomainSocket, null, secure,
+                TunnelType.PLAIN, LayerType.PLAIN);
+    }
+
+    /**
+     * Creates a new direct route that connects over an AF_VSOCK socket rather than TCP.
+     *
+     * @param target       the host to which to route
+     * @param vsockAddress the AF_VSOCK address
+     *
+     * @since 5.7
+     */
+    public HttpRoute(final HttpHost target, final VsockAddress vsockAddress) {
+        this(target, false, vsockAddress);
+    }
+
+    /**
+     * Creates a new direct route that connects over an AF_VSOCK socket rather than TCP.
+     *
+     * @param target       the host to which to route
+     * @param secure       {@code true} if the route is (to be) secure,
+     *                     {@code false} otherwise
+     * @param vsockAddress the AF_VSOCK address
+     *
+     * @since 5.7
+     */
+    public HttpRoute(final HttpHost target, final boolean secure, final VsockAddress vsockAddress) {
+        this(target, null, null, Collections.emptyList(), null, vsockAddress, secure,
                 TunnelType.PLAIN, LayerType.PLAIN);
     }
 
@@ -247,7 +297,7 @@ public final class HttpRoute implements RouteInfo, Cloneable {
      * @param target    the host to which to route
      */
     public HttpRoute(final HttpHost target) {
-        this(target, null, null, Collections.emptyList(), null, false, TunnelType.PLAIN, LayerType.PLAIN);
+        this(target, null, null, Collections.emptyList(), null, null, false, TunnelType.PLAIN, LayerType.PLAIN);
     }
 
     /**
@@ -268,7 +318,7 @@ public final class HttpRoute implements RouteInfo, Cloneable {
      */
     public HttpRoute(final HttpHost target, final NamedEndpoint targetName, final InetAddress local,
                      final HttpHost proxy, final boolean secure) {
-        this(target, targetName, local, Collections.singletonList(Args.notNull(proxy, "Proxy host")), null, secure,
+        this(target, targetName, local, Collections.singletonList(Args.notNull(proxy, "Proxy host")), null, null, secure,
                 secure ? TunnelType.TUNNELLED : TunnelType.PLAIN,
                 secure ? LayerType.LAYERED : LayerType.PLAIN);
     }
@@ -288,7 +338,7 @@ public final class HttpRoute implements RouteInfo, Cloneable {
      */
     public HttpRoute(final HttpHost target, final InetAddress local, final HttpHost proxy,
                      final boolean secure) {
-        this(target, null, local, Collections.singletonList(Args.notNull(proxy, "Proxy host")), null, secure,
+        this(target, null, local, Collections.singletonList(Args.notNull(proxy, "Proxy host")), null, null, secure,
                 secure ? TunnelType.TUNNELLED : TunnelType.PLAIN,
                 secure ? LayerType.LAYERED : LayerType.PLAIN);
     }
@@ -354,6 +404,11 @@ public final class HttpRoute implements RouteInfo, Cloneable {
     }
 
     @Override
+    public VsockAddress getVsockAddress() {
+        return this.vsockAddress;
+    }
+
+    @Override
     public TunnelType getTunnelType() {
         return this.tunnelled;
     }
@@ -402,7 +457,8 @@ public final class HttpRoute implements RouteInfo, Cloneable {
                             Objects.equals(this.targetName, that.targetName) &&
                             Objects.equals(this.localAddress, that.localAddress) &&
                             Objects.equals(this.proxyChain, that.proxyChain) &&
-                            Objects.equals(this.unixDomainSocket, that.unixDomainSocket);
+                            Objects.equals(this.unixDomainSocket, that.unixDomainSocket) &&
+                            Objects.equals(this.vsockAddress, that.vsockAddress);
         }
         return false;
     }
@@ -427,6 +483,9 @@ public final class HttpRoute implements RouteInfo, Cloneable {
         if (this.unixDomainSocket != null) {
             hash = LangUtils.hashCode(hash, unixDomainSocket);
         }
+        if (this.vsockAddress != null) {
+            hash = LangUtils.hashCode(hash, vsockAddress);
+        }
         hash = LangUtils.hashCode(hash, this.secure);
         hash = LangUtils.hashCode(hash, this.tunnelled);
         hash = LangUtils.hashCode(hash, this.layered);
@@ -446,6 +505,8 @@ public final class HttpRoute implements RouteInfo, Cloneable {
             cab.append("->");
         } else if (unixDomainSocket != null) {
             cab.append(unixDomainSocket).append("->");
+        } else if (vsockAddress != null) {
+            cab.append(vsockAddress).append("->");
         }
         cab.append('{');
         if (this.tunnelled == TunnelType.TUNNELLED) {

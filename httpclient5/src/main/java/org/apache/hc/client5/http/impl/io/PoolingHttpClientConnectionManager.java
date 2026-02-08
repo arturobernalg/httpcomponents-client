@@ -40,6 +40,7 @@ import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.client5.http.EndpointInfo;
 import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.client5.http.SchemePortResolver;
+import org.apache.hc.client5.http.socket.VsockAddress;
 import org.apache.hc.client5.http.config.ConnectionConfig;
 import org.apache.hc.client5.http.config.TlsConfig;
 import org.apache.hc.client5.http.impl.ConnPoolSupport;
@@ -542,6 +543,7 @@ public class PoolingHttpClientConnectionManager
         }
         final HttpRoute route = poolEntry.getRoute();
         final Path unixDomainSocket = route.getUnixDomainSocket();
+        final VsockAddress vsockAddress = route.getVsockAddress();
         final HttpHost firstHop = route.getProxyHost() != null ? route.getProxyHost() : route.getTargetHost();
         final SocketConfig socketConfig = resolveSocketConfig(route);
         final ConnectionConfig connectionConfig = resolveConnectionConfig(route);
@@ -555,6 +557,7 @@ public class PoolingHttpClientConnectionManager
                 firstHop,
                 route.getTargetName(),
                 unixDomainSocket,
+                vsockAddress,
                 route.getLocalSocketAddress(),
                 connectTimeout,
                 socketConfig,

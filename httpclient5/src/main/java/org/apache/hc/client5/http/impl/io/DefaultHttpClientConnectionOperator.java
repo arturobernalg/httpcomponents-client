@@ -50,6 +50,8 @@ import org.apache.hc.client5.http.io.DetachedSocketFactory;
 import org.apache.hc.client5.http.io.HttpClientConnectionOperator;
 import org.apache.hc.client5.http.io.ManagedHttpClientConnection;
 import org.apache.hc.client5.http.socket.UnixDomainSocketFactory;
+import org.apache.hc.client5.http.socket.VsockAddress;
+import org.apache.hc.client5.http.socket.VsockSocketFactory;
 import org.apache.hc.client5.http.ssl.TlsSocketStrategy;
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.Internal;
@@ -91,6 +93,7 @@ public class DefaultHttpClientConnectionOperator implements HttpClientConnection
 
     private final DetachedSocketFactory detachedSocketFactory;
     private final UnixDomainSocketFactory unixDomainSocketFactory = UnixDomainSocketFactory.getSocketFactory();
+    private final VsockSocketFactory vsockSocketFactory = VsockSocketFactory.getSocketFactory();
     private final Lookup<TlsSocketStrategy> tlsSocketStrategyLookup;
     private final SchemePortResolver schemePortResolver;
     private final DnsResolver dnsResolver;
@@ -179,16 +182,58 @@ public class DefaultHttpClientConnectionOperator implements HttpClientConnection
             final SocketConfig socketConfig,
             final Object attachment,
             final HttpContext context) throws IOException {
+        connectInternal(conn, endpointHost, endpointName, unixDomainSocket, null, localAddress, connectTimeout, socketConfig,
+            attachment, context);
+    }
+
+    @Override
+    public void connect(
+            final ManagedHttpClientConnection conn,
+            final HttpHost endpointHost,
+            final NamedEndpoint endpointName,
+            final Path unixDomainSocket,
+            final VsockAddress vsockAddress,
+            final InetSocketAddress localAddress,
+            final Timeout connectTimeout,
+            final SocketConfig socketConfig,
+            final Object attachment,
+            final HttpContext context) throws IOException {
+        connectInternal(conn, endpointHost, endpointName, unixDomainSocket, vsockAddress, localAddress, connectTimeout, socketConfig,
+            attachment, context);
+    }
+
+    private void connectInternal(
+            final ManagedHttpClientConnection conn,
+            final HttpHost endpointHost,
+            final NamedEndpoint endpointName,
+            final Path unixDomainSocket,
+            final VsockAddress vsockAddress,
+            final InetSocketAddress localAddress,
+            final Timeout connectTimeout,
+            final SocketConfig socketConfig,
+            final Object attachment,
+            final HttpContext context) throws IOException {
 
         Args.notNull(conn, "Connection");
         Args.notNull(endpointHost, "Host");
         Args.notNull(socketConfig, "Socket config");
         Args.notNull(context, "Context");
 
+        if (unixDomainSocket != null && vsockAddress != null) {
+            throw new UnsupportedOperationException("unixDomainSocket and vsockAddress are mutually exclusive");
+        }
+
         final SocketAddress socksProxyAddress = socketConfig.getSocksProxyAddress();
         final Proxy socksProxy = socksProxyAddress != null ? new Proxy(Proxy.Type.SOCKS, socksProxyAddress) : null;
         if (unixDomainSocket != null) {
             connectToUnixDomainSocket(conn, endpointHost, endpointName, attachment, unixDomainSocket, connectTimeout, socketConfig, context);
+            return;
+        }
+        if (vsockAddress != null) {
+            if (socksProxyAddress != null) {
+                throw new UnsupportedOperationException("SOCKS proxy is not supported over VSOCK");
+            }
+            connectToVsock(conn, endpointHost, endpointName, attachment, vsockAddress, connectTimeout, socketConfig, context);
             return;
         }
 
@@ -304,6 +349,47 @@ public class DefaultHttpClientConnectionOperator implements HttpClientConnection
             Closer.closeQuietly(newSocket);
             if (LOG.isDebugEnabled()) {
                 LOG.debug("{} connection to {} failed ({}); terminating operation", endpointHost, unixDomainSocket,
+                    ex.getClass());
+            }
+            throw ex;
+        }
+    }
+
+    private void connectToVsock(
+            final ManagedHttpClientConnection conn,
+            final HttpHost endpointHost,
+            final NamedEndpoint endpointName,
+            final Object attachment,
+            final VsockAddress vsockAddress,
+            final Timeout connectTimeout,
+            final SocketConfig socketConfig,
+            final HttpContext context) throws IOException {
+        onBeforeSocketConnect(context, endpointHost);
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("{} connecting to {} ({})", endpointHost, vsockAddress, connectTimeout);
+        }
+        final Socket newSocket = vsockSocketFactory.createSocket();
+        try {
+            conn.bind(newSocket);
+            final Socket socket = vsockSocketFactory.connectSocket(newSocket, vsockAddress, connectTimeout);
+            conn.bind(socket);
+            configureSocket(socket, socketConfig, false);
+            onAfterSocketConnect(context, endpointHost);
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("{} {} connected to {}", ConnPoolSupport.getId(conn), endpointHost, vsockAddress);
+            }
+
+            final TlsSocketStrategy tlsSocketStrategy = tlsSocketStrategyLookup != null ? tlsSocketStrategyLookup.lookup(endpointHost.getSchemeName()) : null;
+            if (tlsSocketStrategy != null) {
+                upgradeToTls(conn, endpointHost, endpointName, connectTimeout, attachment, context, tlsSocketStrategy, socket);
+            }
+        } catch (final RuntimeException ex) {
+            Closer.closeQuietly(newSocket);
+            throw ex;
+        } catch (final IOException ex) {
+            Closer.closeQuietly(newSocket);
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("{} connection to {} failed ({}); terminating operation", endpointHost, vsockAddress,
                     ex.getClass());
             }
             throw ex;

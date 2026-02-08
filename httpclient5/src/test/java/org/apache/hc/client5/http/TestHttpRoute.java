@@ -37,6 +37,7 @@ import java.util.Set;
 
 import org.apache.hc.client5.http.RouteInfo.LayerType;
 import org.apache.hc.client5.http.RouteInfo.TunnelType;
+import org.apache.hc.client5.http.socket.VsockAddress;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.net.URIAuthority;
 import org.junit.jupiter.api.Assertions;
@@ -469,9 +470,9 @@ class TestHttpRoute {
         Assertions.assertEquals(String.format("%s->{}->[http://target1.test.invalid:80]", uds1), route1.toString());
 
         final Path uds2 = Paths.get("/var/run/docker.sock");
-        final HttpRoute route2 = new HttpRoute(TARGET1, null, null, Collections.emptyList(), uds2, false,
+        final HttpRoute route2 = new HttpRoute(TARGET1, null, null, Collections.emptyList(), uds2, null, false,
             TunnelType.PLAIN, LayerType.PLAIN);
-        final HttpRoute route3 = new HttpRoute(TARGET1, null, null, Collections.emptyList(), null, false,
+        final HttpRoute route3 = new HttpRoute(TARGET1, null, null, Collections.emptyList(), null, null, false,
             TunnelType.PLAIN, LayerType.PLAIN);
 
         Assertions.assertEquals(route1, route2,
@@ -482,19 +483,59 @@ class TestHttpRoute {
     }
 
     @Test
+    void testVsockModeling() {
+        final VsockAddress vsock1 = VsockAddress.of(VsockAddress.VMADDR_CID_HOST, 5000);
+        final HttpRoute route1 = new HttpRoute(TARGET1, vsock1);
+
+        Assertions.assertEquals(vsock1, route1.getVsockAddress());
+        Assertions.assertEquals(1, route1.getHopCount(), "A VSOCK is not considered a proxy hop");
+        Assertions.assertNull(route1.getProxyHost(), "A VSOCK is not considered a proxy for routing purposes");
+        Assertions.assertEquals(String.format("%s->{}->[http://target1.test.invalid:80]", vsock1), route1.toString());
+
+        final VsockAddress vsock2 = VsockAddress.of(VsockAddress.VMADDR_CID_HOST, 5000);
+        final HttpRoute route2 = new HttpRoute(TARGET1, null, null, Collections.emptyList(), null, vsock2, false,
+            TunnelType.PLAIN, LayerType.PLAIN);
+        final HttpRoute route3 = new HttpRoute(TARGET1, null, null, Collections.emptyList(), null, null, false,
+            TunnelType.PLAIN, LayerType.PLAIN);
+
+        Assertions.assertEquals(route1, route2,
+            "The VSOCK convenience constructor should produce an equivalent HttpRoute to the full constructor");
+        Assertions.assertNotEquals(route2, route3, "HttpRoute equality should consider the VSOCK field");
+        Assertions.assertNotEquals(route2.hashCode(), route3.hashCode(),
+            "HttpRoute hashing should consider the VSOCK field");
+    }
+
+    @Test
     void testUnixDomainSocketValidation() {
         final Path uds = Paths.get("/var/run/docker.sock");
         final List<HttpHost> noProxies = Collections.emptyList();
         final List<HttpHost> oneProxy = Collections.singletonList(PROXY1);
-        new HttpRoute(TARGET1, null, null, noProxies, uds, false, TunnelType.PLAIN, LayerType.PLAIN);
-        new HttpRoute(TARGET1, null, null, null, uds, true, TunnelType.PLAIN, LayerType.PLAIN);
+        new HttpRoute(TARGET1, null, null, noProxies, uds, null, false, TunnelType.PLAIN, LayerType.PLAIN);
+        new HttpRoute(TARGET1, null, null, null, uds, null, true, TunnelType.PLAIN, LayerType.PLAIN);
         Assertions.assertThrows(RuntimeException.class, () ->
-            new HttpRoute(TARGET1, null, LOCAL41, noProxies, uds, false, TunnelType.PLAIN, LayerType.PLAIN));
+            new HttpRoute(TARGET1, null, LOCAL41, noProxies, uds, null, false, TunnelType.PLAIN, LayerType.PLAIN));
         Assertions.assertThrows(RuntimeException.class, () ->
-            new HttpRoute(TARGET1, null, null, oneProxy, uds, false, TunnelType.PLAIN, LayerType.PLAIN));
+            new HttpRoute(TARGET1, null, null, oneProxy, uds, null, false, TunnelType.PLAIN, LayerType.PLAIN));
         Assertions.assertThrows(RuntimeException.class, () ->
-            new HttpRoute(TARGET1, null, null, noProxies, uds, false, TunnelType.TUNNELLED, LayerType.PLAIN));
+            new HttpRoute(TARGET1, null, null, noProxies, uds, null, false, TunnelType.TUNNELLED, LayerType.PLAIN));
         Assertions.assertThrows(RuntimeException.class, () ->
-            new HttpRoute(TARGET1, null, null, noProxies, uds, false, TunnelType.PLAIN, LayerType.LAYERED));
+            new HttpRoute(TARGET1, null, null, noProxies, uds, null, false, TunnelType.PLAIN, LayerType.LAYERED));
+    }
+
+    @Test
+    void testVsockValidation() {
+        final VsockAddress vsock = VsockAddress.of(VsockAddress.VMADDR_CID_HOST, 5000);
+        final List<HttpHost> noProxies = Collections.emptyList();
+        final List<HttpHost> oneProxy = Collections.singletonList(PROXY1);
+        new HttpRoute(TARGET1, null, null, noProxies, null, vsock, false, TunnelType.PLAIN, LayerType.PLAIN);
+        new HttpRoute(TARGET1, null, null, null, null, vsock, true, TunnelType.PLAIN, LayerType.PLAIN);
+        Assertions.assertThrows(RuntimeException.class, () ->
+            new HttpRoute(TARGET1, null, LOCAL41, noProxies, null, vsock, false, TunnelType.PLAIN, LayerType.PLAIN));
+        Assertions.assertThrows(RuntimeException.class, () ->
+            new HttpRoute(TARGET1, null, null, oneProxy, null, vsock, false, TunnelType.PLAIN, LayerType.PLAIN));
+        Assertions.assertThrows(RuntimeException.class, () ->
+            new HttpRoute(TARGET1, null, null, noProxies, null, vsock, false, TunnelType.TUNNELLED, LayerType.PLAIN));
+        Assertions.assertThrows(RuntimeException.class, () ->
+            new HttpRoute(TARGET1, null, null, noProxies, null, vsock, false, TunnelType.PLAIN, LayerType.LAYERED));
     }
 }

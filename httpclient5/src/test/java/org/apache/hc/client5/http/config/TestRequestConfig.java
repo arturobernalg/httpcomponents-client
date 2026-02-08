@@ -27,11 +27,14 @@
 
 package org.apache.hc.client5.http.config;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.hc.client5.http.auth.StandardAuthScheme;
 import org.apache.hc.client5.http.cookie.StandardCookieSpec;
+import org.apache.hc.client5.http.socket.VsockAddress;
 import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
 import org.junit.jupiter.api.Assertions;
@@ -85,6 +88,27 @@ class TestRequestConfig {
         Assertions.assertEquals(Collections.singletonList(StandardAuthScheme.BEARER), config.getTargetPreferredAuthSchemes());
         Assertions.assertEquals(Collections.singletonList(StandardAuthScheme.DIGEST), config.getProxyPreferredAuthSchemes());
         Assertions.assertFalse(config.isContentCompressionEnabled());
+    }
+
+    @Test
+    void testVsockConfig() {
+        final VsockAddress vsockAddress = VsockAddress.of(VsockAddress.VMADDR_CID_HOST, 5000);
+        final RequestConfig config = RequestConfig.custom()
+                .setVsockAddress(vsockAddress)
+                .build();
+        Assertions.assertEquals(vsockAddress, config.getVsockAddress());
+        Assertions.assertNull(config.getUnixDomainSocket());
+    }
+
+    @Test
+    void testUnixDomainSocketAndVsockMutualExclusion() {
+        final Path uds = Paths.get("/var/run/docker.sock");
+        final VsockAddress vsockAddress = VsockAddress.of(VsockAddress.VMADDR_CID_HOST, 5000);
+        Assertions.assertThrows(IllegalStateException.class, () ->
+                RequestConfig.custom()
+                        .setUnixDomainSocket(uds)
+                        .setVsockAddress(vsockAddress)
+                        .build());
     }
 
 }

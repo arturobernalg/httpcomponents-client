@@ -28,6 +28,7 @@
 package org.apache.hc.client5.http.impl.io;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
@@ -41,6 +42,7 @@ import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.client5.http.EndpointInfo;
 import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.client5.http.SchemePortResolver;
+import org.apache.hc.client5.http.socket.VsockAddress;
 import org.apache.hc.client5.http.config.ConnectionConfig;
 import org.apache.hc.client5.http.config.TlsConfig;
 import org.apache.hc.client5.http.impl.ConnPoolSupport;
@@ -482,6 +484,8 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
                 return;
             }
             final HttpRoute route = internalEndpoint.getRoute();
+            final Path unixDomainSocket = route.getUnixDomainSocket();
+            final VsockAddress vsockAddress = route.getVsockAddress();
             final HttpHost firstHop = route.getProxyHost() != null ? route.getProxyHost() : route.getTargetHost();
             final Timeout connectTimeout = timeout != null ? Timeout.of(timeout.getDuration(), timeout.getTimeUnit()) : connectionConfig.getConnectTimeout();
             final ManagedHttpClientConnection connection = internalEndpoint.getConnection();
@@ -492,6 +496,8 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
                     connection,
                     firstHop,
                     route.getTargetName(),
+                    unixDomainSocket,
+                    vsockAddress,
                     route.getLocalSocketAddress(),
                     connectTimeout,
                     socketConfig,

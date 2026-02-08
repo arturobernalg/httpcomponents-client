@@ -35,6 +35,7 @@ import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.util.Args;
 import org.apache.hc.core5.util.Asserts;
 import org.apache.hc.core5.util.LangUtils;
+import org.apache.hc.client5.http.socket.VsockAddress;
 
 /**
  * Helps tracking the steps in establishing a route.
@@ -54,6 +55,9 @@ public final class RouteTracker implements RouteInfo, Cloneable {
 
     /** The Unix domain socket to connect through, if any. */
     private final Path unixDomainSocket;
+
+    /** The AF_VSOCK address to connect through, if any. */
+    private final VsockAddress vsockAddress;
 
     // the attributes above are fixed at construction time
     // now follow attributes that indicate the established route
@@ -82,7 +86,7 @@ public final class RouteTracker implements RouteInfo, Cloneable {
      *                  {@code null} for the default
      */
     public RouteTracker(final HttpHost target, final InetAddress local) {
-        this(target, local, null);
+        this(target, local, null, null);
     }
 
     /**
@@ -94,14 +98,34 @@ public final class RouteTracker implements RouteInfo, Cloneable {
      *                            {@code null} for the default
      * @param unixDomainSocket    the path to the Unix domain socket
      *                            through which to connect, or {@code null}
+     * @param vsockAddress        the AF_VSOCK address through which to connect,
+     *                            or {@code null}
      */
-    public RouteTracker(final HttpHost target, final InetAddress local, final Path unixDomainSocket) {
+    public RouteTracker(final HttpHost target, final InetAddress local, final Path unixDomainSocket,
+                        final VsockAddress vsockAddress) {
         Args.notNull(target, "Target host");
         this.targetHost = target;
         this.localAddress = local;
         this.unixDomainSocket = unixDomainSocket;
+        this.vsockAddress = vsockAddress;
         this.tunnelled = TunnelType.PLAIN;
         this.layered = LayerType.PLAIN;
+    }
+
+    /**
+     * Creates a new route tracker.
+     * The target and origin need to be specified at creation time.
+     *
+     * @param target              the host to which to route
+     * @param local               the local address to route from, or
+     *                            {@code null} for the default
+     * @param unixDomainSocket    the path to the Unix domain socket
+     *                            through which to connect, or {@code null}
+     *
+     * @since 5.6
+     */
+    public RouteTracker(final HttpHost target, final InetAddress local, final Path unixDomainSocket) {
+        this(target, local, unixDomainSocket, null);
     }
 
     /**
@@ -123,7 +147,7 @@ public final class RouteTracker implements RouteInfo, Cloneable {
      * @param route     the route to track
      */
     public RouteTracker(final HttpRoute route) {
-        this(route.getTargetHost(), route.getLocalAddress(), route.getUnixDomainSocket());
+        this(route.getTargetHost(), route.getLocalAddress(), route.getUnixDomainSocket(), route.getVsockAddress());
     }
 
     /**
@@ -219,6 +243,11 @@ public final class RouteTracker implements RouteInfo, Cloneable {
     }
 
     @Override
+    public VsockAddress getVsockAddress() {
+        return this.vsockAddress;
+    }
+
+    @Override
     public int getHopCount() {
         int hops = 0;
         if (this.connected) {
@@ -293,6 +322,8 @@ public final class RouteTracker implements RouteInfo, Cloneable {
             return null;
         } else if (this.unixDomainSocket != null) {
             return new HttpRoute(this.targetHost, this.secure, this.unixDomainSocket);
+        } else if (this.vsockAddress != null) {
+            return new HttpRoute(this.targetHost, this.secure, this.vsockAddress);
         } else {
             return new HttpRoute(this.targetHost, this.localAddress,
                 this.proxyChain, this.secure,
@@ -327,6 +358,7 @@ public final class RouteTracker implements RouteInfo, Cloneable {
                         Objects.equals(this.targetHost, that.targetHost) &&
                         Objects.equals(this.localAddress, that.localAddress) &&
                         Objects.equals(this.unixDomainSocket, that.unixDomainSocket) &&
+                        Objects.equals(this.vsockAddress, that.vsockAddress) &&
                         Objects.equals(this.proxyChain, that.proxyChain);
     }
 
@@ -344,6 +376,7 @@ public final class RouteTracker implements RouteInfo, Cloneable {
         hash = LangUtils.hashCode(hash, this.targetHost);
         hash = LangUtils.hashCode(hash, this.localAddress);
         hash = LangUtils.hashCode(hash, this.unixDomainSocket);
+        hash = LangUtils.hashCode(hash, this.vsockAddress);
         if (this.proxyChain != null) {
             for (final HttpHost element : this.proxyChain) {
                 hash = LangUtils.hashCode(hash, element);
@@ -371,6 +404,8 @@ public final class RouteTracker implements RouteInfo, Cloneable {
             cab.append("->");
         } else if (this.unixDomainSocket != null) {
             cab.append(this.unixDomainSocket).append("->");
+        } else if (this.vsockAddress != null) {
+            cab.append(this.vsockAddress).append("->");
         }
         cab.append('{');
         if (this.connected) {

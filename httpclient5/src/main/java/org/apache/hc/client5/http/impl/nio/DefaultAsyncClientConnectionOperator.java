@@ -43,6 +43,8 @@ import org.apache.hc.client5.http.impl.DefaultSchemePortResolver;
 import org.apache.hc.client5.http.nio.AsyncClientConnectionOperator;
 import org.apache.hc.client5.http.nio.ManagedAsyncClientConnection;
 import org.apache.hc.client5.http.routing.RoutingSupport;
+import org.apache.hc.client5.http.socket.VsockSocketFactory;
+import org.apache.hc.client5.http.socket.VsockAddress;
 import org.apache.hc.core5.annotation.Internal;
 import org.apache.hc.core5.concurrent.CallbackContribution;
 import org.apache.hc.core5.concurrent.ComplexFuture;
@@ -125,17 +127,35 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
             final Object attachment,
             final HttpContext context,
             final FutureCallback<ManagedAsyncClientConnection> callback) {
+        return connect(connectionInitiator, endpointHost, unixDomainSocket, null, endpointName, localAddress, connectTimeout,
+            attachment, context, callback);
+    }
+
+    @Override
+    public Future<ManagedAsyncClientConnection> connect(
+            final ConnectionInitiator connectionInitiator,
+            final HttpHost endpointHost,
+            final Path unixDomainSocket,
+            final VsockAddress vsockAddress,
+            final NamedEndpoint endpointName,
+            final SocketAddress localAddress,
+            final Timeout connectTimeout,
+            final Object attachment,
+            final HttpContext context,
+            final FutureCallback<ManagedAsyncClientConnection> callback) {
         Args.notNull(connectionInitiator, "Connection initiator");
         Args.notNull(endpointHost, "Host");
         final ComplexFuture<ManagedAsyncClientConnection> future = new ComplexFuture<>(callback);
         final HttpHost remoteEndpoint = RoutingSupport.normalize(endpointHost, schemePortResolver);
         final SocketAddress remoteAddress;
-        if (unixDomainSocket == null) {
+        if (unixDomainSocket == null && vsockAddress == null) {
             final InetAddress remoteInetAddress = endpointHost.getAddress();
             remoteAddress = remoteInetAddress != null ?
                 new InetSocketAddress(remoteInetAddress, remoteEndpoint.getPort()) : null;
-        } else {
+        } else if (unixDomainSocket != null) {
             remoteAddress = createUnixSocketAddress(unixDomainSocket);
+        } else {
+            remoteAddress = VsockSocketFactory.getSocketFactory().createSocketAddress(vsockAddress);
         }
         final TlsConfig tlsConfig = attachment instanceof TlsConfig ? (TlsConfig) attachment : TlsConfig.DEFAULT;
 

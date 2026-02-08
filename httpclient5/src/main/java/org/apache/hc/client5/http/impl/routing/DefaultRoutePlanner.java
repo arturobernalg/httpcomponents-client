@@ -38,6 +38,7 @@ import org.apache.hc.client5.http.impl.DefaultSchemePortResolver;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.http.routing.HttpRoutePlanner;
 import org.apache.hc.client5.http.routing.RoutingSupport;
+import org.apache.hc.client5.http.socket.VsockAddress;
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.ThreadingBehavior;
 import org.apache.hc.core5.http.HttpException;
@@ -97,11 +98,18 @@ public class DefaultRoutePlanner implements HttpRoutePlanner {
         }
 
         final Path unixDomainSocket = config.getUnixDomainSocket();
+        final VsockAddress vsockAddress = config.getVsockAddress();
         if (unixDomainSocket != null) {
             if (proxy != null) {
                 throw new UnsupportedOperationException("Proxies are not supported over Unix domain sockets");
             }
             return new HttpRoute(target, secure, unixDomainSocket);
+        }
+        if (vsockAddress != null) {
+            if (proxy != null) {
+                throw new UnsupportedOperationException("Proxies are not supported over VSOCK");
+            }
+            return new HttpRoute(target, secure, vsockAddress);
         }
         final InetAddress inetAddress = determineLocalAddress(target, context);
         if (proxy == null) {
