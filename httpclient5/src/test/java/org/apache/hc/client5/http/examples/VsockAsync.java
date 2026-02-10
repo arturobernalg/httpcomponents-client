@@ -26,13 +26,13 @@
  */
 package org.apache.hc.client5.http.examples;
 
-import io.reactivex.rxjava3.core.Observable;
 import java.io.PrintStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.spi.SelectorProvider;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+
+import io.reactivex.rxjava3.core.Observable;
 import org.apache.hc.client5.http.async.methods.SimpleHttpRequest;
 import org.apache.hc.client5.http.async.methods.SimpleRequestProducer;
 import org.apache.hc.client5.http.config.RequestConfig;
@@ -44,9 +44,23 @@ import org.apache.hc.core5.http.Message;
 import org.apache.hc.core5.http.Method;
 import org.apache.hc.core5.reactive.ReactiveResponseConsumer;
 import org.apache.hc.core5.reactor.IOReactorConfig;
-import org.apache.hc.core5.reactor.VsockSupport;
+import org.newsclub.net.unix.vsock.AFVSOCKSelectorProvider;
 import org.reactivestreams.Publisher;
 
+/**
+ * Async VSOCK client example.
+ *
+ * <p>Test server helper:</p>
+ * <pre>
+ * #!/bin/sh
+ * printf %b "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n"
+ * </pre>
+ *
+ * <p>Run the server:</p>
+ * <pre>
+ * socat -v VSOCK-LISTEN:5000,fork SYSTEM:/tmp/vsock_reply.sh
+ * </pre>
+ */
 public class VsockAsync {
     public static void main(final String[] args) throws Exception {
         if (args.length == 0 || "-h".equals(args[0]) || "--help".equals(args[0])) {
@@ -64,7 +78,7 @@ public class VsockAsync {
         final RequestConfig requestConfig = RequestConfig.custom().setVsockAddress(vsockAddress).build();
 
         final IOReactorConfig ioReactorConfig = IOReactorConfig.custom()
-                .setSelectorProvider(resolveVsockSelectorProvider())
+                .setSelectorProvider(AFVSOCKSelectorProvider.provider())
                 .build();
 
         try (CloseableHttpAsyncClient client = HttpAsyncClientBuilder.create()
@@ -79,10 +93,10 @@ public class VsockAsync {
             final ReactiveResponseConsumer consumer = new ReactiveResponseConsumer();
             client.execute(SimpleRequestProducer.create(httpGet), consumer, null).get(10, TimeUnit.SECONDS);
             final Message<HttpResponse, Publisher<ByteBuffer>> message = consumer.getResponseFuture()
-                .get(10, TimeUnit.SECONDS);
+                    .get(10, TimeUnit.SECONDS);
             final List<ByteBuffer> bufs = Observable.fromPublisher(message.getBody())
-                .collectInto(new ArrayList<ByteBuffer>(), List::add)
-                .blockingGet();
+                    .collectInto(new ArrayList<ByteBuffer>(), List::add)
+                    .blockingGet();
             for (final ByteBuffer buf : bufs) {
                 final byte[] bytes = new byte[buf.remaining()];
                 buf.get(bytes);
@@ -90,15 +104,6 @@ public class VsockAsync {
             }
         }
     }
-
-    private static SelectorProvider resolveVsockSelectorProvider() {
-        try {
-            return VsockSupport.resolveSelectorProvider();
-        } catch (final ReflectiveOperationException ex) {
-            throw new IllegalStateException("AFVSOCKSelectorProvider not found; async VSOCK will fail.", ex);
-        }
-    }
-
 
     private static void usage(final PrintStream printStream) {
         printStream.println("Usage: VsockAsync [cid] [port] [uri]");

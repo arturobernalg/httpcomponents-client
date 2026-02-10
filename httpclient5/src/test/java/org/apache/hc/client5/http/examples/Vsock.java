@@ -36,6 +36,20 @@ import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.socket.VsockAddress;
 
+/**
+ * Simple VSOCK client example.
+ *
+ * <p>Test server helper:</p>
+ * <pre>
+ * #!/bin/sh
+ * printf %b "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n"
+ * </pre>
+ *
+ * <p>Run the server:</p>
+ * <pre>
+ * socat -v VSOCK-LISTEN:5000,fork SYSTEM:/tmp/vsock_reply.sh
+ * </pre>
+ */
 public class Vsock {
     public static void main(final String[] args) throws IOException {
         if (args.length == 0 || "-h".equals(args[0]) || "--help".equals(args[0])) {
