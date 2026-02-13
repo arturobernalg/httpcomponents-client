@@ -962,7 +962,17 @@ public class H2AsyncClientBuilder {
         }
 
         final MultihomeConnectionInitiator connectionInitiator = new MultihomeConnectionInitiator(ioReactor, dnsResolver);
-        final InternalH2ConnPool connPool = new InternalH2ConnPool(connectionInitiator, host -> null, tlsStrategyCopy);
+        final InternalH2ConnPool connPool = new InternalH2ConnPool(
+                connectionInitiator,
+                host -> null,
+                tlsStrategyCopy,
+                new DefaultHttpProcessor(new RequestTargetHost(), new RequestUserAgent(userAgentCopy)),
+                proxyAuthStrategyCopy,
+                defaultRequestConfig != null ? defaultRequestConfig : RequestConfig.DEFAULT,
+                credentialsProviderCopy,
+                authSchemeRegistryCopy,
+                schemePortResolver != null ? schemePortResolver : DefaultSchemePortResolver.INSTANCE,
+                authCachingDisabled);
         connPool.setConnectionConfigResolver(connectionConfigResolver);
 
         List<Closeable> closeablesCopy = closeables != null ? new ArrayList<>(closeables) : null;

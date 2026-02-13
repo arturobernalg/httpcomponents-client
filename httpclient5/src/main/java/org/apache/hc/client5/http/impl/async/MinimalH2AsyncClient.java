@@ -143,8 +143,13 @@ public final class MinimalH2AsyncClient extends AbstractMinimalHttpAsyncClientBa
                 @SuppressWarnings("deprecation")
                 final Timeout connectTimeout = requestConfig.getConnectTimeout();
                 final HttpHost target = new HttpHost(request.getScheme(), request.getAuthority());
+                final HttpHost proxy = requestConfig.getProxy();
+                if (proxy != null) {
+                    throw new HttpException("Proxy execution is not supported by MinimalH2AsyncClient");
+                }
+                final HttpRoute route = new HttpRoute(target);
 
-                final Future<IOSession> sessionFuture = connPool.getSession(new HttpRoute(target), connectTimeout,
+                final Future<IOSession> sessionFuture = connPool.getSession(route, connectTimeout,
                     new FutureCallback<IOSession>() {
 
                     @Override

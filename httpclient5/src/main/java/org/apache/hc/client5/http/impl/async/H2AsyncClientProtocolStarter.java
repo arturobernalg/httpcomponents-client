@@ -30,10 +30,19 @@ package org.apache.hc.client5.http.impl.async;
 import java.io.IOException;
 import java.util.List;
 
+import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.core5.function.Callback;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpConnection;
 import org.apache.hc.core5.http.config.CharCodingConfig;
+import org.apache.hc.core5.http.config.Http1Config;
+import org.apache.hc.core5.http.impl.DefaultConnectionReuseStrategy;
+import org.apache.hc.core5.http.impl.DefaultContentLengthStrategy;
+import org.apache.hc.core5.http.impl.HttpProcessors;
+import org.apache.hc.core5.http.impl.nio.ClientHttp1IOEventHandler;
+import org.apache.hc.core5.http.impl.nio.ClientHttp1StreamDuplexerFactory;
+import org.apache.hc.core5.http.impl.nio.DefaultHttpRequestWriterFactory;
+import org.apache.hc.core5.http.impl.nio.DefaultHttpResponseParserFactory;
 import org.apache.hc.core5.http.nio.AsyncPushConsumer;
 import org.apache.hc.core5.http.nio.HandlerFactory;
 import org.apache.hc.core5.http.protocol.HttpProcessor;
@@ -42,7 +51,9 @@ import org.apache.hc.core5.http2.frame.FramePrinter;
 import org.apache.hc.core5.http2.frame.RawFrame;
 import org.apache.hc.core5.http2.impl.nio.ClientH2PrefaceHandler;
 import org.apache.hc.core5.http2.impl.nio.ClientH2StreamMultiplexerFactory;
+import org.apache.hc.core5.http2.impl.nio.ClientH2UpgradeHandler;
 import org.apache.hc.core5.http2.impl.nio.H2StreamListener;
+import org.apache.hc.core5.http2.ssl.ApplicationProtocol;
 import org.apache.hc.core5.reactor.IOEventHandler;
 import org.apache.hc.core5.reactor.IOEventHandlerFactory;
 import org.apache.hc.core5.reactor.ProtocolIOSession;
@@ -62,6 +73,7 @@ class H2AsyncClientProtocolStarter implements IOEventHandlerFactory {
     private final H2Config h2Config;
     private final CharCodingConfig charCodingConfig;
     private final Callback<Exception> exceptionCallback;
+    private final ClientHttp1StreamDuplexerFactory http1StreamHandlerFactory;
 
     H2AsyncClientProtocolStarter(
             final HttpProcessor httpProcessor,
@@ -74,10 +86,32 @@ class H2AsyncClientProtocolStarter implements IOEventHandlerFactory {
         this.h2Config = h2Config != null ? h2Config : H2Config.DEFAULT;
         this.charCodingConfig = charCodingConfig != null ? charCodingConfig : CharCodingConfig.DEFAULT;
         this.exceptionCallback = exceptionCallback;
+        this.http1StreamHandlerFactory = new ClientHttp1StreamDuplexerFactory(
+                HttpProcessors.client(),
+                Http1Config.DEFAULT,
+                this.charCodingConfig,
+                DefaultConnectionReuseStrategy.INSTANCE,
+                new DefaultHttpResponseParserFactory(Http1Config.DEFAULT),
+                DefaultHttpRequestWriterFactory.INSTANCE,
+                DefaultContentLengthStrategy.INSTANCE,
+                DefaultContentLengthStrategy.INSTANCE,
+                null);
     }
 
     @Override
     public IOEventHandler createHandler(final ProtocolIOSession ioSession, final Object attachment) {
+        if (attachment instanceof HttpRoute && ((HttpRoute) attachment).isTunnelled()) {
+            ioSession.registerProtocol(ApplicationProtocol.HTTP_2.id, new ClientH2UpgradeHandler(
+                    new ClientH2StreamMultiplexerFactory(
+                            httpProcessor,
+                            exchangeHandlerFactory,
+                            h2Config,
+                            charCodingConfig,
+                            null),
+                    exceptionCallback));
+            return new ClientHttp1IOEventHandler(http1StreamHandlerFactory.create(ioSession));
+        }
+
         if (HEADER_LOG.isDebugEnabled()
                 || FRAME_LOG.isDebugEnabled()
                 || FRAME_PAYLOAD_LOG.isDebugEnabled()
@@ -169,6 +203,7 @@ class H2AsyncClientProtocolStarter implements IOEventHandlerFactory {
                     });
             return new ClientH2PrefaceHandler(ioSession, http2StreamHandlerFactory, false, exceptionCallback);
         }
+
         final ClientH2StreamMultiplexerFactory http2StreamHandlerFactory = new ClientH2StreamMultiplexerFactory(
                 httpProcessor,
                 exchangeHandlerFactory,
@@ -176,6 +211,6 @@ class H2AsyncClientProtocolStarter implements IOEventHandlerFactory {
                 charCodingConfig,
                 null);
         return new ClientH2PrefaceHandler(ioSession, http2StreamHandlerFactory, false, exceptionCallback);
-   }
+    }
 
 }
