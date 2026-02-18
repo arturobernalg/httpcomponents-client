@@ -259,4 +259,23 @@ class CacheControlParserTest {
         assertTrue(cacheControl.isImmutable());
     }
 
+    @Test
+    void testParseRequestMaxStaleWithoutValue() {
+        // RFC 9111: "max-stale" without a value means accept any staleness
+        final Header header = new BasicHeader("Cache-Control", "max-stale");
+        final RequestCacheControl cacheControl = parser.parseRequest(Collections.singletonList(header).iterator());
+
+        assertEquals(Long.MAX_VALUE, cacheControl.getMaxStale());
+    }
+
+    @Test
+    void testParseRequestMaxStaleEmptyValueIsInvalid() {
+        // "max-stale=" is not the same as bare "max-stale" (missing delta-seconds)
+        final Header header = new BasicHeader("Cache-Control", "max-stale=");
+        final RequestCacheControl cacheControl = parser.parseRequest(Collections.singletonList(header).iterator());
+
+        assertEquals(-1L, cacheControl.getMaxStale());
+    }
+
+
 }

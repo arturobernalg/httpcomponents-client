@@ -230,7 +230,11 @@ class CacheControlHeaderParser {
             if (name.equalsIgnoreCase(HeaderConstants.CACHE_CONTROL_MAX_AGE)) {
                 builder.setMaxAge(parseSeconds(name, value));
             } else if (name.equalsIgnoreCase(HeaderConstants.CACHE_CONTROL_MAX_STALE)) {
-                builder.setMaxStale(parseSeconds(name, value));
+                if (value == null) {
+                    builder.setMaxStale(Long.MAX_VALUE);
+                } else {
+                    builder.setMaxStale(parseSeconds(name, value));
+                }
             } else if (name.equalsIgnoreCase(HeaderConstants.CACHE_CONTROL_MIN_FRESH)) {
                 builder.setMinFresh(parseSeconds(name, value));
             } else if (name.equalsIgnoreCase(HeaderConstants.CACHE_CONTROL_NO_STORE)) {
