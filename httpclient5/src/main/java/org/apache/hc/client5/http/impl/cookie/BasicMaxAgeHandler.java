@@ -69,9 +69,10 @@ public class BasicMaxAgeHandler extends AbstractCookieAttributeHandler implement
             throw new MalformedCookieException ("Invalid 'max-age' attribute: "
                     + value);
         }
-        if (age < 0) {
-            throw new MalformedCookieException ("Negative 'max-age' attribute: "
-                    + value);
+        if (age <= 0) {
+            // RFC 6265 user-agent processing: delta-seconds <= 0 means immediate expiry.
+            cookie.setExpiryDate(Instant.EPOCH);
+            return;
         }
         cookie.setExpiryDate(Instant.now().plusSeconds(age));
     }
