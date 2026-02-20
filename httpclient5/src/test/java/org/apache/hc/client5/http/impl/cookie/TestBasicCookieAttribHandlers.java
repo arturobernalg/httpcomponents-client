@@ -271,6 +271,17 @@ class TestBasicCookieAttribHandlers {
     }
 
     @Test
+    void testBasicMaxAgeParseDeleteNow() throws Exception {
+        final BasicClientCookie cookie = new BasicClientCookie("name", "value");
+        final CookieAttributeHandler h = BasicMaxAgeHandler.INSTANCE;
+        h.parse(cookie, "0");
+        Assertions.assertEquals(Instant.EPOCH, cookie.getExpiryInstant());
+        final BasicClientCookie cookie2 = new BasicClientCookie("name", "value");
+        h.parse(cookie2, "-1");
+        Assertions.assertEquals(Instant.EPOCH, cookie2.getExpiryInstant());
+    }
+
+    @Test
     void testBasicMaxAgeParseInvalid() {
         final BasicClientCookie cookie = new BasicClientCookie("name", "value");
         final CookieAttributeHandler h = BasicMaxAgeHandler.INSTANCE;
