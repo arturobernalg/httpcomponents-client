@@ -68,9 +68,9 @@
     <conscrypt.version>2.5.2</conscrypt.version>
     <ehcache.version>3.11.1</ehcache.version>
     <memcached.version>2.12.3</memcached.version>
-    <slf4j.version>1.7.36</slf4j.version>
-    <junit.version>5.14.3</junit.version>
-    <mockito.version>4.11.0</mockito.version>
+    <slf4j.version>2.0.17</slf4j.version>
+    <junit.version>6.0.3</junit.version>
+    <mockito.version>5.22.0</mockito.version>
     <hc.stylecheck.version>1</hc.stylecheck.version>
     <rxjava3.version>3.1.12</rxjava3.version>
     <testcontainers.version>1.21.4</testcontainers.version>
@@ -83,7 +83,7 @@
     <micrometer.tracing.version>1.6.3</micrometer.tracing.version>
     <otel.version>1.59.0</otel.version>     <!-- already used elsewhere -->
     <commons-compress.version>1.26.2</commons-compress.version>
-    <caffeine.version>2.9.3</caffeine.version>  <!-- java 8. current version 3.2.3 -->
+    <caffeine.version>3.2.3</caffeine.version>  <!-- java 8. current version 3.2.3 -->
   </properties>
 
   <dependencyManagement>
