@@ -88,7 +88,11 @@ class ResponseEntityProxy extends HttpEntityWrapper implements EofSensorWatcher 
 
     @Override
     public InputStream getContent() throws IOException {
-        return new EofSensorInputStream(super.getContent(), this);
+        final InputStream content = super.getContent();
+        if (execRuntime == null || !execRuntime.hasExecutionDeadline()) {
+            return new EofSensorInputStream(content, this);
+        }
+        return new EofSensorInputStream(new DeadlineEnforcingInputStream(content, execRuntime), this);
     }
 
     @Override
@@ -224,6 +228,93 @@ class ResponseEntityProxy extends HttpEntityWrapper implements EofSensorWatcher 
         @Override
         public String toString() {
             return "NullOutputStream{}";
+        }
+    }
+
+    private static final class DeadlineEnforcingInputStream extends InputStream {
+
+        private final InputStream delegate;
+        private final ExecRuntime execRuntime;
+
+        DeadlineEnforcingInputStream(final InputStream delegate, final ExecRuntime execRuntime) {
+            this.delegate = delegate;
+            this.execRuntime = execRuntime;
+        }
+
+        private void beforeRead() throws IOException {
+            if (execRuntime != null) {
+                execRuntime.checkExecutionDeadline();
+                execRuntime.applyResponseTimeout();
+            }
+        }
+
+        private IOException map(final IOException ex) {
+            return execRuntime != null ? execRuntime.mapTimeoutException(ex) : ex;
+        }
+
+        @Override
+        public int read() throws IOException {
+            beforeRead();
+            try {
+                return delegate.read();
+            } catch (final IOException ex) {
+                throw map(ex);
+            }
+        }
+
+        @Override
+        public int read(final byte[] b) throws IOException {
+            beforeRead();
+            try {
+                return delegate.read(b);
+            } catch (final IOException ex) {
+                throw map(ex);
+            }
+        }
+
+        @Override
+        public int read(final byte[] b, final int off, final int len) throws IOException {
+            beforeRead();
+            try {
+                return delegate.read(b, off, len);
+            } catch (final IOException ex) {
+                throw map(ex);
+            }
+        }
+
+        @Override
+        public long skip(final long n) throws IOException {
+            beforeRead();
+            try {
+                return delegate.skip(n);
+            } catch (final IOException ex) {
+                throw map(ex);
+            }
+        }
+
+        @Override
+        public int available() throws IOException {
+            return delegate.available();
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
+
+        @Override
+        public synchronized void mark(final int readlimit) {
+            delegate.mark(readlimit);
+        }
+
+        @Override
+        public synchronized void reset() throws IOException {
+            delegate.reset();
+        }
+
+        @Override
+        public boolean markSupported() {
+            return delegate.markSupported();
         }
     }
 }

@@ -106,6 +106,7 @@ public final class RedirectExec implements ExecChainHandler {
         ClassicHttpRequest currentRequest = request;
         ExecChain.Scope currentScope = scope;
         for (int redirectCount = 0;;) {
+            currentScope.execRuntime.checkExecutionDeadline();
             final String exchangeId = currentScope.exchangeId;
             final ClassicHttpResponse response = chain.proceed(currentRequest, currentScope);
             try {
@@ -215,6 +216,7 @@ public final class RedirectExec implements ExecChainHandler {
                     currentRequest = redirect;
                     RequestEntityProxy.enhance(currentRequest);
 
+                    currentScope.execRuntime.applyResponseTimeout();
                     EntityUtils.consume(response.getEntity());
                     response.close();
                 } else {
@@ -227,6 +229,7 @@ public final class RedirectExec implements ExecChainHandler {
                 // Protocol exception related to a direct.
                 // The underlying connection may still be salvaged.
                 try {
+                    currentScope.execRuntime.applyResponseTimeout();
                     EntityUtils.consume(response.getEntity());
                 } catch (final IOException ioex) {
                     if (LOG.isDebugEnabled()) {

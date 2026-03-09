@@ -65,6 +65,9 @@ import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.io.ModalCloseable;
 import org.apache.hc.core5.net.URIAuthority;
 import org.apache.hc.core5.util.Args;
+import org.apache.hc.core5.util.Deadline;
+import org.apache.hc.core5.util.TimeValue;
+import org.apache.hc.core5.util.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -183,7 +186,8 @@ class InternalHttpClient extends CloseableHttpClient implements Configurable {
             }
 
             final ExecRuntime execRuntime = new InternalExecRuntime(LOG, connManager, requestExecutor,
-                    request instanceof CancellableDependency ? (CancellableDependency) request : null);
+                    request instanceof CancellableDependency ? (CancellableDependency) request : null,
+                    resolveExecutionDeadline(localcontext.getRequestConfigOrDefault()));
             final ExecChain.Scope scope = new ExecChain.Scope(exchangeId, route, request, execRuntime, localcontext);
             final ClassicHttpResponse response = this.execChain.execute(ClassicRequestBuilder.copy(request).build(), scope);
             return CloseableHttpResponse.adapt(response);
@@ -218,6 +222,20 @@ class InternalHttpClient extends CloseableHttpClient implements Configurable {
                 }
             }
         }
+    }
+
+    private static Deadline resolveExecutionDeadline(final RequestConfig requestConfig) {
+        if (requestConfig != null) {
+            final Deadline executionDeadline = requestConfig.getExecutionDeadline();
+            if (executionDeadline != null && !executionDeadline.isMax()) {
+                return executionDeadline;
+            }
+            final Timeout executionTimeout = requestConfig.getExecutionTimeout();
+            if (TimeValue.isPositive(executionTimeout)) {
+                return Deadline.calculate(executionTimeout);
+            }
+        }
+        return Deadline.MAX_VALUE;
     }
 
 }

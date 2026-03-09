@@ -119,6 +119,7 @@ public final class ConnectExec implements ExecChainHandler {
         final HttpClientContext context = scope.clientContext;
         final ExecRuntime execRuntime = scope.execRuntime;
 
+        execRuntime.checkExecutionDeadline();
         if (!execRuntime.isEndpointAcquired()) {
             final Object userToken = context.getUserToken();
             if (LOG.isDebugEnabled()) {
@@ -231,6 +232,7 @@ public final class ConnectExec implements ExecChainHandler {
         this.proxyHttpProcessor.process(connect, null, context);
 
         while (response == null) {
+            execRuntime.checkExecutionDeadline();
             connect.removeHeaders(HttpHeaders.PROXY_AUTHORIZATION);
             this.authenticator.addAuthResponse(proxy, ChallengeType.PROXY, connect, proxyAuthExchange, context);
 
@@ -269,6 +271,7 @@ public final class ConnectExec implements ExecChainHandler {
                             }
                             // Consume response content
                             final HttpEntity entity = response.getEntity();
+                            execRuntime.applyResponseTimeout();
                             EntityUtils.consume(entity);
                         } else {
                             execRuntime.disconnectEndpoint();
@@ -285,6 +288,7 @@ public final class ConnectExec implements ExecChainHandler {
         } else {
             final HttpEntity entity = response.getEntity();
             if (entity != null) {
+                execRuntime.applyResponseTimeout();
                 response.setEntity(new ByteArrayEntity(
                         EntityUtils.toByteArray(entity, 4096),
                         ContentType.parseLenient(entity.getContentType())));

@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.hc.client5.http.auth.StandardAuthScheme;
 import org.apache.hc.client5.http.cookie.StandardCookieSpec;
+import org.apache.hc.core5.util.Deadline;
 import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
 import org.junit.jupiter.api.Assertions;
@@ -58,6 +59,8 @@ class TestRequestConfig {
         Assertions.assertNull(config.getTargetPreferredAuthSchemes());
         Assertions.assertNull(config.getProxyPreferredAuthSchemes());
         Assertions.assertTrue(config.isContentCompressionEnabled());
+        Assertions.assertNull(config.getExecutionTimeout());
+        Assertions.assertNull(config.getExecutionDeadline());
     }
 
     @Test
@@ -73,6 +76,7 @@ class TestRequestConfig {
                 .setTargetPreferredAuthSchemes(Collections.singletonList(StandardAuthScheme.BEARER))
                 .setProxyPreferredAuthSchemes(Collections.singletonList(StandardAuthScheme.DIGEST))
                 .setContentCompressionEnabled(false)
+                .setExecutionTimeout(Timeout.ofSeconds(5))
                 .build();
         final RequestConfig config = RequestConfig.copy(config0).build();
         Assertions.assertEquals(TimeValue.ofMilliseconds(44), config.getConnectionRequestTimeout());
@@ -85,6 +89,54 @@ class TestRequestConfig {
         Assertions.assertEquals(Collections.singletonList(StandardAuthScheme.BEARER), config.getTargetPreferredAuthSchemes());
         Assertions.assertEquals(Collections.singletonList(StandardAuthScheme.DIGEST), config.getProxyPreferredAuthSchemes());
         Assertions.assertFalse(config.isContentCompressionEnabled());
+        Assertions.assertEquals(Timeout.ofSeconds(5), config.getExecutionTimeout());
+    }
+
+    @Test
+    void testExecutionDeadlineRoundTrip() {
+        final long epochMs = System.currentTimeMillis() + 10_000;
+        final Deadline deadline = Deadline.fromUnixMilliseconds(epochMs);
+
+        final RequestConfig config = RequestConfig.custom()
+                .setExecutionDeadline(deadline)
+                .build();
+        Assertions.assertNotNull(config.getExecutionDeadline());
+        Assertions.assertEquals(epochMs, config.getExecutionDeadline().getValue());
+    }
+
+    @Test
+    void testExecutionDeadlineSurvivedCopy() {
+        final long epochMs = System.currentTimeMillis() + 10_000;
+        final Deadline deadline = Deadline.fromUnixMilliseconds(epochMs);
+
+        final RequestConfig original = RequestConfig.custom()
+                .setExecutionDeadline(deadline)
+                .build();
+        final RequestConfig copy = RequestConfig.copy(original).build();
+
+        Assertions.assertNotNull(copy.getExecutionDeadline());
+        Assertions.assertEquals(epochMs, copy.getExecutionDeadline().getValue());
+    }
+
+    @Test
+    void testExecutionDeadlineInToString() {
+        final long epochMs = System.currentTimeMillis() + 10_000;
+        final RequestConfig config = RequestConfig.custom()
+                .setExecutionDeadline(Deadline.fromUnixMilliseconds(epochMs))
+                .build();
+        Assertions.assertTrue(config.toString().contains("executionDeadline="));
+    }
+
+    @Test
+    void testExecutionDeadlineTakesPrecedenceOverTimeout() {
+        final long epochMs = System.currentTimeMillis() + 10_000;
+        final RequestConfig config = RequestConfig.custom()
+                .setExecutionTimeout(Timeout.ofSeconds(30))
+                .setExecutionDeadline(Deadline.fromUnixMilliseconds(epochMs))
+                .build();
+        Assertions.assertNotNull(config.getExecutionDeadline());
+        Assertions.assertNotNull(config.getExecutionTimeout());
+        Assertions.assertEquals(epochMs, config.getExecutionDeadline().getValue());
     }
 
 }

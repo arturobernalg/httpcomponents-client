@@ -34,7 +34,7 @@ import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.client5.http.classic.ExecChain;
 import org.apache.hc.client5.http.classic.ExecChain.Scope;
 import org.apache.hc.client5.http.classic.ExecChainHandler;
-import org.apache.hc.client5.http.impl.ChainElement;
+import org.apache.hc.client5.http.classic.ExecRuntime;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.Internal;
@@ -48,6 +48,7 @@ import org.apache.hc.core5.http.NoHttpResponseException;
 import org.apache.hc.core5.http.io.support.ClassicRequestBuilder;
 import org.apache.hc.core5.util.Args;
 import org.apache.hc.core5.util.TimeValue;
+import org.apache.hc.core5.util.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -108,6 +109,7 @@ public class HttpRequestRetryExec implements ExecChainHandler {
         ClassicHttpRequest currentRequest = request;
 
         for (int execCount = 1;; execCount++) {
+            scope.execRuntime.checkExecutionDeadline();
             try {
                 final ClassicHttpResponse response = chain.proceed(currentRequest, scope);
                 try {
@@ -126,7 +128,7 @@ public class HttpRequestRetryExec implements ExecChainHandler {
                                             "request will be automatically re-executed in {} (exec count {})",
                                     exchangeId, target, response.getCode(), delay, execCount + 1);
                         }
-                        pause(delay);
+                        pause(delay, scope.execRuntime);
                         currentRequest = ClassicRequestBuilder.copy(scope.originalRequest).build();
                     } else {
                         return response;
@@ -136,6 +138,9 @@ public class HttpRequestRetryExec implements ExecChainHandler {
                     throw ex;
                 }
             } catch (final IOException ex) {
+                if (ex instanceof RequestExecutionTimeoutException) {
+                    throw ex;
+                }
                 if (scope.execRuntime.isExecutionAborted()) {
                     throw new RequestFailedException("Request aborted");
                 }
@@ -156,7 +161,7 @@ public class HttpRequestRetryExec implements ExecChainHandler {
                                         "request will be automatically re-executed in {} (exec count {})",
                                 exchangeId, ex.getClass().getName(), target, delay, execCount + 1);
                     }
-                    pause(delay);
+                    pause(delay, scope.execRuntime);
                     currentRequest = ClassicRequestBuilder.copy(scope.originalRequest).build();
                     continue;
                 }
@@ -171,15 +176,30 @@ public class HttpRequestRetryExec implements ExecChainHandler {
         }
     }
 
-    private static void pause(final TimeValue delay) throws InterruptedIOException {
-        if (TimeValue.isPositive(delay)) {
+    private static void pause(final TimeValue delay, final ExecRuntime execRuntime) throws IOException {
+        if (!TimeValue.isPositive(delay)) {
+            return;
+        }
+        if (execRuntime == null || !execRuntime.hasExecutionDeadline()) {
             try {
                 delay.sleep();
             } catch (final InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new InterruptedIOException();
             }
+            return;
         }
+        execRuntime.checkExecutionDeadline();
+        final Timeout effectiveDelay = execRuntime.clampTimeout(Timeout.ofMilliseconds(delay.toMilliseconds()));
+        if (TimeValue.isPositive(effectiveDelay)) {
+            try {
+                effectiveDelay.sleep();
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new InterruptedIOException();
+            }
+        }
+        execRuntime.checkExecutionDeadline();
     }
 
 }

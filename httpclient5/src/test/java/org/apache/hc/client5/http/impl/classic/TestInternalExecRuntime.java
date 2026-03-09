@@ -26,6 +26,8 @@
  */
 package org.apache.hc.client5.http.impl.classic;
 
+import java.io.IOException;
+import java.net.SocketTimeoutException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -36,11 +38,13 @@ import org.apache.hc.client5.http.io.ConnectionEndpoint;
 import org.apache.hc.client5.http.io.HttpClientConnectionManager;
 import org.apache.hc.client5.http.io.LeaseRequest;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
+import org.apache.hc.client5.http.classic.ExecRuntime;
 import org.apache.hc.core5.concurrent.CancellableDependency;
 import org.apache.hc.core5.http.ConnectionRequestTimeoutException;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.impl.io.HttpRequestExecutor;
 import org.apache.hc.core5.io.CloseMode;
+import org.apache.hc.core5.util.Deadline;
 import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
 import org.junit.jupiter.api.Assertions;
@@ -278,6 +282,256 @@ class TestInternalExecRuntime {
         execRuntime.connectEndpoint(context);
 
         Mockito.verify(mgr).connect(connectionEndpoint, Timeout.ofMilliseconds(123), context);
+    }
+
+    @Test
+    void testCheckExecutionDeadlineNotExpired() throws Exception {
+        final Deadline future = Deadline.calculate(Timeout.ofSeconds(60));
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, future);
+
+        Assertions.assertTrue(runtimeWithDeadline.hasExecutionDeadline());
+        Assertions.assertDoesNotThrow(runtimeWithDeadline::checkExecutionDeadline);
+    }
+
+    @Test
+    void testCheckExecutionDeadlineExpired() {
+        final Deadline expired = Deadline.fromUnixMilliseconds(System.currentTimeMillis() - 1000);
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, expired);
+
+        Assertions.assertTrue(runtimeWithDeadline.hasExecutionDeadline());
+        Assertions.assertThrows(RequestExecutionTimeoutException.class,
+                runtimeWithDeadline::checkExecutionDeadline);
+    }
+
+    @Test
+    void testHasExecutionDeadlineFalseByDefault() {
+        Assertions.assertFalse(execRuntime.hasExecutionDeadline());
+    }
+
+    @Test
+    void testClampTimeoutWithRemainingBudget() throws Exception {
+        // deadline 60s out → configured timeout (100ms) is smaller → returned as-is
+        final Deadline farFuture = Deadline.calculate(Timeout.ofSeconds(60));
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, farFuture);
+
+        final Timeout result = runtimeWithDeadline.clampTimeout(Timeout.ofMilliseconds(100));
+        Assertions.assertEquals(Timeout.ofMilliseconds(100), result);
+    }
+
+    @Test
+    void testClampTimeoutDeadlineSmallerThanConfigured() throws Exception {
+        // deadline 200ms out, configured timeout 10s → clamped to ~200ms
+        final Deadline nearFuture = Deadline.calculate(Timeout.ofMilliseconds(200));
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, nearFuture);
+
+        final Timeout result = runtimeWithDeadline.clampTimeout(Timeout.ofSeconds(10));
+        Assertions.assertNotNull(result);
+        Assertions.assertTrue(result.toMilliseconds() <= 200,
+                "Clamped timeout should be at most the remaining deadline budget");
+    }
+
+    @Test
+    void testClampTimeoutWhenDeadlineAlreadyExpired() {
+        final Deadline expired = Deadline.fromUnixMilliseconds(System.currentTimeMillis() - 1000);
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, expired);
+
+        Assertions.assertThrows(RequestExecutionTimeoutException.class,
+                () -> runtimeWithDeadline.clampTimeout(Timeout.ofSeconds(10)));
+    }
+
+    @Test
+    void testMapTimeoutExceptionWrapsWhenDeadlineExpired() {
+        final Deadline expired = Deadline.fromUnixMilliseconds(System.currentTimeMillis() - 1000);
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, expired);
+
+        final IOException original = new SocketTimeoutException("read timed out");
+        final IOException mapped = runtimeWithDeadline.mapTimeoutException(original);
+
+        Assertions.assertInstanceOf(RequestExecutionTimeoutException.class, mapped);
+        Assertions.assertSame(original, mapped.getCause());
+    }
+
+    @Test
+    void testMapTimeoutExceptionPassthroughWhenNoDeadline() {
+        final IOException original = new SocketTimeoutException("read timed out");
+        final IOException mapped = execRuntime.mapTimeoutException(original);
+
+        Assertions.assertSame(original, mapped);
+    }
+
+    @Test
+    void testMapTimeoutExceptionAlreadyRequestExecutionTimeout() {
+        final Deadline expired = Deadline.fromUnixMilliseconds(System.currentTimeMillis() - 1000);
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, expired);
+
+        final RequestExecutionTimeoutException already = RequestExecutionTimeoutException.from(expired);
+        final IOException mapped = runtimeWithDeadline.mapTimeoutException(already);
+
+        Assertions.assertSame(already, mapped);
+    }
+
+    @Test
+    void testAcquireEndpointLeaseTimeoutWithExpiredDeadlineThrowsRequestExecutionTimeout() throws Exception {
+        final Deadline expired = Deadline.fromUnixMilliseconds(System.currentTimeMillis() - 1000);
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, expired);
+
+        final HttpClientContext context = HttpClientContext.create();
+
+        Mockito.when(mgr.lease(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any()))
+                .thenReturn(leaseRequest);
+        Mockito.when(leaseRequest.get(Mockito.any())).thenThrow(new TimeoutException("pool exhausted"));
+
+        Assertions.assertThrows(RequestExecutionTimeoutException.class,
+                () -> runtimeWithDeadline.acquireEndpoint("some-id", route, null, context));
+    }
+
+
+    @Test
+    void testAcquireEndpointWithExpiredDeadlineThrowsBeforeLeasing() throws Exception {
+        // When the deadline is already expired, acquireEndpoint must throw immediately
+        // without ever calling manager.lease(), so no connection pool slot is wasted.
+        final Deadline expired = Deadline.fromUnixMilliseconds(System.currentTimeMillis() - 1000);
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, expired);
+        final HttpClientContext context = HttpClientContext.create();
+
+        Assertions.assertThrows(RequestExecutionTimeoutException.class,
+                () -> runtimeWithDeadline.acquireEndpoint("some-id", route, null, context));
+
+        Mockito.verify(mgr, Mockito.never()).lease(
+                Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
+    @Test
+    void testAcquireEndpointWithActiveDeadlineClampsConnectionRequestTimeout() throws Exception {
+        // The connection-request timeout must be clamped to the remaining deadline budget
+        // so it cannot outlive the overall execution deadline.
+        final Deadline nearFuture = Deadline.calculate(Timeout.ofMilliseconds(200));
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, nearFuture);
+
+        final HttpClientContext context = HttpClientContext.create();
+        context.setRequestConfig(RequestConfig.custom()
+                .setConnectionRequestTimeout(Timeout.ofSeconds(30))
+                .build());
+
+        Mockito.when(mgr.lease(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any()))
+                .thenReturn(leaseRequest);
+        Mockito.when(leaseRequest.get(Mockito.any())).thenReturn(connectionEndpoint);
+
+        runtimeWithDeadline.acquireEndpoint("some-id", route, null, context);
+
+        // The effective timeout passed to leaseRequest.get() must be <= 200ms (the budget),
+        // not 30s (the configured connectionRequestTimeout).
+        Mockito.verify(leaseRequest).get(Mockito.argThat(
+                t -> t != null && t.toMilliseconds() <= 200));
+    }
+
+
+    @Test
+    void testHasExecutionDeadlineTrueWhenSet() {
+        final Deadline future = Deadline.calculate(Timeout.ofSeconds(10));
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, future);
+
+        Assertions.assertTrue(runtimeWithDeadline.hasExecutionDeadline());
+    }
+
+    @Test
+    void testHasExecutionDeadlineFalseForMaxValueDeadline() {
+        // MAX_VALUE is the "no deadline" sentinel — must report as having no deadline.
+        final InternalExecRuntime runtimeWithMaxDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, Deadline.MAX_VALUE);
+
+        Assertions.assertFalse(runtimeWithMaxDeadline.hasExecutionDeadline());
+    }
+
+
+    @Test
+    void testClampTimeoutNullConfiguredWithActiveDeadlineReturnsBudget() throws Exception {
+        // If the caller passes null (no configured timeout) but a deadline is active,
+        // clampTimeout must return the remaining budget as the effective timeout.
+        final Deadline nearFuture = Deadline.calculate(Timeout.ofMilliseconds(500));
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, nearFuture);
+
+        final Timeout result = runtimeWithDeadline.clampTimeout(null);
+
+        Assertions.assertNotNull(result);
+        Assertions.assertTrue(result.toMilliseconds() > 0);
+        Assertions.assertTrue(result.toMilliseconds() <= 500);
+    }
+
+    @Test
+    void testClampTimeoutNoDeadlineNullConfiguredReturnsNull() throws Exception {
+        // No deadline and no configured timeout → clampTimeout must return null (unlimited).
+        final Timeout result = execRuntime.clampTimeout(null);
+
+        Assertions.assertNull(result);
+    }
+
+    @Test
+    void testClampTimeoutNoDeadlineReturnConfiguredUnchanged() throws Exception {
+        // When no deadline is set the configured timeout must be returned as-is.
+        final Timeout configured = Timeout.ofSeconds(5);
+        final Timeout result = execRuntime.clampTimeout(configured);
+
+        Assertions.assertSame(configured, result);
+    }
+
+
+    @Test
+    void testForkPropagatesActiveDeadlineToNewRuntime() {
+        final Deadline future = Deadline.calculate(Timeout.ofSeconds(30));
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, future);
+
+        final ExecRuntime forked = runtimeWithDeadline.fork(cancellableDependency);
+
+        Assertions.assertTrue(forked.hasExecutionDeadline(),
+                "forked runtime must inherit the parent's execution deadline");
+    }
+
+    @Test
+    void testForkWithNoDeadlineResultsInNoDeadlineInFork() {
+        // A runtime without a deadline must produce a fork without a deadline.
+        final ExecRuntime forked = execRuntime.fork(cancellableDependency);
+
+        Assertions.assertFalse(forked.hasExecutionDeadline());
+    }
+
+
+    @Test
+    void testMapTimeoutExceptionPassthroughWhenDeadlineNotExpired() {
+        // Even with an active deadline, if the deadline has not yet expired the
+        // original exception must be returned unchanged.
+        final Deadline future = Deadline.calculate(Timeout.ofSeconds(60));
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, future);
+
+        final IOException original = new SocketTimeoutException("read timed out");
+        final IOException mapped = runtimeWithDeadline.mapTimeoutException(original);
+
+        Assertions.assertSame(original, mapped);
+    }
+
+    @Test
+    void testAbsoluteDeadlineEnforcedLikeRelativeTimeout() {
+        final Deadline alreadyExpired = Deadline.fromUnixMilliseconds(System.currentTimeMillis() - 500);
+        final InternalExecRuntime runtimeWithDeadline = new InternalExecRuntime(
+                log, mgr, requestExecutor, cancellableDependency, alreadyExpired);
+
+        Assertions.assertTrue(runtimeWithDeadline.hasExecutionDeadline());
+        Assertions.assertThrows(RequestExecutionTimeoutException.class,
+                runtimeWithDeadline::checkExecutionDeadline);
     }
 
     @Test

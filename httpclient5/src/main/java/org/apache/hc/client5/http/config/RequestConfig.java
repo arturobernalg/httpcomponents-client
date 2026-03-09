@@ -36,6 +36,7 @@ import org.apache.hc.core5.annotation.Experimental;
 import org.apache.hc.core5.annotation.ThreadingBehavior;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http2.priority.PriorityValue;
+import org.apache.hc.core5.util.Deadline;
 import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
 
@@ -67,6 +68,9 @@ public class RequestConfig implements Cloneable {
     private final boolean hardCancellationEnabled;
     private final boolean protocolUpgradeEnabled;
     private final Path unixDomainSocket;
+
+    private final Timeout executionTimeout;
+    private final Deadline executionDeadline;
     /**
      * HTTP/2 Priority header value to emit when using H2+. Null means “don’t emit”.
      */
@@ -78,7 +82,7 @@ public class RequestConfig implements Cloneable {
     protected RequestConfig() {
         this(false, null, null, false, false, 0, false, null, null,
                 DEFAULT_CONNECTION_REQUEST_TIMEOUT, null, null, DEFAULT_CONN_KEEP_ALIVE, false, false, false, null,
-                null);
+                null, null, null);
     }
 
     RequestConfig(
@@ -99,7 +103,9 @@ public class RequestConfig implements Cloneable {
             final boolean hardCancellationEnabled,
             final boolean protocolUpgradeEnabled,
             final Path unixDomainSocket,
-            final PriorityValue h2Priority) {
+            final PriorityValue h2Priority,
+            final Timeout executionTimeout,
+            final Deadline executionDeadline) {
         super();
         this.expectContinueEnabled = expectContinueEnabled;
         this.proxy = proxy;
@@ -119,6 +125,8 @@ public class RequestConfig implements Cloneable {
         this.protocolUpgradeEnabled = protocolUpgradeEnabled;
         this.unixDomainSocket = unixDomainSocket;
         this.h2Priority = h2Priority;
+        this.executionTimeout = executionTimeout;
+        this.executionDeadline = executionDeadline;
     }
 
     /**
@@ -257,6 +265,22 @@ public class RequestConfig implements Cloneable {
         return (RequestConfig) super.clone();
     }
 
+    /**
+     * @see Builder#setExecutionTimeout(Timeout)
+     * @since 5.7
+     */
+    public Timeout getExecutionTimeout() {
+        return executionTimeout;
+    }
+
+    /**
+     * @see Builder#setExecutionDeadline(Deadline)
+     * @since 5.7
+     */
+    public Deadline getExecutionDeadline() {
+        return executionDeadline;
+    }
+
     @Override
     public String toString() {
         final StringBuilder builder = new StringBuilder();
@@ -279,6 +303,8 @@ public class RequestConfig implements Cloneable {
         builder.append(", protocolUpgradeEnabled=").append(protocolUpgradeEnabled);
         builder.append(", unixDomainSocket=").append(unixDomainSocket);
         builder.append(", h2Priority=").append(h2Priority);
+        builder.append(", executionTimeout=").append(executionTimeout);
+        builder.append(", executionDeadline=").append(executionDeadline);
         builder.append("]");
         return builder.toString();
     }
@@ -306,6 +332,8 @@ public class RequestConfig implements Cloneable {
             .setHardCancellationEnabled(config.isHardCancellationEnabled())
             .setProtocolUpgradeEnabled(config.isProtocolUpgradeEnabled())
             .setUnixDomainSocket(config.getUnixDomainSocket())
+            .setExecutionTimeout(config.getExecutionTimeout())
+            .setExecutionDeadline(config.getExecutionDeadline())
             .setH2Priority(config.getH2Priority());
     }
 
@@ -329,6 +357,8 @@ public class RequestConfig implements Cloneable {
         private boolean protocolUpgradeEnabled;
         private Path unixDomainSocket;
         private PriorityValue h2Priority;
+        private Timeout executionTimeout;
+        private Deadline executionDeadline;
 
         Builder() {
             super();
@@ -696,6 +726,62 @@ public class RequestConfig implements Cloneable {
             return this;
         }
 
+        /**
+         * Determines the maximum period of time for the complete request execution,
+         * expressed as a duration relative to the start of the request.
+         * This covers connection lease, connection establishment, protocol negotiation,
+         * automatic retries / redirects, and response body consumption.
+         * <p>
+         * For the classic (blocking) client the deadline is enforced cooperatively:
+         * all individual I/O timeouts (connect, response, retry delay) are clamped
+         * to the remaining budget, so a trickle-data response body may still exceed
+         * the deadline in the worst case. For the async client the deadline is
+         * enforced with a scheduled hard cancellation.
+         * <p>
+         * Use {@link #setExecutionDeadline(Deadline)} when an absolute deadline
+         * (e.g. forwarded from an upstream caller) is available instead.
+         * <p>
+         * A timeout value of zero is interpreted as an infinite timeout.
+         * <p>
+         * Default: {@code null}
+         *
+         * @since 5.7
+         */
+        public Builder setExecutionTimeout(final Timeout executionTimeout) {
+            this.executionTimeout = executionTimeout;
+            return this;
+        }
+
+        /**
+         * @see #setExecutionTimeout(Timeout)
+         * @since 5.7
+         */
+        public Builder setExecutionTimeout(final long executionTimeout, final TimeUnit timeUnit) {
+            this.executionTimeout = Timeout.of(executionTimeout, timeUnit);
+            return this;
+        }
+
+        /**
+         * Sets an absolute execution deadline for the complete request execution.
+         * This is the preferred alternative to {@link #setExecutionTimeout(Timeout)}
+         * when an absolute point-in-time deadline is available — for example when
+         * acting as an intermediate server (B) that must honour an upstream
+         * caller's (A's) deadline when calling a downstream service (C):
+         * <pre>
+         *   A ──► B ──► C
+         * </pre>
+         * When both {@code executionDeadline} and {@code executionTimeout} are set,
+         * {@code executionDeadline} takes precedence.
+         * <p>
+         * Default: {@code null}
+         *
+         * @since 5.7
+         */
+        public Builder setExecutionDeadline(final Deadline executionDeadline) {
+            this.executionDeadline = executionDeadline;
+            return this;
+        }
+
         public RequestConfig build() {
             return new RequestConfig(
                     expectContinueEnabled,
@@ -715,7 +801,9 @@ public class RequestConfig implements Cloneable {
                     hardCancellationEnabled,
                     protocolUpgradeEnabled,
                     unixDomainSocket,
-                    h2Priority);
+                    h2Priority,
+                    executionTimeout,
+                    executionDeadline);
         }
 
     }

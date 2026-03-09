@@ -174,7 +174,7 @@ public final class ProtocolExec implements ExecChainHandler {
             RequestEntityProxy.enhance(request);
 
             for (;;) {
-
+                execRuntime.checkExecutionDeadline();
                 if (!request.containsHeader(HttpHeaders.AUTHORIZATION)) {
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("{} target auth state: {}", exchangeId, targetAuthExchange.getState());
@@ -215,6 +215,7 @@ public final class ProtocolExec implements ExecChainHandler {
                     // Make sure the response body is fully consumed, if present
                     final HttpEntity responseEntity = response.getEntity();
                     if (execRuntime.isConnectionReusable()) {
+                        execRuntime.applyResponseTimeout();
                         EntityUtils.consume(responseEntity);
                     } else {
                         execRuntime.disconnectEndpoint();

@@ -63,7 +63,9 @@ import org.apache.hc.core5.http.protocol.RequestUserAgent;
 import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.net.URIAuthority;
 import org.apache.hc.core5.util.Args;
+import org.apache.hc.core5.util.Deadline;
 import org.apache.hc.core5.util.TimeValue;
+import org.apache.hc.core5.util.Timeout;
 import org.apache.hc.core5.util.VersionInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -105,6 +107,20 @@ public class MinimalHttpClient extends CloseableHttpClient {
                         "Apache-HttpClient", "org.apache.hc.client5", getClass())));
     }
 
+    private static Deadline resolveExecutionDeadline(final RequestConfig requestConfig) {
+        if (requestConfig != null) {
+            final Deadline executionDeadline = requestConfig.getExecutionDeadline();
+            if (executionDeadline != null && !executionDeadline.isMax()) {
+                return executionDeadline;
+            }
+            final Timeout executionTimeout = requestConfig.getExecutionTimeout();
+            if (TimeValue.isPositive(executionTimeout)) {
+                return Deadline.calculate(executionTimeout);
+            }
+        }
+        return Deadline.MAX_VALUE;
+    }
+
     @Override
     protected CloseableHttpResponse doExecute(
             final HttpHost target,
@@ -127,11 +143,12 @@ public class MinimalHttpClient extends CloseableHttpClient {
             clientContext.setRequestConfig(config);
         }
 
+        final RequestConfig requestConfig = clientContext.getRequestConfigOrDefault();
         final HttpRoute route = new HttpRoute(RoutingSupport.normalize(target, schemePortResolver));
         final String exchangeId = ExecSupport.getNextExchangeId();
         clientContext.setExchangeId(exchangeId);
         final ExecRuntime execRuntime = new InternalExecRuntime(LOG, connManager, requestExecutor,
-                request instanceof CancellableDependency ? (CancellableDependency) request : null);
+                request instanceof CancellableDependency ? (CancellableDependency) request : null, resolveExecutionDeadline(requestConfig));
         try {
             if (!execRuntime.isEndpointAcquired()) {
                 execRuntime.acquireEndpoint(exchangeId, route, null, clientContext);
@@ -160,7 +177,9 @@ public class MinimalHttpClient extends CloseableHttpClient {
                 execRuntime.releaseEndpoint();
                 return new CloseableHttpResponse(response);
             }
-            ResponseEntityProxy.enhance(response, execRuntime);
+            if (execRuntime.hasExecutionDeadline()) {
+                ResponseEntityProxy.enhance(response, execRuntime);
+            }
             return new CloseableHttpResponse(response, execRuntime);
         } catch (final ConnectionShutdownException ex) {
             final InterruptedIOException ioex = new InterruptedIOException("Connection has been shut down");

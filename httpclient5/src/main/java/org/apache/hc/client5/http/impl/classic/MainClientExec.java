@@ -111,6 +111,7 @@ public final class MainClientExec implements ExecChainHandler {
             LOG.debug("{} executing {} {}", exchangeId, request.getMethod(), request.getRequestUri());
         }
         try {
+            execRuntime.checkExecutionDeadline();
             // Run request protocol interceptors
             context.setRoute(route);
             context.setRequest(request);
@@ -171,6 +172,9 @@ public final class MainClientExec implements ExecChainHandler {
                 // connection not needed and (assumed to be) in re-usable state
                 execRuntime.releaseEndpoint();
                 return new CloseableHttpResponse(response);
+            }
+            if (execRuntime.hasExecutionDeadline()) {
+                ResponseEntityProxy.enhance(response, execRuntime);
             }
             return new CloseableHttpResponse(response, execRuntime);
         } catch (final ConnectionShutdownException ex) {

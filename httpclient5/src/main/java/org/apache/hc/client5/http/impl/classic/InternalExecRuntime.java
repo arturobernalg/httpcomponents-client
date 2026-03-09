@@ -51,6 +51,7 @@ import org.apache.hc.core5.http.impl.io.HttpRequestExecutor;
 import org.apache.hc.core5.http.io.HttpResponseInformationCallback;
 import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.util.Args;
+import org.apache.hc.core5.util.Deadline;
 import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
 import org.slf4j.Logger;
@@ -63,10 +64,28 @@ class InternalExecRuntime implements ExecRuntime, Cancellable {
     private final HttpRequestExecutor requestExecutor;
     private final CancellableDependency cancellableDependency;
     private final AtomicReference<ConnectionEndpoint> endpointRef;
+    private final Deadline executionDeadline;
 
     private volatile boolean reusable;
     private volatile Object state;
     private volatile TimeValue validDuration;
+    private volatile Timeout responseTimeout;
+
+    InternalExecRuntime(
+            final Logger log,
+            final HttpClientConnectionManager manager,
+            final HttpRequestExecutor requestExecutor,
+            final CancellableDependency cancellableDependency,
+            final Deadline executionDeadline) {
+        super();
+        this.log = log;
+        this.manager = manager;
+        this.requestExecutor = requestExecutor;
+        this.cancellableDependency = cancellableDependency;
+        this.endpointRef = new AtomicReference<>();
+        this.executionDeadline = executionDeadline != null ? executionDeadline : Deadline.MAX_VALUE;
+        this.validDuration = TimeValue.NEG_ONE_MILLISECOND;
+    }
 
     InternalExecRuntime(
             final Logger log,
@@ -79,6 +98,7 @@ class InternalExecRuntime implements ExecRuntime, Cancellable {
         this.requestExecutor = requestExecutor;
         this.cancellableDependency = cancellableDependency;
         this.endpointRef = new AtomicReference<>();
+        this.executionDeadline = Deadline.MAX_VALUE;
         this.validDuration = TimeValue.NEG_ONE_MILLISECOND;
     }
 
@@ -97,18 +117,20 @@ class InternalExecRuntime implements ExecRuntime, Cancellable {
             final String id, final HttpRoute route, final Object object, final HttpClientContext context) throws IOException {
         Args.notNull(route, "Route");
         if (endpointRef.get() == null) {
+            checkExecutionDeadline();
             final RequestConfig requestConfig = context.getRequestConfigOrDefault();
             final Timeout connectionRequestTimeout = requestConfig.getConnectionRequestTimeout();
+            final Timeout effectiveTimeout = clampTimeout(connectionRequestTimeout);
             if (log.isDebugEnabled()) {
-                log.debug("{} acquiring endpoint ({})", id, connectionRequestTimeout);
+                log.debug("{} acquiring endpoint ({})", id, effectiveTimeout);
             }
-            final LeaseRequest connRequest = manager.lease(id, route, connectionRequestTimeout, object);
+            final LeaseRequest connRequest = manager.lease(id, route, effectiveTimeout, object);
             state = object;
             if (cancellableDependency != null) {
                 cancellableDependency.setDependency(connRequest);
             }
             try {
-                final ConnectionEndpoint connectionEndpoint = connRequest.get(connectionRequestTimeout);
+                final ConnectionEndpoint connectionEndpoint = connRequest.get(effectiveTimeout);
                 endpointRef.set(connectionEndpoint);
                 reusable = connectionEndpoint.isConnected();
                 if (cancellableDependency != null) {
@@ -119,6 +141,9 @@ class InternalExecRuntime implements ExecRuntime, Cancellable {
                 }
             } catch (final TimeoutException ex) {
                 connRequest.cancel();
+                if (hasExecutionDeadline() && executionDeadline.isExpired()) {
+                    throw RequestExecutionTimeoutException.from(snapshot(executionDeadline), ex);
+                }
                 throw new ConnectionRequestTimeoutException(ex.getMessage());
             } catch (final InterruptedException interrupted) {
                 connRequest.cancel();
@@ -155,13 +180,16 @@ class InternalExecRuntime implements ExecRuntime, Cancellable {
         if (isExecutionAborted()) {
             throw new RequestFailedException("Request aborted");
         }
+        checkExecutionDeadline();
         final RequestConfig requestConfig = context.getRequestConfigOrDefault();
         @SuppressWarnings("deprecation")
         final Timeout connectTimeout = requestConfig.getConnectTimeout();
+        final Timeout effectiveConnectTimeout = clampTimeout(connectTimeout);
         if (log.isDebugEnabled()) {
-            log.debug("{} connecting endpoint ({})", ConnPoolSupport.getId(endpoint), connectTimeout);
+            log.debug("{} connecting endpoint ({})", ConnPoolSupport.getId(endpoint), effectiveConnectTimeout);
         }
-        manager.connect(endpoint, connectTimeout, context);
+        manager.connect(endpoint, effectiveConnectTimeout, context);
+        checkExecutionDeadline();
         if (log.isDebugEnabled()) {
             log.debug("{} endpoint connected", ConnPoolSupport.getId(endpoint));
         }
@@ -188,11 +216,13 @@ class InternalExecRuntime implements ExecRuntime, Cancellable {
 
     @Override
     public void upgradeTls(final HttpClientContext context) throws IOException {
+        checkExecutionDeadline();
         final ConnectionEndpoint endpoint = ensureValid();
         if (log.isDebugEnabled()) {
             log.debug("{} upgrading endpoint", ConnPoolSupport.getId(endpoint));
         }
         manager.upgrade(endpoint, context);
+        checkExecutionDeadline();
     }
 
     @Override
@@ -222,19 +252,22 @@ class InternalExecRuntime implements ExecRuntime, Cancellable {
         if (isExecutionAborted()) {
             throw new RequestFailedException("Request aborted");
         }
+        checkExecutionDeadline();
         final RequestConfig requestConfig = context.getRequestConfigOrDefault();
-        final Timeout responseTimeout = requestConfig.getResponseTimeout();
-        if (responseTimeout != null) {
-            endpoint.setSocketTimeout(responseTimeout);
-        }
+        responseTimeout = requestConfig.getResponseTimeout();
+        applyResponseTimeout();
         if (log.isDebugEnabled()) {
             log.debug("{} start execution {}", ConnPoolSupport.getId(endpoint), id);
         }
-        return endpoint.execute(
-                id,
-                request,
-                (r, conn, c) -> requestExecutor.execute(r, conn, informationCallback, c),
-                context);
+        try {
+            return endpoint.execute(
+                    id,
+                    request,
+                    (r, conn, c) -> requestExecutor.execute(r, conn, informationCallback, c),
+                    context);
+        } catch (final IOException ex) {
+            throw mapTimeoutException(ex);
+        }
     }
 
     @Override
@@ -306,7 +339,68 @@ class InternalExecRuntime implements ExecRuntime, Cancellable {
 
     @Override
     public ExecRuntime fork(final CancellableDependency cancellableDependency) {
-        return new InternalExecRuntime(log, manager, requestExecutor, cancellableDependency);
+        return new InternalExecRuntime(log, manager, requestExecutor, cancellableDependency, executionDeadline);
+    }
+
+    private static Deadline snapshot(final Deadline deadline) {
+        return deadline != null ? Deadline.fromUnixMilliseconds(deadline.getValue()).freeze() : Deadline.MAX_VALUE;
+    }
+
+    private static Timeout minTimeout(final Timeout configured, final Timeout budget) {
+        if (budget == null) {
+            return configured;
+        }
+        if (configured == null || !TimeValue.isPositive(configured)) {
+            return budget;
+        }
+        return configured.toMilliseconds() <= budget.toMilliseconds() ? configured : budget;
+    }
+
+    @Override
+    public boolean hasExecutionDeadline() {
+        return executionDeadline != null && !executionDeadline.isMax();
+    }
+
+    private Timeout remainingTimeout() throws IOException {
+        if (!hasExecutionDeadline()) {
+            return null;
+        }
+        final long remainingMillis = executionDeadline.remaining();
+        if (remainingMillis <= 0) {
+            throw RequestExecutionTimeoutException.from(snapshot(executionDeadline));
+        }
+        return Timeout.ofMilliseconds(remainingMillis);
+    }
+
+    @Override
+    public void checkExecutionDeadline() throws IOException {
+        if (hasExecutionDeadline() && executionDeadline.isExpired()) {
+            throw RequestExecutionTimeoutException.from(snapshot(executionDeadline));
+        }
+    }
+
+    @Override
+    public Timeout clampTimeout(final Timeout timeout) throws IOException {
+        return minTimeout(timeout, remainingTimeout());
+    }
+
+    @Override
+    public void applyResponseTimeout() throws IOException {
+        final Timeout effectiveResponseTimeout = clampTimeout(responseTimeout);
+        if (effectiveResponseTimeout != null) {
+            ensureValid().setSocketTimeout(effectiveResponseTimeout);
+        }
+    }
+
+    @Override
+    public IOException mapTimeoutException(final IOException ex) {
+        if (ex instanceof RequestExecutionTimeoutException) {
+            return ex;
+        }
+        if (hasExecutionDeadline() && executionDeadline.isExpired()) {
+            return RequestExecutionTimeoutException.from(snapshot(executionDeadline), ex);
+        }
+        return ex;
     }
 
 }

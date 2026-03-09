@@ -39,6 +39,7 @@ import org.apache.hc.core5.http.ClassicHttpResponse;
 import org.apache.hc.core5.http.HttpException;
 import org.apache.hc.core5.http.io.HttpResponseInformationCallback;
 import org.apache.hc.core5.util.TimeValue;
+import org.apache.hc.core5.util.Timeout;
 
 /**
  * Execution runtime that provides access to the underlying connection endpoint and helps
@@ -198,5 +199,56 @@ public interface ExecRuntime {
      * @return another runtime with the same configuration.
      */
     ExecRuntime fork(CancellableDependency cancellableAware);
+
+    /**
+     * Determines whether this execution runtime has a request execution deadline.
+     *
+     * @return {@code true} if a request execution deadline is active, {@code false} otherwise.
+     * @since 5.7
+     */
+    default boolean hasExecutionDeadline() {
+        return false;
+    }
+
+    /**
+     * Checks whether the request execution deadline has been exceeded.
+     *
+     * @throws IOException if the execution deadline has been exceeded.
+     * @since 5.7
+     */
+    default void checkExecutionDeadline() throws IOException {
+    }
+
+    /**
+     * Clamps the given timeout to the remaining execution time budget.
+     *
+     * @param timeout the configured timeout, may be {@code null}.
+     * @return the effective timeout to use, possibly reduced, or {@code null}.
+     * @throws IOException if the execution deadline has already been exceeded.
+     * @since 5.7
+     */
+    default Timeout clampTimeout(final Timeout timeout) throws IOException {
+        return timeout;
+    }
+
+    /**
+     * Applies the effective response timeout for the current execution context.
+     *
+     * @throws IOException if the execution deadline has been exceeded.
+     * @since 5.7
+     */
+    default void applyResponseTimeout() throws IOException {
+    }
+
+    /**
+     * Maps an I/O exception to a deadline-specific timeout exception when appropriate.
+     *
+     * @param ex the original I/O exception.
+     * @return the original exception or a mapped exception.
+     * @since 5.7
+     */
+    default IOException mapTimeoutException(final IOException ex) {
+        return ex;
+    }
 
 }
