@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
 
 import org.apache.hc.client5.http.AuthenticationStrategy;
@@ -209,6 +210,8 @@ public class H2AsyncClientBuilder {
     private TlsStrategy tlsStrategy;
 
     private ThreadFactory threadFactory;
+
+    private Executor callbackExecutor;
 
     private List<Closeable> closeables;
 
@@ -541,6 +544,39 @@ public class H2AsyncClientBuilder {
      */
     public final H2AsyncClientBuilder setThreadFactory(final ThreadFactory threadFactory) {
         this.threadFactory = threadFactory;
+        return this;
+    }
+
+    /**
+     * Assigns an {@link Executor} for dispatch of terminal
+     * {@link org.apache.hc.core5.concurrent.FutureCallback} notifications.
+     * <p>
+     * When set, user-supplied {@code FutureCallback} notifications are normally
+     * dispatched on the given executor instead of being invoked directly on the
+     * thread completing the exchange. This helps prevent application-level
+     * callback work from blocking I/O dispatch threads.
+     * </p>
+     * <p>
+     * This setting affects only terminal {@code FutureCallback} notifications.
+     * It does not offload response consumer processing, push consumer callbacks,
+     * or reactor-internal work.
+     * </p>
+     * <p>
+     * If the executor rejects task submission, callback invocation falls back to
+     * direct execution on the calling thread.
+     * </p>
+     * <p>
+     * The client does not manage the lifecycle of the supplied executor.
+     * </p>
+     *
+     * @param callbackExecutor the executor for callback dispatch, or {@code null}
+     *                         for direct invocation
+     * @return this instance.
+     * @since 5.7
+     */
+    @Experimental
+    public final H2AsyncClientBuilder setCallbackExecutor(final Executor callbackExecutor) {
+        this.callbackExecutor = callbackExecutor;
         return this;
     }
 
@@ -1000,7 +1036,8 @@ public class H2AsyncClientBuilder {
                 credentialsProviderCopy,
                 defaultRequestConfig,
                 closeablesCopy,
-                maxQueuedRequests);
+                maxQueuedRequests,
+                callbackExecutor);
 
     }
 

@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
@@ -98,6 +99,7 @@ abstract class InternalAbstractHttpAsyncClient extends AbstractHttpAsyncClientBa
     private final ConcurrentLinkedQueue<Closeable> closeables;
     private final ScheduledExecutorService scheduledExecutorService;
     private final AsyncExecChain.Scheduler scheduler;
+    private final Executor callbackExecutor;
 
     InternalAbstractHttpAsyncClient(
             final DefaultConnectingIOReactor ioReactor,
@@ -111,7 +113,8 @@ abstract class InternalAbstractHttpAsyncClient extends AbstractHttpAsyncClientBa
             final CredentialsProvider credentialsProvider,
             final Function<HttpContext, HttpClientContext> contextAdaptor,
             final RequestConfig defaultConfig,
-            final List<Closeable> closeables) {
+            final List<Closeable> closeables,
+            final Executor callbackExecutor) {
         super(ioReactor, pushConsumerRegistry, threadFactory);
         this.execChain = execChain;
         this.exchangeIdGenerator = exchangeIdGenerator;
@@ -122,6 +125,7 @@ abstract class InternalAbstractHttpAsyncClient extends AbstractHttpAsyncClientBa
         this.contextAdaptor = contextAdaptor;
         this.defaultConfig = defaultConfig;
         this.closeables = closeables != null ? new ConcurrentLinkedQueue<>(closeables) : null;
+        this.callbackExecutor = callbackExecutor;
         this.scheduledExecutorService = Executors.newSingleThreadScheduledExecutor(SCHEDULER_THREAD_FACTORY);
         this.scheduler = new AsyncExecChain.Scheduler() {
 
@@ -203,7 +207,8 @@ abstract class InternalAbstractHttpAsyncClient extends AbstractHttpAsyncClientBa
             final HandlerFactory<AsyncPushConsumer> pushHandlerFactory,
             final HttpContext context,
             final FutureCallback<T> callback) {
-        final ComplexFuture<T> future = new ComplexFuture<>(callback);
+        final FutureCallback<T> effectiveCallback = callback != null && callbackExecutor != null ? new CallbackExecutorFutureCallback<>(callback, callbackExecutor) : callback;
+        final ComplexFuture<T> future = new ComplexFuture<>(effectiveCallback);
         try {
             if (!isRunning()) {
                 throw new CancellationException("Request execution cancelled");

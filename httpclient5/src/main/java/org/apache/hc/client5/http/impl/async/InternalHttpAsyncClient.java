@@ -28,6 +28,7 @@ package org.apache.hc.client5.http.impl.async;
 
 import java.io.Closeable;
 import java.util.List;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
@@ -96,10 +97,11 @@ public final class InternalHttpAsyncClient extends InternalAbstractHttpAsyncClie
             final Function<HttpContext, HttpClientContext> contextAdaptor,
             final RequestConfig defaultConfig,
             final List<Closeable> closeables,
-            final int maxQueuedRequests) {
+            final int maxQueuedRequests,
+            final Executor callbackExecutor) {
         super(ioReactor, pushConsumerRegistry, threadFactory, execChain, exchangeIdGenerator,
                 cookieSpecRegistry, authSchemeRegistry, cookieStore, credentialsProvider, contextAdaptor,
-                defaultConfig, closeables);
+                defaultConfig, closeables, callbackExecutor);
         this.manager = manager;
         this.routePlanner = routePlanner;
         this.tlsConfig = tlsConfig;
