@@ -107,19 +107,43 @@ public class AuthChallengeParser {
         }
         final List<AuthChallenge> challenges = new ArrayList<>(internalChallenges.size());
         for (final ChallengeInt internal : internalChallenges) {
-            final List<NameValuePair> params = internal.params;
-            String token68 = null;
-            if (params.size() == 1) {
-                final NameValuePair param = params.get(0);
-                if (param.getValue() == null) {
-                    token68 = param.getName();
-                    params.clear();
-                }
-            }
-            challenges.add(
-                    new AuthChallenge(challengeType, internal.schemeName, token68, !params.isEmpty() ? params : null));
+            challenges.add(parseInt(challengeType, internal));
         }
         return challenges;
+    }
+
+    /**
+     * Parses the given sequence of characters into a single {@link AuthChallenge}.
+     *
+     * @param challengeType the type of challenge (target or proxy).
+     * @param schemeName the scheme name
+     * @param buffer the sequence of characters to be parsed.
+     * @param cursor the parser cursor.
+     * @return a list of auth challenge elements.
+     *
+     * @since 5.6
+     */
+    public AuthChallenge parse(
+            final ChallengeType challengeType,
+            final String schemeName,
+            final CharSequence buffer,
+            final ParserCursor cursor) throws ParseException {
+        final ChallengeInt challengeInt = new ChallengeInt(schemeName);
+        parseChallenge(buffer, cursor, challengeInt);
+        return parseInt(challengeType, challengeInt);
+    }
+
+    AuthChallenge parseInt(final ChallengeType challengeType, final ChallengeInt internal) {
+        final List<NameValuePair> params = internal.params;
+        String token68 = null;
+        if (params.size() == 1) {
+            final NameValuePair param = params.get(0);
+            if (param.getValue() == null) {
+                token68 = param.getName();
+                params.clear();
+            }
+        }
+        return new AuthChallenge(challengeType, internal.schemeName, token68, !params.isEmpty() ? params : null);
     }
 
     ChallengeInt parseChallenge(
