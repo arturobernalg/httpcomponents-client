@@ -106,7 +106,7 @@ class TestHttpClientConnectionOperator {
             .setSoReuseAddress(true)
             .setSoTimeout(5000, TimeUnit.MILLISECONDS)
             .setTcpNoDelay(true)
-            .setSoLinger(50, TimeUnit.MILLISECONDS)
+            .setSoLinger(50, TimeUnit.SECONDS)
             .build();
         final InetSocketAddress localAddress = new InetSocketAddress(local, 0);
         connectionOperator.connect(conn, host, null, localAddress, Timeout.ofMilliseconds(123), socketConfig, null, context);
@@ -323,7 +323,7 @@ class TestHttpClientConnectionOperator {
                 .setSoReuseAddress(true)
                 .setSoTimeout(5000, TimeUnit.MILLISECONDS)
                 .setTcpNoDelay(true)
-                .setSoLinger(50, TimeUnit.MILLISECONDS)
+                .setSoLinger(50, TimeUnit.SECONDS)
                 .build();
         final InetSocketAddress localAddress = new InetSocketAddress(local, 0);
         final InetSocketAddress remoteAddress = InetSocketAddress.createUnresolved(host.getHostName(), port);
@@ -370,7 +370,7 @@ class TestHttpClientConnectionOperator {
                 .setSoReuseAddress(true)
                 .setSoTimeout(5000, TimeUnit.MILLISECONDS)
                 .setTcpNoDelay(true)
-                .setSoLinger(50, TimeUnit.MILLISECONDS)
+                .setSoLinger(50, TimeUnit.SECONDS)
                 .build();
 
         // Connect using the updated connection operator

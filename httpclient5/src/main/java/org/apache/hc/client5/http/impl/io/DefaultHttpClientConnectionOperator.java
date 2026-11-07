@@ -327,7 +327,7 @@ public class DefaultHttpClientConnectionOperator implements HttpClientConnection
             socket.setSendBufferSize(socketConfig.getSndBufSize());
         }
 
-        final int linger = socketConfig.getSoLinger().toMillisecondsIntBound();
+        final int linger = socketConfig.getSoLinger().toSecondsIntBound();
         if (linger >= 0) {
             socket.setSoLinger(true, linger);
         }
