@@ -121,7 +121,7 @@ public class PoolingHttpClientConnectionManagerBuilder {
     public final PoolingHttpClientConnectionManagerBuilder setSSLSocketFactory(
             final org.apache.hc.client5.http.socket.LayeredConnectionSocketFactory sslSocketFactory) {
         this.tlsSocketStrategy = (socket, target, port, attachment, context) ->
-                (SSLSocket) sslSocketFactory.createLayeredSocket(socket, target, port, context);
+                (SSLSocket) sslSocketFactory.createLayeredSocket(socket, target, port, attachment, context);
         return this;
     }
 

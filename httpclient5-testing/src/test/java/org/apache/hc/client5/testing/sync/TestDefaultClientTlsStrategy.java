@@ -40,7 +40,11 @@ import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
 import javax.net.ssl.SSLSocket;
 
+import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.config.TlsConfig;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.http.ssl.DefaultClientTlsStrategy;
 import org.apache.hc.client5.http.ssl.HostnameVerificationPolicy;
@@ -51,6 +55,7 @@ import org.apache.hc.client5.testing.SSLTestContexts;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.impl.bootstrap.HttpServer;
 import org.apache.hc.core5.http.impl.bootstrap.ServerBootstrap;
+import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.http.ssl.TLS;
 import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.ssl.SSLContexts;
@@ -404,6 +409,58 @@ class TestDefaultClientTlsStrategy {
                     context)) {
                 Assertions.assertEquals(cipherSuite, sslSocket.getSession().getCipherSuite());
             }
+        }
+    }
+
+    @Test
+    @SuppressWarnings("deprecation")
+    void testSSLSocketFactoryHonorsTlsConfig() throws Exception {
+        // @formatter:off
+        this.server = ServerBootstrap.bootstrap()
+                .setLocalAddress(InetAddress.getLoopbackAddress())
+                .setSslContext(SSLTestContexts.createServerSSLContext())
+                .setSslSetupHandler(sslParameters -> sslParameters.setProtocols(new String[] {"TLSv1.2"}))
+                .setRequestRouter((r, c) -> null)
+                .create();
+        // @formatter:on
+        this.server.start();
+
+        final HttpHost target = new HttpHost("https", "localhost", server.getLocalPort());
+        final org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory sslSocketFactory =
+                new org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory(SSLTestContexts.createClientSSLContext());
+
+        final TlsConfig tls13Only = TlsConfig.custom()
+                .setSupportedProtocols(TLS.V_1_3)
+                .build();
+        try (final CloseableHttpClient client = HttpClientBuilder.create()
+                .setConnectionManager(PoolingHttpClientConnectionManagerBuilder.create()
+                        .setSSLSocketFactory(sslSocketFactory)
+                        .setDefaultTlsConfig(tls13Only)
+                        .build())
+                .build()) {
+            Assertions.assertThrows(IOException.class, () ->
+                    client.execute(target, new HttpGet("/"), response -> {
+                        EntityUtils.consume(response.getEntity());
+                        return null;
+                    }));
+        }
+
+        final String cipherSuite = "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256";
+        final TlsConfig singleCipherSuite = TlsConfig.custom()
+                .setSupportedCipherSuites(cipherSuite)
+                .build();
+        final HttpClientContext context = HttpClientContext.create();
+        try (final CloseableHttpClient client = HttpClientBuilder.create()
+                .setConnectionManager(PoolingHttpClientConnectionManagerBuilder.create()
+                        .setSSLSocketFactory(sslSocketFactory)
+                        .setDefaultTlsConfig(singleCipherSuite)
+                        .build())
+                .build()) {
+            client.execute(target, new HttpGet("/"), context, response -> {
+                EntityUtils.consume(response.getEntity());
+                return null;
+            });
+            Assertions.assertEquals(cipherSuite, context.getSSLSession().getCipherSuite());
         }
     }
 
