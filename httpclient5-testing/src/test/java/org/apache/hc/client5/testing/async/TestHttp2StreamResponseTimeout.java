@@ -31,6 +31,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.hc.client5.http.async.methods.SimpleHttpRequest;
 import org.apache.hc.client5.http.async.methods.SimpleHttpResponse;
@@ -102,6 +103,40 @@ abstract class AbstractTestHttp2StreamResponseTimeout extends AbstractIntegratio
         final ExecutionException exception = Assertions.assertThrows(ExecutionException.class, () ->
                 future2.get(TIMEOUT.getDuration(), TIMEOUT.getTimeUnit()));
         Assertions.assertInstanceOf(H2StreamTimeoutException.class, exception.getCause());
+    }
+
+    @Test
+    void testResponseTimeoutSingleStream() throws Exception {
+        checkAssumptions();
+        configureServer(bootstrap -> bootstrap.register("/random/*", AsyncRandomHandler::new));
+        final HttpHost target = startServer();
+        final TestAsyncClient client = startClient();
+        final PoolingAsyncClientConnectionManager connManager = client.getConnectionManager();
+        connManager.setDefaultConnectionConfig(ConnectionConfig.custom()
+                .setSocketTimeout(Timeout.ofMinutes(1))
+                .build());
+        connManager.setDefaultTlsConfig(TlsConfig.custom()
+                .setVersionPolicy(HttpVersionPolicy.FORCE_HTTP_2)
+                .build());
+
+        // The stream is the only exchange on the connection; there is no other traffic
+        // to drive the connection I/O events.
+        final SimpleHttpRequest request = SimpleRequestBuilder.get()
+                .setHttpHost(target)
+                .setPath("/random/1024?delay=3000")
+                .setRequestConfig(RequestConfig.custom()
+                        .setUnixDomainSocket(getUnixDomainSocket())
+                        .setResponseTimeout(Timeout.ofMilliseconds(500))
+                        .build())
+                .build();
+
+        final long startNanos = System.nanoTime();
+        final Future<SimpleHttpResponse> future = client.execute(request, null, null);
+        final ExecutionException exception = Assertions.assertThrows(ExecutionException.class, () ->
+                future.get(TIMEOUT.getDuration(), TIMEOUT.getTimeUnit()));
+        Assertions.assertInstanceOf(H2StreamTimeoutException.class, exception.getCause());
+        final long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+        Assertions.assertTrue(elapsedMillis < 2500, "Timed out too late: " + elapsedMillis + " ms");
     }
 
 }
