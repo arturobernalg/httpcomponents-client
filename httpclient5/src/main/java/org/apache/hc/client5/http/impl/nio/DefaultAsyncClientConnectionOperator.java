@@ -34,6 +34,7 @@ import java.net.SocketAddress;
 import java.nio.file.Path;
 import java.util.concurrent.Future;
 
+import org.apache.hc.client5.http.AsyncDnsResolver;
 import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.client5.http.SchemePortResolver;
 import org.apache.hc.client5.http.UnsupportedSchemeException;
@@ -96,9 +97,22 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
             final DnsResolver dnsResolver,
             final boolean happyEyeballsEnabled,
             final TimeValue connectionAttemptDelay) {
+        this(tlsStrategyLookup, schemePortResolver, dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, null);
+    }
+
+    /**
+     * @since 5.7
+     */
+    protected DefaultAsyncClientConnectionOperator(
+            final Lookup<TlsStrategy> tlsStrategyLookup,
+            final SchemePortResolver schemePortResolver,
+            final DnsResolver dnsResolver,
+            final boolean happyEyeballsEnabled,
+            final TimeValue connectionAttemptDelay,
+            final AsyncDnsResolver asyncDnsResolver) {
         this.tlsStrategyLookup = Args.notNull(tlsStrategyLookup, "TLS strategy lookup");
         this.schemePortResolver = schemePortResolver != null ? schemePortResolver : DefaultSchemePortResolver.INSTANCE;
-        this.sessionRequester = new MultihomeIOSessionRequester(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay);
+        this.sessionRequester = new MultihomeIOSessionRequester(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver);
     }
 
     @Override
