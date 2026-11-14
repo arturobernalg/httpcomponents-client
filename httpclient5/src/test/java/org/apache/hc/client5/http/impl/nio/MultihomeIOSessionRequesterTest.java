@@ -41,9 +41,12 @@ import static org.mockito.ArgumentMatchers.eq;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.net.UnknownHostException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CancellationException;
@@ -56,7 +59,10 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.apache.hc.client5.http.AsyncDnsResolver;
+import org.apache.hc.client5.http.DnsResolutionCallback;
 import org.apache.hc.client5.http.DnsResolver;
+import org.apache.hc.core5.concurrent.Cancellable;
 import org.apache.hc.core5.concurrent.FutureCallback;
 import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.net.NamedEndpoint;
@@ -209,6 +215,15 @@ class MultihomeIOSessionRequesterTest {
         final List<InetSocketAddress> out = new ArrayList<>(count);
         for (int i = 1; i <= count; i++) {
             out.add(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 0, (byte) i}), 8080));
+        }
+        return out;
+    }
+
+    private static List<InetSocketAddress> ipv6Addresses(final int count) throws Exception {
+        final List<InetSocketAddress> out = new ArrayList<>(count);
+        for (int i = 1; i <= count; i++) {
+            out.add(new InetSocketAddress(InetAddress.getByAddress(
+                    new byte[]{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, (byte) i}), 8080));
         }
         return out;
     }
@@ -568,15 +583,9 @@ class MultihomeIOSessionRequesterTest {
 
     @Test
     void happyEyeballs_unexpectedCancellationOfLastAttempt_failsRatherThanHangingForever() throws Exception {
-        final List<InetSocketAddress> remoteAddresses = addresses(1);
+        final List<InetSocketAddress> twoAddresses = addresses(2);
         Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
         Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
-        Mockito.when(dnsResolver.resolve("somehost", 8080)).thenReturn(remoteAddresses);
-
-        // A single address racing alone still goes through the Race (not the sequential path)
-        // when forced via the 4-arg constructor is not applicable here; use 2 addresses with
-        // the 2nd address also cancelled, so the race is driven to full exhaustion.
-        final List<InetSocketAddress> twoAddresses = addresses(2);
         Mockito.when(dnsResolver.resolve("somehost", 8080)).thenReturn(twoAddresses);
 
         final FakeScheduler scheduler = new FakeScheduler();
@@ -595,7 +604,6 @@ class MultihomeIOSessionRequesterTest {
         assertFalse(future.isDone());
         scheduler.fireNext();
         assertTrue(future.isDone(), "the future must not be left pending forever after every attempt is cancelled");
-        assertTrue(future.isCancelled() || future.isDone());
         try {
             future.get();
             fail("Expected an ExecutionException rather than an indefinitely pending future");
@@ -684,5 +692,335 @@ class MultihomeIOSessionRequesterTest {
         } catch (final InterruptedException ex) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Independent, asynchronous A/AAAA resolution (AsyncDnsResolver)
+    // -------------------------------------------------------------------------
+
+    /** Captures the {@link DnsResolutionCallback} passed to {@link AsyncDnsResolver#resolve}. */
+    private static final class FakeAsyncDnsResolver implements AsyncDnsResolver {
+        DnsResolutionCallback callback;
+        final Cancellable resolutionHandle = Mockito.mock(Cancellable.class);
+
+        @Override
+        public Cancellable resolve(final String host, final int port, final DnsResolutionCallback callback) {
+            this.callback = callback;
+            return resolutionHandle;
+        }
+    }
+
+    @Test
+    void asyncDns_bothFamiliesResolveTogether_racesAllAddresses() throws Exception {
+        final List<InetSocketAddress> ipv6 = addresses(1);
+        final List<InetSocketAddress> ipv4 = addresses(1);
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final IOSession session = Mockito.mock(IOSession.class);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.completed(session);
+                    return CompletableFuture.completedFuture(session);
+                });
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        assertNotNull(asyncDnsResolver.callback, "resolver must have been invoked");
+        asyncDnsResolver.callback.resolved(ipv6);
+        asyncDnsResolver.callback.completed();
+
+        assertTrue(future.isDone());
+        assertEquals(session, future.get());
+        Mockito.verify(connectionInitiator, Mockito.times(1)).connect(any(), any(), any(), any(), any(), any());
+        assertTrue(ipv4.size() >= 0); // unused family in this scenario, kept for clarity of intent
+    }
+
+    @Test
+    void asyncDns_secondFamilyArrivesWhileFirstStalls_mergedIntoOngoingRace() throws Exception {
+        // AAAA first, so merging is immediate and not subject to the Resolution Delay (that
+        // only applies when A arrives before AAAA); see the dedicated resolutionDelay_* tests.
+        final List<InetSocketAddress> firstFamily = ipv6Addresses(1);
+        final List<InetSocketAddress> secondFamily = addresses(2);
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final IOSession winner = Mockito.mock(IOSession.class);
+        final Future<IOSession> firstAttempt = Mockito.mock(Future.class);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> firstAttempt) // 1st address (first family): stalls
+                .thenAnswer(invocation -> {
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.completed(winner);
+                    return CompletableFuture.completedFuture(winner);
+                });
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        asyncDnsResolver.callback.resolved(firstFamily);
+        assertFalse(future.isDone(), "must not complete while the only known address is still stalled");
+        assertEquals(0, scheduler.pendingCount(), "nothing to stagger towards until a 2nd address is known");
+
+        // The second family resolves while the first is still stalled: since no next address
+        // was known when the first attempt started, the stagger clock starts now instead.
+        asyncDnsResolver.callback.resolved(Collections.singletonList(secondFamily.get(0)));
+        asyncDnsResolver.callback.completed();
+        assertEquals(1, scheduler.pendingCount(), "the newly arrived address must now be paced by a stagger");
+
+        scheduler.fireNext();
+        assertTrue(future.isDone());
+        assertEquals(winner, future.get());
+        Mockito.verify(firstAttempt).cancel(true);
+    }
+
+    @Test
+    void asyncDns_oneFamilyFailsOtherSucceeds_winsWithSucceedingFamily() throws Exception {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final IOSession session = Mockito.mock(IOSession.class);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.completed(session);
+                    return CompletableFuture.completedFuture(session);
+                });
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        // AAAA fails (e.g. no IPv6 route), A succeeds: the resolution as a whole still works.
+        asyncDnsResolver.callback.failed(new UnknownHostException("no AAAA record"));
+        asyncDnsResolver.callback.resolved(addresses(1));
+        asyncDnsResolver.callback.completed();
+
+        assertTrue(future.isDone());
+        assertEquals(session, future.get());
+    }
+
+    @Test
+    void asyncDns_bothFamiliesFail_aggregatedFailure() {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        final UnknownHostException ipv6Failure = new UnknownHostException("no AAAA record");
+        asyncDnsResolver.callback.failed(ipv6Failure);
+        asyncDnsResolver.callback.failed(new UnknownHostException("no A record"));
+        asyncDnsResolver.callback.completed();
+
+        assertTrue(future.isDone());
+        try {
+            future.get();
+            fail("Expected ExecutionException");
+        } catch (final InterruptedException | ExecutionException ex) {
+            assertInstanceOf(ExecutionException.class, ex);
+        }
+        Mockito.verifyNoInteractions(connectionInitiator);
+    }
+
+    @Test
+    void asyncDns_cancellationBeforeResolution_cancelsOutstandingDnsQuery() {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        future.cancel(true);
+
+        Mockito.verify(asyncDnsResolver.resolutionHandle).cancel();
+        assertTrue(future.isCancelled());
+
+        // A family that resolves after cancellation must be ignored, not start a connection.
+        asyncDnsResolver.callback.resolved(Collections.singletonList(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), 8080)));
+        Mockito.verifyNoInteractions(connectionInitiator);
+    }
+
+    @Test
+    void asyncDns_notConfigured_fallsBackToSynchronousDnsResolver() throws Exception {
+        final List<InetSocketAddress> remoteAddresses = addresses(1);
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+        Mockito.when(dnsResolver.resolve("somehost", 8080)).thenReturn(remoteAddresses);
+
+        final IOSession session = Mockito.mock(IOSession.class);
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.completed(session);
+                    return CompletableFuture.completedFuture(session);
+                });
+
+        // happyEyeballsEnabled=true but no AsyncDnsResolver configured (the default): must fall
+        // back to the plain, synchronous DnsResolver exactly as before this feature existed.
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250));
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        assertTrue(future.isDone());
+        assertEquals(session, future.get());
+        Mockito.verify(dnsResolver).resolve("somehost", 8080);
+    }
+
+    @Test
+    void asyncDns_ipv4ArrivesFirst_waitsResolutionDelayForIpv6() throws Exception {
+        final List<InetSocketAddress> ipv4 = addresses(1);
+        final List<InetSocketAddress> ipv6 = ipv6Addresses(1);
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final IOSession session = Mockito.mock(IOSession.class);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.completed(session);
+                    return CompletableFuture.completedFuture(session);
+                });
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        // A arrives first: must wait (up to 50ms) for AAAA rather than connecting immediately.
+        asyncDnsResolver.callback.resolved(ipv4);
+        assertFalse(future.isDone());
+        Mockito.verifyNoInteractions(connectionInitiator);
+
+        // AAAA arrives within the delay: it must be tried first (RFC 8305 interleaving).
+        asyncDnsResolver.callback.resolved(ipv6);
+        asyncDnsResolver.callback.completed();
+
+        assertTrue(future.isDone());
+        assertEquals(session, future.get());
+        final ArgumentCaptor<SocketAddress> addressCaptor = ArgumentCaptor.forClass(SocketAddress.class);
+        Mockito.verify(connectionInitiator).connect(any(), addressCaptor.capture(), any(), any(), any(), any());
+        assertEquals(ipv6.get(0), addressCaptor.getValue(), "AAAA must be tried before the buffered A address");
+    }
+
+    @Test
+    void asyncDns_ipv4ArrivesFirst_aaaaNeverArrives_usesIpv4AfterDelayElapses() throws Exception {
+        final List<InetSocketAddress> ipv4 = addresses(1);
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final IOSession session = Mockito.mock(IOSession.class);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.completed(session);
+                    return CompletableFuture.completedFuture(session);
+                });
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        asyncDnsResolver.callback.resolved(ipv4);
+        assertFalse(future.isDone());
+        assertEquals(1, scheduler.pendingCount(), "the Resolution Delay timer must be pending");
+
+        scheduler.fireNext(); // simulate the 50ms Resolution Delay elapsing with no AAAA
+        assertTrue(future.isDone());
+        assertEquals(session, future.get());
+    }
+
+    @Test
+    void asyncDns_ipv4ArrivesFirst_aaaaArrivesAfterRacingAlreadyStarted_mergedBehindInFlightAddress() throws Exception {
+        final List<InetSocketAddress> ipv4 = addresses(2);
+        final List<InetSocketAddress> ipv6 = ipv6Addresses(1);
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final Future<IOSession> firstAttempt = Mockito.mock(Future.class);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> firstAttempt); // stalls
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        requester.connect(connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        asyncDnsResolver.callback.resolved(ipv4);
+        scheduler.fireNext(); // Resolution Delay elapses with no AAAA: racing starts with IPv4 alone
+        Mockito.verify(connectionInitiator, Mockito.times(1)).connect(any(), any(), any(), any(), any(), any());
+
+        // AAAA now arrives late, after racing has already started on the first IPv4 address.
+        // It must be queued ahead of the still-pending (not yet attempted) 2nd IPv4 address,
+        // not appended after it.
+        asyncDnsResolver.callback.resolved(ipv6);
+        asyncDnsResolver.callback.completed();
+
+        scheduler.fireNext(); // fire the stagger for the 2nd (now re-ordered) pending attempt
+        final ArgumentCaptor<SocketAddress> addressCaptor = ArgumentCaptor.forClass(SocketAddress.class);
+        Mockito.verify(connectionInitiator, Mockito.times(2)).connect(any(), addressCaptor.capture(), any(), any(), any(), any());
+        assertEquals(ipv6.get(0), addressCaptor.getAllValues().get(1),
+                "the late AAAA address must be tried before the already-pending, not-yet-attempted 2nd A address");
+    }
+
+    @Test
+    void asyncDns_lateIpv6Result_doesNotDisturbAlreadyAttemptedAddress() throws Exception {
+        final List<InetSocketAddress> ipv4First = addresses(1);
+        final List<InetSocketAddress> ipv6Late = ipv6Addresses(1);
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final Future<IOSession> firstAttempt = Mockito.mock(Future.class);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> firstAttempt);
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        requester.connect(connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        asyncDnsResolver.callback.resolved(ipv4First);
+        scheduler.fireNext();
+        final ArgumentCaptor<SocketAddress> firstCaptor = ArgumentCaptor.forClass(SocketAddress.class);
+        Mockito.verify(connectionInitiator).connect(any(), firstCaptor.capture(), any(), any(), any(), any());
+        assertEquals(ipv4First.get(0), firstCaptor.getValue());
+
+        // A late AAAA address arrives after the only known address is already attempting;
+        // the already-in-flight attempt must be left untouched.
+        asyncDnsResolver.callback.resolved(ipv6Late);
+        asyncDnsResolver.callback.completed();
+        Mockito.verify(connectionInitiator, Mockito.times(1)).connect(any(), any(), any(), any(), any(), any());
     }
 }

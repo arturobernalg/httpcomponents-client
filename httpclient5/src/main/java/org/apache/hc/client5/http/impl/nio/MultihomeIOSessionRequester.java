@@ -28,6 +28,7 @@
 package org.apache.hc.client5.http.impl.nio;
 
 import java.io.IOException;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -42,7 +43,9 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.hc.client5.http.AsyncDnsResolver;
 import org.apache.hc.client5.http.ConnectExceptionSupport;
+import org.apache.hc.client5.http.DnsResolutionCallback;
 import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.client5.http.SystemDefaultDnsResolver;
 import org.apache.hc.core5.concurrent.Cancellable;
@@ -75,6 +78,14 @@ final class MultihomeIOSessionRequester {
     private static final long MIN_CONNECTION_ATTEMPT_DELAY_MS = 10;
 
     /**
+     * RFC 8305, Section 3: if the A (IPv4) response arrives before the AAAA (IPv6) one, wait
+     * this long for AAAA before proceeding with IPv4 alone, so the preferred family is not
+     * needlessly skipped because of reordering. "It is RECOMMENDED that the Resolution Delay
+     * be set to 50 milliseconds." No such wait applies when AAAA arrives first or already has.
+     */
+    private static final TimeValue RESOLUTION_DELAY = TimeValue.ofMilliseconds(50);
+
+    /**
      * Lazily initialized, process-wide, single daemon-thread scheduler used solely to pace
      * staggered connection attempts (RFC 8305 connection racing). Shared across all instances
      * so that enabling this feature never adds a thread per connection manager, let alone per
@@ -88,6 +99,7 @@ final class MultihomeIOSessionRequester {
     private final DnsResolver dnsResolver;
     private final boolean happyEyeballsEnabled;
     private final TimeValue connectionAttemptDelay;
+    private final AsyncDnsResolver asyncDnsResolver;
     private final ScheduledExecutorService staggerScheduler;
 
     MultihomeIOSessionRequester(final DnsResolver dnsResolver) {
@@ -98,7 +110,15 @@ final class MultihomeIOSessionRequester {
             final DnsResolver dnsResolver,
             final boolean happyEyeballsEnabled,
             final TimeValue connectionAttemptDelay) {
-        this(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, null);
+        this(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, null, null);
+    }
+
+    MultihomeIOSessionRequester(
+            final DnsResolver dnsResolver,
+            final boolean happyEyeballsEnabled,
+            final TimeValue connectionAttemptDelay,
+            final AsyncDnsResolver asyncDnsResolver) {
+        this(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver, null);
     }
 
     // Package-private: allows unit tests to supply a deterministic, synchronous scheduler
@@ -108,6 +128,17 @@ final class MultihomeIOSessionRequester {
             final boolean happyEyeballsEnabled,
             final TimeValue connectionAttemptDelay,
             final ScheduledExecutorService staggerScheduler) {
+        this(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, null, staggerScheduler);
+    }
+
+    // Package-private: full constructor, letting unit tests control both the DNS
+    // resolution strategy and stagger scheduling.
+    MultihomeIOSessionRequester(
+            final DnsResolver dnsResolver,
+            final boolean happyEyeballsEnabled,
+            final TimeValue connectionAttemptDelay,
+            final AsyncDnsResolver asyncDnsResolver,
+            final ScheduledExecutorService staggerScheduler) {
         this.dnsResolver = dnsResolver != null ? dnsResolver : SystemDefaultDnsResolver.INSTANCE;
         this.happyEyeballsEnabled = happyEyeballsEnabled;
         final TimeValue delay = connectionAttemptDelay != null ? connectionAttemptDelay : DEFAULT_CONNECTION_ATTEMPT_DELAY;
@@ -116,6 +147,7 @@ final class MultihomeIOSessionRequester {
                     "Connection attempt delay must be at least %s ms (RFC 8305, Section 8)", MIN_CONNECTION_ATTEMPT_DELAY_MS);
         }
         this.connectionAttemptDelay = delay;
+        this.asyncDnsResolver = asyncDnsResolver;
         this.staggerScheduler = staggerScheduler;
     }
 
@@ -172,6 +204,10 @@ final class MultihomeIOSessionRequester {
 
         if (LOG.isDebugEnabled()) {
             LOG.debug("{} resolving remote address", remoteEndpoint.getHostName());
+        }
+
+        if (happyEyeballsEnabled && asyncDnsResolver != null) {
+            return connectWithAsyncResolution(connectionInitiator, remoteEndpoint, localAddress, connectTimeout, attachment, future);
         }
 
         final List<InetSocketAddress> remoteAddresses;
@@ -281,6 +317,51 @@ final class MultihomeIOSessionRequester {
     }
 
     /**
+     * Resolves {@code remoteEndpoint} via the configured {@link AsyncDnsResolver}, racing
+     * connection attempts against each address family's addresses as soon as that family
+     * resolves rather than waiting for every family to complete first (RFC 8305, Section 3:
+     * a Resolution Delay of 0ms trivially satisfies the "SHOULD NOT wait more than 50ms"
+     * recommendation, since connections begin immediately upon the first family's result).
+     * A family that resolves after the race has already been decided contributes nothing
+     * and is otherwise ignored.
+     */
+    private Future<IOSession> connectWithAsyncResolution(
+            final ConnectionInitiator connectionInitiator,
+            final NamedEndpoint remoteEndpoint,
+            final SocketAddress localAddress,
+            final Timeout connectTimeout,
+            final Object attachment,
+            final ComplexFuture<IOSession> future) {
+        final Race race = new Race(connectionInitiator, remoteEndpoint, new ArrayList<>(), localAddress,
+                connectTimeout, attachment, future);
+        race.markResolutionPending();
+        race.start();
+        final Cancellable resolution = asyncDnsResolver.resolve(
+                remoteEndpoint.getHostName(),
+                remoteEndpoint.getPort(),
+                new DnsResolutionCallback() {
+
+                    @Override
+                    public void resolved(final List<InetSocketAddress> addresses) {
+                        race.onAddressesResolved(addresses);
+                    }
+
+                    @Override
+                    public void failed(final Exception cause) {
+                        race.onResolutionFailed(cause);
+                    }
+
+                    @Override
+                    public void completed() {
+                        race.onResolutionComplete();
+                    }
+
+                });
+        race.setResolutionCancellable(resolution);
+        return future;
+    }
+
+    /**
      * RFC 8305 connection racing: the first address is tried immediately; each subsequent
      * address is tried after {@link #connectionAttemptDelay} unless an outstanding attempt
      * fails first, in which case the next address is tried immediately. The first successful
@@ -307,6 +388,19 @@ final class MultihomeIOSessionRequester {
         private boolean cancelled;
         private ScheduledFuture<?> pendingStagger;
         private long lastAttemptStartNanos = -1L;
+        // True once every address this race will ever see has been added, i.e. there is no
+        // DNS resolution still in flight that might contribute further addresses. Always
+        // true for a race constructed from a complete, pre-resolved address list; set to
+        // false by #markResolutionPending() for a race driven by progressive, asynchronous
+        // DNS resolution (see #connectWithAsyncResolution).
+        private boolean resolutionComplete = true;
+        private Cancellable resolution;
+        private Exception lastFailure;
+        // RFC 8305 Section 3 Resolution Delay bookkeeping: set only while waiting up to
+        // RESOLUTION_DELAY for AAAA after A arrived first.
+        private boolean ipv6Resolved;
+        private List<InetSocketAddress> bufferedIpv4;
+        private ScheduledFuture<?> pendingResolutionDelay;
 
         Race(
                 final ConnectionInitiator connectionInitiator,
@@ -318,7 +412,7 @@ final class MultihomeIOSessionRequester {
                 final ComplexFuture<IOSession> future) {
             this.connectionInitiator = connectionInitiator;
             this.remoteEndpoint = remoteEndpoint;
-            this.remoteAddresses = remoteAddresses;
+            this.remoteAddresses = new ArrayList<>(remoteAddresses);
             this.localAddress = localAddress;
             this.connectTimeout = connectTimeout;
             this.attachment = attachment;
@@ -326,6 +420,179 @@ final class MultihomeIOSessionRequester {
             // A single Cancellable dependency covers every attempt this race ever starts,
             // including ones not yet started when the caller cancels (see #cancel()).
             this.future.setDependency(this);
+        }
+
+        void markResolutionPending() {
+            synchronized (lock) {
+                resolutionComplete = false;
+            }
+        }
+
+        void setResolutionCancellable(final Cancellable resolution) {
+            final boolean alreadyOver;
+            synchronized (lock) {
+                alreadyOver = decided || cancelled;
+                if (!alreadyOver) {
+                    this.resolution = resolution;
+                }
+            }
+            if (alreadyOver) {
+                resolution.cancel();
+            }
+        }
+
+        /**
+         * Addresses resolved for one address family. RFC 8305 Section 3: if AAAA (IPv6)
+         * arrives, it is merged in immediately. If A (IPv4) arrives and AAAA has neither
+         * already resolved nor is ruled out, it is buffered and connecting is held off for up
+         * to {@link #RESOLUTION_DELAY} to give the preferred family a chance to arrive first
+         * (Section 6: the two are then interleaved); if AAAA never arrives in time, or the
+         * resolution as a whole completes first, the buffered A addresses are merged in
+         * without further delay.
+         */
+        void onAddressesResolved(final List<InetSocketAddress> addresses) {
+            synchronized (lock) {
+                if (decided || cancelled || addresses.isEmpty()) {
+                    return;
+                }
+                final boolean isIpv6 = addresses.get(0).getAddress() instanceof Inet6Address;
+                if (isIpv6) {
+                    ipv6Resolved = true;
+                    if (pendingResolutionDelay != null) {
+                        pendingResolutionDelay.cancel(false);
+                        pendingResolutionDelay = null;
+                        mergeAddressesLocked(addresses, true);
+                        final List<InetSocketAddress> buffered = bufferedIpv4;
+                        bufferedIpv4 = null;
+                        if (buffered != null) {
+                            mergeAddressesLocked(buffered, false);
+                        }
+                    } else {
+                        mergeAddressesLocked(addresses, true);
+                    }
+                    return;
+                }
+                if (!ipv6Resolved && !resolutionComplete && pendingResolutionDelay == null && bufferedIpv4 == null) {
+                    bufferedIpv4 = new ArrayList<>(addresses);
+                    pendingResolutionDelay = staggerScheduler().schedule(
+                            this::onResolutionDelayElapsed, RESOLUTION_DELAY.getDuration(), RESOLUTION_DELAY.getTimeUnit());
+                    return;
+                }
+                mergeAddressesLocked(addresses, false);
+            }
+        }
+
+        private void onResolutionDelayElapsed() {
+            synchronized (lock) {
+                pendingResolutionDelay = null;
+                final List<InetSocketAddress> buffered = bufferedIpv4;
+                bufferedIpv4 = null;
+                if (decided || cancelled || buffered == null) {
+                    return;
+                }
+                mergeAddressesLocked(buffered, false);
+            }
+        }
+
+        /**
+         * Merges newly resolved addresses of one family into the race. Addresses already
+         * attempted (indices {@code < nextIndex}: in flight, succeeded or failed) are never
+         * touched. The still-pending suffix is rebuilt by splitting it back into its two
+         * families and re-interleaving with the new arrivals (RFC 8305 Section 6, IPv6
+         * first), rather than simply appending the new addresses after whatever was already
+         * pending, which would let a newly arrived, preferred AAAA address end up queued
+         * behind an older, still-untried A address.
+         *
+         * <p>Must be called while holding {@code lock}.</p>
+         */
+        private void mergeAddressesLocked(final List<InetSocketAddress> newAddresses, final boolean newIsIpv6) {
+            final int attemptedCount = Math.min(nextIndex, remoteAddresses.size());
+            final boolean hadNoNextAddress = attemptedCount >= remoteAddresses.size();
+            final List<InetSocketAddress> pendingIpv6 = new ArrayList<>();
+            final List<InetSocketAddress> pendingIpv4 = new ArrayList<>();
+            for (int i = attemptedCount; i < remoteAddresses.size(); i++) {
+                final InetSocketAddress addr = remoteAddresses.get(i);
+                (addr.getAddress() instanceof Inet6Address ? pendingIpv6 : pendingIpv4).add(addr);
+            }
+            (newIsIpv6 ? pendingIpv6 : pendingIpv4).addAll(newAddresses);
+
+            while (remoteAddresses.size() > attemptedCount) {
+                remoteAddresses.remove(remoteAddresses.size() - 1);
+            }
+            remoteAddresses.addAll(interleave(pendingIpv6, pendingIpv4));
+
+            if (!hadNoNextAddress || pendingStagger != null) {
+                // A next address was already known and either already started or already
+                // has a stagger pacing it: these new addresses simply join the pending queue
+                // in their RFC 8305 Section 6 order; nothing further to do right now.
+                return;
+            }
+            if (outstanding == 0) {
+                // Nothing in flight at all: start as promptly as RFC 8305 allows, exactly
+                // as a freshly resolved first address would (Resolution Delay, Section 3),
+                // while still respecting the minimum inter-attempt spacing (Section 5) in
+                // case an earlier attempt for a different family just failed.
+                scheduleNextPromptlyLocked();
+            } else {
+                // An attempt is outstanding, but until now there was no further address to
+                // pace against; start the stagger clock now that one has arrived.
+                pendingStagger = staggerScheduler().schedule(
+                        this::onStaggerElapsed, connectionAttemptDelay.getDuration(), connectionAttemptDelay.getTimeUnit());
+            }
+        }
+
+        /** Alternates between the two families (RFC 8305 Section 6), AAAA first. */
+        private List<InetSocketAddress> interleave(
+                final List<InetSocketAddress> ipv6, final List<InetSocketAddress> ipv4) {
+            final List<InetSocketAddress> result = new ArrayList<>(ipv6.size() + ipv4.size());
+            final int max = Math.max(ipv6.size(), ipv4.size());
+            for (int i = 0; i < max; i++) {
+                if (i < ipv6.size()) {
+                    result.add(ipv6.get(i));
+                }
+                if (i < ipv4.size()) {
+                    result.add(ipv4.get(i));
+                }
+            }
+            return result;
+        }
+
+        /** One address family failed to resolve; recorded as a candidate failure cause. */
+        void onResolutionFailed(final Exception cause) {
+            synchronized (lock) {
+                lastFailure = cause;
+            }
+        }
+
+        /** No further addresses will ever be added to this race. */
+        void onResolutionComplete() {
+            boolean last = false;
+            Exception cause = null;
+            synchronized (lock) {
+                resolutionComplete = true;
+                if (pendingResolutionDelay != null) {
+                    // AAAA will never arrive now: stop waiting for it and use IPv4 alone.
+                    pendingResolutionDelay.cancel(false);
+                    pendingResolutionDelay = null;
+                    final List<InetSocketAddress> buffered = bufferedIpv4;
+                    bufferedIpv4 = null;
+                    if (buffered != null) {
+                        mergeAddressesLocked(buffered, false);
+                    }
+                }
+                if (!decided && !cancelled && outstanding == 0 && nextIndex >= remoteAddresses.size()) {
+                    decided = true;
+                    last = true;
+                    cause = lastFailure != null ? lastFailure : new UnknownHostException(remoteEndpoint.getHostName());
+                }
+            }
+            if (last) {
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("{}:{} resolution complete with no further addresses to try ({})",
+                            remoteEndpoint.getHostName(), remoteEndpoint.getPort(), cause.getClass());
+                }
+                finish(cause);
+            }
         }
 
         void start() {
@@ -471,9 +738,10 @@ final class MultihomeIOSessionRequester {
                     return;
                 }
                 cancelPendingStaggerLocked();
+                lastFailure = cause;
                 if (nextIndex < remoteAddresses.size()) {
                     advance = true;
-                } else if (outstanding == 0) {
+                } else if (outstanding == 0 && resolutionComplete) {
                     decided = true;
                     last = true;
                 }
@@ -484,6 +752,9 @@ final class MultihomeIOSessionRequester {
                     scheduleNextPromptlyLocked();
                 }
             }
+            // If neither advance nor last: every known address has been tried and failed,
+            // but DNS resolution is still pending and may yet contribute more (see
+            // #onAddressesResolved); wait for it rather than failing prematurely.
             if (last) {
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("{}:{} connection to {} failed ({}); all addresses exhausted",
@@ -513,7 +784,7 @@ final class MultihomeIOSessionRequester {
                 cancelPendingStaggerLocked();
                 if (nextIndex < remoteAddresses.size()) {
                     advance = true;
-                } else if (outstanding == 0) {
+                } else if (outstanding == 0 && resolutionComplete) {
                     decided = true;
                     last = true;
                 }
@@ -532,7 +803,7 @@ final class MultihomeIOSessionRequester {
         }
 
         private void finish(final Exception cause) {
-            if (cause instanceof IOException) {
+            if (cause instanceof IOException && !remoteAddresses.isEmpty()) {
                 final InetAddress[] addresses = remoteAddresses.stream()
                         .map(InetSocketAddress::getAddress)
                         .toArray(InetAddress[]::new);
@@ -545,16 +816,26 @@ final class MultihomeIOSessionRequester {
         @Override
         public boolean cancel() {
             final List<Future<IOSession>> toCancel;
+            final Cancellable resolutionToCancel;
             synchronized (lock) {
                 if (decided || cancelled) {
                     return false;
                 }
                 cancelled = true;
                 cancelPendingStaggerLocked();
+                if (pendingResolutionDelay != null) {
+                    pendingResolutionDelay.cancel(false);
+                    pendingResolutionDelay = null;
+                }
+                bufferedIpv4 = null;
                 toCancel = new ArrayList<>(inFlight);
+                resolutionToCancel = resolution;
             }
             for (final Future<IOSession> attemptFuture : toCancel) {
                 attemptFuture.cancel(true);
+            }
+            if (resolutionToCancel != null) {
+                resolutionToCancel.cancel();
             }
             return true;
         }
