@@ -54,6 +54,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hc.client5.http.DnsResolver;
@@ -173,6 +174,53 @@ class MultihomeIOSessionRequesterTest {
         } catch (final ExecutionException ex) {
             fail("Did not expect an ExecutionException", ex);
         }
+    }
+
+    /**
+     * A {@link ConnectionInitiator} whose {@code connect()} for one address invokes its
+     * callback synchronously, before returning, can make the sequential fallback path
+     * recurse into the next attempt from inside that same call: the next attempt's own
+     * dependency assignment must survive the original call unwinding afterward, rather than
+     * being overwritten back to the (now finished) attempt that triggered it.
+     */
+    @Test
+    void testCancelAfterSynchronousFailureReachesNextAttempt() throws Exception {
+        final InetAddress address1 = InetAddress.getByAddress(new byte[]{10, 0, 0, 1});
+        final InetAddress address2 = InetAddress.getByAddress(new byte[]{10, 0, 0, 2});
+        final List<InetSocketAddress> remoteAddresses = Arrays.asList(
+                new InetSocketAddress(address1, 8080),
+                new InetSocketAddress(address2, 8080));
+
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+        Mockito.when(dnsResolver.resolve("somehost", 8080)).thenReturn(remoteAddresses);
+
+        final AtomicBoolean secondAttemptCancelled = new AtomicBoolean();
+        final CompletableFuture<IOSession> secondAttemptFuture = new CompletableFuture<IOSession>() {
+            @Override
+            public boolean cancel(final boolean mayInterruptIfRunning) {
+                secondAttemptCancelled.set(true);
+                return super.cancel(mayInterruptIfRunning);
+            }
+        };
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    // Address 1 fails synchronously, inline, inside this very call: the
+                    // fallback to address 2 below runs, and returns, before this call does.
+                    final FutureCallback<IOSession> callback = invocation.getArgument(5);
+                    final CompletableFuture<IOSession> future = new CompletableFuture<>();
+                    callback.failed(new IOException("connection refused"));
+                    future.completeExceptionally(new IOException("connection refused"));
+                    return future;
+                })
+                .thenAnswer(invocation -> secondAttemptFuture); // Address 2: left pending.
+
+        final Future<IOSession> future = sessionRequester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(30), null, null);
+
+        future.cancel(true);
+        assertTrue(secondAttemptCancelled.get(),
+                "cancellation did not reach the in-flight second attempt");
     }
 
     // -------------------------------------------------------------------------

@@ -41,6 +41,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 
 import org.apache.hc.client5.http.ConnectExceptionSupport;
 import org.apache.hc.client5.http.DnsResolver;
@@ -131,6 +133,27 @@ final class MultihomeIOSessionRequester {
             final Timeout connectTimeout,
             final Object attachment,
             final FutureCallback<IOSession> callback) {
+        return connect(connectionInitiator, remoteEndpoint, remoteAddress, localAddress, connectTimeout, attachment, null, callback);
+    }
+
+    /**
+     * Same as {@link #connect(ConnectionInitiator, NamedEndpoint, SocketAddress, SocketAddress,
+     * Timeout, Object, FutureCallback)}, but every session this call connects is first passed to
+     * {@code validator}, if one is given, before being reported as the final outcome.
+     *
+     * @param validator accepts or rejects a freshly connected session; may be {@code null} to
+     *                   accept every connected session unconditionally, as the overload without
+     *                   this parameter does.
+     */
+    Future<IOSession> connect(
+            final ConnectionInitiator connectionInitiator,
+            final NamedEndpoint remoteEndpoint,
+            final SocketAddress remoteAddress,
+            final SocketAddress localAddress,
+            final Timeout connectTimeout,
+            final Object attachment,
+            final SessionValidator validator,
+            final FutureCallback<IOSession> callback) {
 
         final ComplexFuture<IOSession> future = new ComplexFuture<>(callback);
         if (remoteAddress != null) {
@@ -141,7 +164,12 @@ final class MultihomeIOSessionRequester {
             final Future<IOSession> sessionFuture = connectionInitiator.connect(remoteEndpoint, remoteAddress, localAddress, connectTimeout, attachment, new FutureCallback<IOSession>() {
                 @Override
                 public void completed(final IOSession session) {
-                    future.completed(session);
+                    acceptOrReject(session, validator, future,
+                            // A single, explicitly given address has no fallback to offer.
+                            cause -> enhanceAndFail(future, remoteEndpoint, cause,
+                                    (remoteAddress instanceof InetSocketAddress) ?
+                                            new InetAddress[] { ((InetSocketAddress) remoteAddress).getAddress() } :
+                                            new InetAddress[] {}));
                 }
 
                 @Override
@@ -150,14 +178,10 @@ final class MultihomeIOSessionRequester {
                         LOG.debug("{}:{} connection to {} failed ({}); terminating operation",
                                 remoteEndpoint.getHostName(), remoteEndpoint.getPort(), remoteAddress, cause.getClass());
                     }
-                    if (cause instanceof IOException) {
-                        future.failed(ConnectExceptionSupport.enhance((IOException) cause, remoteEndpoint,
-                                (remoteAddress instanceof InetSocketAddress) ?
-                                        new InetAddress[] { ((InetSocketAddress) remoteAddress).getAddress() } :
-                                        new InetAddress[] {}));
-                    } else {
-                        future.failed(cause);
-                    }
+                    enhanceAndFail(future, remoteEndpoint, cause,
+                            (remoteAddress instanceof InetSocketAddress) ?
+                                    new InetAddress[] { ((InetSocketAddress) remoteAddress).getAddress() } :
+                                    new InetAddress[] {});
                 }
 
                 @Override
@@ -191,16 +215,153 @@ final class MultihomeIOSessionRequester {
 
         if (happyEyeballsEnabled && remoteAddresses.size() > 1) {
             final Race race = new Race(connectionInitiator, remoteEndpoint, remoteAddresses, localAddress,
-                    connectTimeout, attachment, future);
+                    connectTimeout, attachment, validator, future);
             race.start();
             return future;
         }
+
+        connectSequentially(connectionInitiator, remoteEndpoint, remoteAddresses, localAddress,
+                connectTimeout, attachment, validator, future);
+        return future;
+    }
+
+    public Future<IOSession> connect(
+            final ConnectionInitiator connectionInitiator,
+            final NamedEndpoint remoteEndpoint,
+            final SocketAddress localAddress,
+            final Timeout connectTimeout,
+            final Object attachment,
+            final FutureCallback<IOSession> callback) {
+        return connect(connectionInitiator, remoteEndpoint, null, localAddress, connectTimeout, attachment, null, callback);
+    }
+
+    /**
+     * Accepts or rejects a session that has just connected, before {@link #connect} reports it
+     * as the final outcome. A rejected session is closed, and {@link #connect} tries the next
+     * address, if one remains, rather than surfacing a connected session that failed a check
+     * layered on top of the raw connection (for example a TLS handshake) as a successful
+     * outcome. Within a race, a rejection ends racing rather than continuing it: the remaining
+     * addresses, if any, are tried sequentially (see {@link Race#onWinnerRejected}).
+     *
+     * <p>The exception type reported to the final {@code callback} on rejection is not
+     * necessarily the one this validator reported: a rejection that exhausts every address is
+     * folded in with ordinary connect failures through {@link
+     * org.apache.hc.client5.http.ConnectExceptionSupport#enhance}, which can, for example,
+     * remap a timeout into {@code ConnectTimeoutException} regardless of whether the timeout
+     * happened during the TCP connect or a validator check afterward.</p>
+     */
+    @FunctionalInterface
+    interface SessionValidator {
+        void validate(IOSession session, FutureCallback<IOSession> callback);
+    }
+
+    private static void enhanceAndFail(
+            final ComplexFuture<IOSession> future,
+            final NamedEndpoint remoteEndpoint,
+            final Exception cause,
+            final InetAddress[] addresses) {
+        if (cause instanceof IOException) {
+            future.failed(ConnectExceptionSupport.enhance((IOException) cause, remoteEndpoint, addresses));
+        } else {
+            future.failed(cause);
+        }
+    }
+
+    /**
+     * Runs {@code validator} against a freshly connected {@code session}, if one is given;
+     * otherwise accepts the session unconditionally. On rejection, closes the session and
+     * invokes {@code onRejected} with the rejection cause so the caller can fall back to
+     * another address, or fail outright if none remains.
+     */
+    private static void acceptOrReject(
+            final IOSession session,
+            final SessionValidator validator,
+            final ComplexFuture<IOSession> future,
+            final Consumer<Exception> onRejected) {
+        if (validator == null) {
+            deliver(session, future);
+            return;
+        }
+        validator.validate(session, new FutureCallback<IOSession>() {
+            @Override
+            public void completed(final IOSession validatedSession) {
+                deliver(validatedSession, future);
+            }
+
+            @Override
+            public void failed(final Exception cause) {
+                session.close(CloseMode.IMMEDIATE);
+                onRejected.accept(cause);
+            }
+
+            @Override
+            public void cancelled() {
+                session.close(CloseMode.IMMEDIATE);
+                future.cancel();
+            }
+        });
+    }
+
+    /**
+     * Completes {@code future} with {@code session}, unless it was already completed or
+     * cancelled by something else (for example the caller, concurrently) in the brief window
+     * before this call: {@link ComplexFuture#completed} reports that by returning {@code false},
+     * in which case the session must still be closed here rather than silently leaked.
+     */
+    private static void deliver(final IOSession session, final ComplexFuture<IOSession> future) {
+        if (!future.completed(session)) {
+            session.close(CloseMode.IMMEDIATE);
+        }
+    }
+
+    /**
+     * Connects to each of {@code remoteAddresses} in turn, stopping at the first one that
+     * completes both the TCP connection and, where {@code validator} is given, its check. A
+     * TCP-level failure or a validator rejection moves on to the next address; the last
+     * address's failure is reported via {@code future}, enhanced via
+     * {@link ConnectExceptionSupport}.
+     */
+    private void connectSequentially(
+            final ConnectionInitiator connectionInitiator,
+            final NamedEndpoint remoteEndpoint,
+            final List<InetSocketAddress> remoteAddresses,
+            final SocketAddress localAddress,
+            final Timeout connectTimeout,
+            final Object attachment,
+            final SessionValidator validator,
+            final ComplexFuture<IOSession> future) {
 
         final Runnable runnable = new Runnable() {
 
             private final AtomicInteger attempt = new AtomicInteger(0);
 
+            // Guards the body of executeNext() against a different thread concurrently
+            // rejecting the same attempt and recursing into executeNext() for the next one: an
+            // unguarded reader could otherwise observe this attempt's index as still current
+            // and set future's dependency back to its (already superseded) session future,
+            // losing track of the one the other thread already started. A same-thread,
+            // reentrant rejection (recursing into the next attempt before this call returns)
+            // needs no locking to stay correct: it is covered instead by the attempt-index
+            // check at the end of this method, since ReentrantLock already permits the
+            // recursive re-entry on the same thread regardless.
+            private final ReentrantLock lock = new ReentrantLock();
+
             void executeNext() {
+                lock.lock();
+                try {
+                    executeNextLocked();
+                } finally {
+                    lock.unlock();
+                }
+            }
+
+            private void executeNextLocked() {
+                if (future.isDone()) {
+                    // The caller already cancelled, or the operation otherwise already
+                    // completed; starting another attempt now would only leak a connection
+                    // nobody will ever use.
+                    return;
+                }
                 final int index = attempt.getAndIncrement();
                 final InetSocketAddress remoteAddress = remoteAddresses.get(index);
 
@@ -223,32 +384,12 @@ final class MultihomeIOSessionRequester {
                                     LOG.debug("{}:{} connected {}->{} as {}",
                                             remoteEndpoint.getHostName(), remoteEndpoint.getPort(), localAddress, remoteAddress, session.getId());
                                 }
-                                future.completed(session);
+                                acceptOrReject(session, validator, future, cause -> onFailure(remoteAddress, cause));
                             }
 
                             @Override
                             public void failed(final Exception cause) {
-                                if (attempt.get() >= remoteAddresses.size()) {
-                                    if (LOG.isDebugEnabled()) {
-                                        LOG.debug("{}:{} connection to {} failed ({}); terminating operation",
-                                                remoteEndpoint.getHostName(), remoteEndpoint.getPort(), remoteAddress, cause.getClass());
-                                    }
-                                    if (cause instanceof IOException) {
-                                        final InetAddress[] addresses = remoteAddresses.stream()
-                                                .filter(addr -> addr instanceof InetSocketAddress)
-                                                .map(addr -> ((InetSocketAddress) addr).getAddress())
-                                                .toArray(InetAddress[]::new);
-                                        future.failed(ConnectExceptionSupport.enhance((IOException) cause, remoteEndpoint, addresses));
-                                    } else {
-                                        future.failed(cause);
-                                    }
-                                } else {
-                                    if (LOG.isDebugEnabled()) {
-                                        LOG.debug("{}:{} connection to {} failed ({}); retrying connection to the next address",
-                                                remoteEndpoint.getHostName(), remoteEndpoint.getPort(), remoteAddress, cause.getClass());
-                                    }
-                                    executeNext();
-                                }
+                                onFailure(remoteAddress, cause);
                             }
 
                             @Override
@@ -257,7 +398,43 @@ final class MultihomeIOSessionRequester {
                             }
 
                         });
-                future.setDependency(sessionFuture);
+                // A same-thread, reentrant rejection above can already have recursed into
+                // executeNext() for the next attempt and set future's dependency to it before
+                // this line runs; only apply this (now stale) assignment if no later attempt
+                // has started in the meantime.
+                if (attempt.get() == index + 1) {
+                    // ComplexFuture#setDependency checks isDone() and then sets the dependency
+                    // as two separate steps, which can still interleave with a concurrent
+                    // #cancel() between them; a cancellation landing in that narrow window is
+                    // lost. Closing it needs a change to ComplexFuture itself.
+                    future.setDependency(sessionFuture);
+                }
+            }
+
+            private void onFailure(final InetSocketAddress remoteAddress, final Exception cause) {
+                if (future.isDone()) {
+                    // The caller already cancelled, or the operation otherwise already
+                    // completed; starting another attempt now would only leak a connection
+                    // nobody will ever use.
+                    return;
+                }
+                if (attempt.get() >= remoteAddresses.size()) {
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("{}:{} connection to {} failed ({}); terminating operation",
+                                remoteEndpoint.getHostName(), remoteEndpoint.getPort(), remoteAddress, cause.getClass());
+                    }
+                    final InetAddress[] addresses = remoteAddresses.stream()
+                            .filter(addr -> addr instanceof InetSocketAddress)
+                            .map(addr -> ((InetSocketAddress) addr).getAddress())
+                            .toArray(InetAddress[]::new);
+                    enhanceAndFail(future, remoteEndpoint, cause, addresses);
+                } else {
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("{}:{} connection to {} failed ({}); retrying connection to the next address",
+                                remoteEndpoint.getHostName(), remoteEndpoint.getPort(), remoteAddress, cause.getClass());
+                    }
+                    executeNext();
+                }
             }
 
             @Override
@@ -267,17 +444,6 @@ final class MultihomeIOSessionRequester {
 
         };
         runnable.run();
-        return future;
-    }
-
-    public Future<IOSession> connect(
-            final ConnectionInitiator connectionInitiator,
-            final NamedEndpoint remoteEndpoint,
-            final SocketAddress localAddress,
-            final Timeout connectTimeout,
-            final Object attachment,
-            final FutureCallback<IOSession> callback) {
-        return connect(connectionInitiator, remoteEndpoint, null, localAddress, connectTimeout, attachment, callback);
     }
 
     /**
@@ -297,9 +463,10 @@ final class MultihomeIOSessionRequester {
         private final SocketAddress localAddress;
         private final Timeout connectTimeout;
         private final Object attachment;
+        private final SessionValidator validator;
         private final ComplexFuture<IOSession> future;
 
-        private final Object lock = new Object();
+        private final ReentrantLock lock = new ReentrantLock();
         private final List<Future<IOSession>> inFlight = new ArrayList<>();
         private int nextIndex;
         private int outstanding;
@@ -315,6 +482,7 @@ final class MultihomeIOSessionRequester {
                 final SocketAddress localAddress,
                 final Timeout connectTimeout,
                 final Object attachment,
+                final SessionValidator validator,
                 final ComplexFuture<IOSession> future) {
             this.connectionInitiator = connectionInitiator;
             this.remoteEndpoint = remoteEndpoint;
@@ -322,6 +490,7 @@ final class MultihomeIOSessionRequester {
             this.localAddress = localAddress;
             this.connectTimeout = connectTimeout;
             this.attachment = attachment;
+            this.validator = validator;
             this.future = future;
             // A single Cancellable dependency covers every attempt this race ever starts,
             // including ones not yet started when the caller cancels (see #cancel()).
@@ -329,8 +498,11 @@ final class MultihomeIOSessionRequester {
         }
 
         void start() {
-            synchronized (lock) {
+            lock.lock();
+            try {
                 scheduleNextPromptlyLocked();
+            } finally {
+                lock.unlock();
             }
         }
 
@@ -412,16 +584,20 @@ final class MultihomeIOSessionRequester {
         }
 
         private void onStaggerElapsed() {
-            synchronized (lock) {
+            lock.lock();
+            try {
                 pendingStagger = null;
                 startNextLocked();
+            } finally {
+                lock.unlock();
             }
         }
 
         private void onAttemptCompleted(final InetSocketAddress remoteAddress, final IOSession session) {
             final boolean won;
             final List<Future<IOSession>> losers;
-            synchronized (lock) {
+            lock.lock();
+            try {
                 outstanding--;
                 won = !decided && !cancelled;
                 if (won) {
@@ -431,6 +607,8 @@ final class MultihomeIOSessionRequester {
                 } else {
                     losers = null;
                 }
+            } finally {
+                lock.unlock();
             }
             if (won) {
                 if (LOG.isDebugEnabled()) {
@@ -440,17 +618,7 @@ final class MultihomeIOSessionRequester {
                 for (final Future<IOSession> loser : losers) {
                     loser.cancel(true);
                 }
-                // future may already have been cancelled directly by the caller (not through
-                // this Race's own #cancel()) in the brief window between the checks above and
-                // here: ComplexFuture#completed() returns false in that case, and the session
-                // must still be closed rather than silently leaked.
-                if (!future.completed(session)) {
-                    if (LOG.isDebugEnabled()) {
-                        LOG.debug("{}:{} race won by {}->{} as {} but the future was already done; closing",
-                                remoteEndpoint.getHostName(), remoteEndpoint.getPort(), localAddress, remoteAddress, session.getId());
-                    }
-                    session.close(CloseMode.IMMEDIATE);
-                }
+                acceptOrReject(session, validator, future, cause -> onWinnerRejected(remoteAddress, cause));
             } else {
                 // A duplicate winner (concurrent success) or a late completion after the
                 // race was already decided/cancelled: never leak the socket.
@@ -462,10 +630,38 @@ final class MultihomeIOSessionRequester {
             }
         }
 
+        /**
+         * The address that won the TCP race failed {@link #validator}'s check (for example, a
+         * TLS handshake layered on top of it). Racing is over by this point: every other
+         * in-flight attempt was already cancelled when the winner was decided, and any address
+         * not yet attempted is simply never tried, so the remaining addresses, if any, are
+         * tried sequentially, exactly as the base non-racing path tries its addresses: the
+         * reliability this race was built to provide now comes from trying every address, not
+         * from trying several of them at once.
+         */
+        private void onWinnerRejected(final InetSocketAddress winnerAddress, final Exception cause) {
+            final List<InetSocketAddress> remaining = withoutAddress(remoteAddresses, winnerAddress);
+            if (remaining.isEmpty()) {
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("{}:{} connection to {} failed validation after racing ({}); no address remains",
+                            remoteEndpoint.getHostName(), remoteEndpoint.getPort(), winnerAddress, cause.getClass());
+                }
+                enhanceAndFail(future, remoteEndpoint, cause, new InetAddress[] { winnerAddress.getAddress() });
+                return;
+            }
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("{}:{} connection to {} failed validation after racing ({}); retrying connection to the remaining address(es)",
+                        remoteEndpoint.getHostName(), remoteEndpoint.getPort(), winnerAddress, cause.getClass());
+            }
+            connectSequentially(connectionInitiator, remoteEndpoint, remaining, localAddress,
+                    connectTimeout, attachment, validator, future);
+        }
+
         private void onAttemptFailed(final InetSocketAddress remoteAddress, final Exception cause) {
             boolean advance = false;
             boolean last = false;
-            synchronized (lock) {
+            lock.lock();
+            try {
                 outstanding--;
                 if (decided || cancelled) {
                     return;
@@ -483,6 +679,8 @@ final class MultihomeIOSessionRequester {
                     // but still respecting the minimum inter-attempt spacing.
                     scheduleNextPromptlyLocked();
                 }
+            } finally {
+                lock.unlock();
             }
             if (last) {
                 if (LOG.isDebugEnabled()) {
@@ -503,7 +701,8 @@ final class MultihomeIOSessionRequester {
         private void onAttemptCancelled(final InetSocketAddress remoteAddress) {
             boolean advance = false;
             boolean last = false;
-            synchronized (lock) {
+            lock.lock();
+            try {
                 outstanding--;
                 if (decided || cancelled) {
                     // Expected: either this race decided a winner and cancelled every other
@@ -520,6 +719,8 @@ final class MultihomeIOSessionRequester {
                 if (advance) {
                     scheduleNextPromptlyLocked();
                 }
+            } finally {
+                lock.unlock();
             }
             if (last) {
                 if (LOG.isDebugEnabled()) {
@@ -545,13 +746,16 @@ final class MultihomeIOSessionRequester {
         @Override
         public boolean cancel() {
             final List<Future<IOSession>> toCancel;
-            synchronized (lock) {
+            lock.lock();
+            try {
                 if (decided || cancelled) {
                     return false;
                 }
                 cancelled = true;
                 cancelPendingStaggerLocked();
                 toCancel = new ArrayList<>(inFlight);
+            } finally {
+                lock.unlock();
             }
             for (final Future<IOSession> attemptFuture : toCancel) {
                 attemptFuture.cancel(true);
@@ -567,6 +771,24 @@ final class MultihomeIOSessionRequester {
             }
         }
 
+    }
+
+    /**
+     * Removes the first occurrence of {@code excluded} from {@code addresses}, preserving the
+     * order of the rest.
+     */
+    private static List<InetSocketAddress> withoutAddress(
+            final List<InetSocketAddress> addresses, final InetSocketAddress excluded) {
+        final List<InetSocketAddress> remaining = new ArrayList<>(addresses.size());
+        boolean removedOne = false;
+        for (final InetSocketAddress address : addresses) {
+            if (!removedOne && address.equals(excluded)) {
+                removedOne = true;
+                continue;
+            }
+            remaining.add(address);
+        }
+        return remaining;
     }
 
 }

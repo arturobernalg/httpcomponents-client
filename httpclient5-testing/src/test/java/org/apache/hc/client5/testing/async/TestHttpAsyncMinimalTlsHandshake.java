@@ -70,7 +70,14 @@ class TestHttpAsyncMinimalTlsHandshake extends AbstractIntegrationTestBase {
 
     @Test
     void testTlsHandshakeFailure() throws Exception {
-        final HttpHost target = startServer();
+        // "localhost" can resolve to more than one address (127.0.0.1 and ::1); the server
+        // only listens on one of them. Since a TLS failure is no longer necessarily final for
+        // a request's last attempted address (the client now falls back to any other resolved
+        // address, the same way a TCP-level failure always has), resolving to an address the
+        // server isn't listening on would mask the TLS failure this test means to assert with
+        // an unrelated connection-refused error. A single literal address has only one.
+        final HttpHost serverHost = startServer();
+        final HttpHost target = new HttpHost(serverHost.getSchemeName(), "127.0.0.1", serverHost.getPort());
 
         configureClient(builder ->
                 builder.setTlsStrategy(new DefaultClientTlsStrategy(SSLContexts.createDefault())));

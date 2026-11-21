@@ -33,6 +33,8 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.file.Path;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.client5.http.SchemePortResolver;
@@ -45,10 +47,10 @@ import org.apache.hc.client5.http.nio.ManagedAsyncClientConnection;
 import org.apache.hc.client5.http.routing.RoutingSupport;
 import org.apache.hc.core5.annotation.Internal;
 import org.apache.hc.core5.concurrent.CallbackContribution;
+import org.apache.hc.core5.concurrent.Cancellable;
 import org.apache.hc.core5.concurrent.ComplexCancellable;
 import org.apache.hc.core5.concurrent.ComplexFuture;
 import org.apache.hc.core5.concurrent.FutureCallback;
-import org.apache.hc.core5.concurrent.FutureContribution;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.URIScheme;
 import org.apache.hc.core5.http.config.Lookup;
@@ -159,10 +161,31 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
             LOG.debug("{} connecting {}->{} ({})", endpointHost, localAddress, remoteAddress, connectTimeout);
         }
 
+        // Holds the connection produced by whichever attempt the session requester ultimately
+        // accepts: with Happy Eyeballs racing or multiple resolved addresses, the validator
+        // below may run more than once, against a different session each time, before one is
+        // accepted.
+        final AtomicReference<DefaultManagedAsyncClientConnection> acceptedConnection = new AtomicReference<>();
+
         // The session request may complete before connect returns, and its callback can register the
         // TLS handshake with the future. Install a holder first so the session request cannot replace it.
         final ComplexCancellable sessionCancellable = new ComplexCancellable();
         future.setDependency(sessionCancellable);
+        // sessionFuture does not exist yet at the point the validator below is built, since it is
+        // itself an argument of the call that creates it; cancelSessionFuture is the one stable
+        // reference the validator can capture, resolved through this holder once connect() returns.
+        final AtomicReference<Future<IOSession>> sessionFutureRef = new AtomicReference<>();
+        final Cancellable cancelSessionFuture = () -> {
+            final Future<IOSession> sf = sessionFutureRef.get();
+            return sf != null && sf.cancel(true);
+        };
+        // Set before connect() is called, not only after: a mocked or otherwise synchronous
+        // ConnectionInitiator can invoke the validator below before connect() returns, which
+        // would already have moved sessionCancellable's dependency on to "close this
+        // connection" by the time connect() returns. Only the validator itself is ever
+        // allowed to move the dependency again after this, so whichever runs first always
+        // wins and nothing here clobbers it back.
+        sessionCancellable.setDependency(cancelSessionFuture);
         final Future<IOSession> sessionFuture = sessionRequester.connect(
                 connectionInitiator,
                 remoteEndpoint,
@@ -170,56 +193,109 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
                 localAddress,
                 connectTimeout,
                 tlsConfig.getHttpVersionPolicy(),
+                (session, validated) -> {
+                    // Validates a connected session before the requester accepts it as final:
+                    // on a TLS failure here, the requester tries the next address, if one
+                    // remains, instead of this method surfacing a connected but unusable
+                    // session. See MultihomeIOSessionRequester.SessionValidator.
+                    final DefaultManagedAsyncClientConnection connection = new DefaultManagedAsyncClientConnection(session);
+                    onAfterSocketConnect(context, endpointHost);
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("{} {} connected {}->{}", ConnPoolSupport.getId(connection), endpointHost,
+                                connection.getLocalAddress(), connection.getRemoteAddress());
+                    }
+                    final TlsStrategy tlsStrategy = tlsStrategyLookup != null ? tlsStrategyLookup.lookup(endpointHost.getSchemeName()) : null;
+                    if (tlsStrategy != null) {
+                        // Guards against a TlsStrategy that, in violation of its contract,
+                        // reports an outcome through the callback below and then also throws
+                        // out of #upgrade (the catch block below): only the first of the two
+                        // is ever reported, and the second is a safe no-op rather than a
+                        // double-advance of the session requester's fallback.
+                        final AtomicBoolean settled = new AtomicBoolean();
+                        try {
+                            final Timeout socketTimeout = connection.getSocketTimeout();
+                            final Timeout handshakeTimeout = tlsConfig.getHandshakeTimeout() != null ? tlsConfig.getHandshakeTimeout() : connectTimeout;
+                            final NamedEndpoint tlsName = endpointName != null ? endpointName : endpointHost;
+                            // The session request for this specific attempt is already done, so
+                            // cancelling it would not stop the handshake: track closing this
+                            // connection instead, for as long as this attempt is the one in
+                            // flight. On rejection below, tracking reverts to sessionFuture,
+                            // which the requester may still be using to try another address.
+                            sessionCancellable.setDependency(() -> {
+                                connection.close(CloseMode.IMMEDIATE);
+                                return true;
+                            });
+                            onBeforeTlsHandshake(context, endpointHost);
+                            if (LOG.isDebugEnabled()) {
+                                LOG.debug("{} {} upgrading to TLS", ConnPoolSupport.getId(connection), tlsName);
+                            }
+                            tlsStrategy.upgrade(
+                                    connection,
+                                    tlsName,
+                                    attachment,
+                                    handshakeTimeout,
+                                    new FutureCallback<TransportSecurityLayer>() {
+
+                                        @Override
+                                        public void completed(final TransportSecurityLayer transportSecurityLayer) {
+                                            if (!settled.compareAndSet(false, true)) {
+                                                return;
+                                            }
+                                            // Report the result before invoking the hook below, so a hook
+                                            // that throws can never orphan a result that has already been
+                                            // accepted.
+                                            connection.setSocketTimeout(socketTimeout);
+                                            acceptedConnection.set(connection);
+                                            validated.completed(session);
+                                            onAfterTlsHandshake(context, endpointHost);
+                                            if (LOG.isDebugEnabled()) {
+                                                LOG.debug("{} {} upgraded to TLS", ConnPoolSupport.getId(connection), tlsName);
+                                            }
+                                        }
+
+                                        @Override
+                                        public void failed(final Exception ex) {
+                                            if (!settled.compareAndSet(false, true)) {
+                                                return;
+                                            }
+                                            sessionCancellable.setDependency(cancelSessionFuture);
+                                            validated.failed(ex);
+                                        }
+
+                                        @Override
+                                        public void cancelled() {
+                                            if (!settled.compareAndSet(false, true)) {
+                                                return;
+                                            }
+                                            // Unlike #failed, a cancellation is always terminal:
+                                            // the session requester's own future is already
+                                            // being cancelled by this same call chain (through
+                                            // #validated, below), which also cancels the outer
+                                            // future that depends on it, so there is no later
+                                            // attempt for sessionCancellable to be redirected to.
+                                            validated.cancelled();
+                                        }
+
+                                    });
+                        } catch (final Exception ex) {
+                            if (!settled.compareAndSet(false, true)) {
+                                return;
+                            }
+                            sessionCancellable.setDependency(cancelSessionFuture);
+                            validated.failed(ex);
+                        }
+                    } else {
+                        acceptedConnection.set(connection);
+                        validated.completed(session);
+                    }
+                },
                 new FutureCallback<IOSession>() {
 
                     @Override
                     public void completed(final IOSession session) {
-                        final DefaultManagedAsyncClientConnection connection = new DefaultManagedAsyncClientConnection(session);
-                        onAfterSocketConnect(context, endpointHost);
-                        if (LOG.isDebugEnabled()) {
-                            LOG.debug("{} {} connected {}->{}", ConnPoolSupport.getId(connection), endpointHost,
-                                    connection.getLocalAddress(), connection.getRemoteAddress());
-                        }
-                        final TlsStrategy tlsStrategy = tlsStrategyLookup != null ? tlsStrategyLookup.lookup(endpointHost.getSchemeName()) : null;
-                        if (tlsStrategy != null) {
-                            try {
-                                final Timeout socketTimeout = connection.getSocketTimeout();
-                                final Timeout handshakeTimeout = tlsConfig.getHandshakeTimeout() != null ? tlsConfig.getHandshakeTimeout() : connectTimeout;
-                                final NamedEndpoint tlsName = endpointName != null ? endpointName : endpointHost;
-                                // The session request is already done, so cancelling it would not stop
-                                // the handshake. Close the connection instead.
-                                future.setDependency(() -> {
-                                    connection.close(CloseMode.IMMEDIATE);
-                                    return true;
-                                });
-                                onBeforeTlsHandshake(context, endpointHost);
-                                if (LOG.isDebugEnabled()) {
-                                    LOG.debug("{} {} upgrading to TLS", ConnPoolSupport.getId(connection), tlsName);
-                                }
-                                tlsStrategy.upgrade(
-                                        connection,
-                                        tlsName,
-                                        attachment,
-                                        handshakeTimeout,
-                                        new FutureContribution<TransportSecurityLayer>(future) {
-
-                                            @Override
-                                            public void completed(final TransportSecurityLayer transportSecurityLayer) {
-                                                connection.setSocketTimeout(socketTimeout);
-                                                future.completed(connection);
-                                                onAfterTlsHandshake(context, endpointHost);
-                                                if (LOG.isDebugEnabled()) {
-                                                    LOG.debug("{} {} upgraded to TLS", ConnPoolSupport.getId(connection), tlsName);
-                                                }
-                                            }
-
-                                        });
-                            } catch (final Exception ex) {
-                                future.failed(ex);
-                            }
-                        } else {
-                            future.completed(connection);
-                        }
+                        // The validator above has already built and TLS-upgraded, if
+                        // configured, the connection for whichever attempt was accepted.
+                        future.completed(acceptedConnection.get());
                     }
 
                     @Override
@@ -233,7 +309,9 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
                     }
 
                 });
-        sessionCancellable.setDependency(() -> sessionFuture.cancel(true));
+        // Only resolves what cancelSessionFuture cancels; does not itself move
+        // sessionCancellable's dependency, which the validator may already have moved on.
+        sessionFutureRef.set(sessionFuture);
         return future;
     }
 
