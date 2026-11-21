@@ -72,6 +72,12 @@ import org.slf4j.LoggerFactory;
  * does the same, sorting such destinations last rather than dropping them from the result.
  * </p>
  *
+ * <p>
+ * Rule 9 (longest matching prefix) is applied to IPv4 only when the destination is on-link,
+ * that is, within the subnet of its source address, as glibc's {@code getaddrinfo()} does. An
+ * off-link IPv4 destination ties and keeps its DNS order. IPv6 is unaffected.
+ * </p>
+ *
  * @since 5.7
  */
 @Contract(threading = ThreadingBehavior.IMMUTABLE_CONDITIONAL)
@@ -87,8 +93,9 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
     }
 
     // Package-private seam so tests can pin the Rule 9 prefix-length cap (RFC 6724 §2.2)
-    // without depending on a real local network interface. Returns -1 to fall back to
-    // the uncapped comparison.
+    // without depending on a real local network interface. Returns -1 when the source's
+    // own prefix length can't be determined: for IPv6 this falls back to the uncapped
+    // comparison; for IPv4, on-link status can't be established either, so Rule 9 ties.
     @FunctionalInterface
     interface SourcePrefixLengthResolver {
         int resolvePrefixLength(final InetAddress source);
@@ -740,8 +747,13 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         // CommonPrefixLen(S, D) (§2.2) is capped at the length of S's own prefix,
         // not the full address width: commonPrefixLen() applies that cap using the
         // source's real network prefix length, resolved once per destination (see
-        // Info.srcPrefixLen) rather than on every comparison, and falls back to the
-        // uncapped bit-wise common prefix when that length is unknown (-1).
+        // Info.srcPrefixLen) rather than on every comparison. When that length is
+        // unknown (-1), IPv6 falls back to the uncapped bit-wise common prefix; IPv4
+        // ties instead (see the comment above commonPrefixLen() for why).
+        //
+        // For IPv4, commonPrefixLen() additionally treats an off-link destination (one
+        // outside the source's own subnet) as a tie rather than using its raw common
+        // prefix length: see the comment above its definition for why.
         if (aDst.getClass() == bDst.getClass()) {
             final int commonA = commonPrefixLen(aSrc, aDst, a.srcPrefixLen);
             final int commonB = commonPrefixLen(bSrc, bDst, b.srcPrefixLen);
@@ -758,12 +770,32 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
     };
 
     // Package-private for unit testing.
+    //
+    // For IPv4, an off-link destination (one outside the source's own subnet, including
+    // when the subnet itself is unknown) ties at 0 instead of using its raw common-prefix
+    // length. Unrelated public IPv4 addresses frequently share leading bits with an RFC 1918
+    // source by sheer coincidence of the small 32-bit address space, which otherwise produces
+    // a spurious, deterministic ranking among destinations that have nothing to do with the
+    // source's network — defeating DNS round-robin. This is the well-known RFC 3484/6724
+    // "Rule 9 problem": RFC 6724 §6 allows Rules 9 and 10 to be superseded if the
+    // implementation has other means of sorting destination addresses, and glibc's
+    // getaddrinfo() applies this same on-link-only restriction for IPv4. IPv6 is left exactly
+    // as RFC 6724 specifies, unrestricted, matching glibc's own choice there too.
     static int commonPrefixLen(final InetAddress a, final InetAddress b, final int srcPrefixLen) {
         if (a == null || b == null || a.getClass() != b.getClass()) {
             return 0;
         }
         final int raw = rawCommonPrefixLen(a, b);
-        return srcPrefixLen >= 0 ? Math.min(raw, srcPrefixLen) : raw;
+        if (srcPrefixLen < 0) {
+            // On-link cannot be established without the source's own prefix length; for
+            // IPv4, treat that the same as off-link (tie) rather than let the raw bit count
+            // drive the ranking.
+            return a instanceof Inet4Address ? 0 : raw;
+        }
+        if (a instanceof Inet4Address && raw < srcPrefixLen) {
+            return 0;
+        }
+        return Math.min(raw, srcPrefixLen);
     }
 
     private static int rawCommonPrefixLen(final InetAddress a, final InetAddress b) {

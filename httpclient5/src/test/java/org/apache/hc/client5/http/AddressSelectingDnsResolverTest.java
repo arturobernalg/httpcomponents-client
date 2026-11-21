@@ -455,6 +455,125 @@ class AddressSelectingDnsResolverTest {
     }
 
     @Test
+    void commonPrefixLen_offLinkIpv4_tiesInsteadOfUsingRawPrefix() throws Exception {
+        // RFC 3484/6724 "Rule 9 problem": an off-link IPv4 destination must not be
+        // ranked by its raw (uncapped) common-prefix bits with an unrelated source,
+        // or coincidental octet overlap in the small 32-bit address space defeats
+        // DNS round-robin. src is a private /24; dst is a public address outside
+        // that subnet (they share 8 raw bits, "192", purely by coincidence), so
+        // Rule 9 must contribute a tie (0), not that raw count.
+        final InetAddress src = inet("192.168.0.240");
+        final InetAddress dst = inet("192.0.2.9");
+        assertEquals(0, AddressSelectingDnsResolver.commonPrefixLen(src, dst, 24));
+    }
+
+    @Test
+    void commonPrefixLen_onLinkIpv4_stillCapsAtSourcePrefix() throws Exception {
+        // The on-link path (also covered end-to-end by
+        // rfcRule9_commonPrefixCappedAtSourcePrefix_tiesPreserveDnsOrder_ipv4) is
+        // unaffected by the off-link restriction above.
+        final InetAddress src = inet("10.0.1.50");
+        final InetAddress dst = inet("10.0.1.60");
+        assertEquals(24, AddressSelectingDnsResolver.commonPrefixLen(src, dst, 24));
+    }
+
+    @Test
+    void commonPrefixLen_boundaryAtSourcePrefixLength_ipv4() throws Exception {
+        // Exercises the off-link/on-link boundary exactly: a destination differing
+        // only in the last network bit must tie at 0 (off-link), while one differing
+        // only in the first host bit must still cap at the full source prefix length
+        // (on-link) -- distinguishes a strict "raw < srcPrefixLen" from an off-by-one
+        // "raw <= srcPrefixLen".
+        final InetAddress src = inet("192.168.1.0");
+        final int prefixLen = 24;
+
+        final InetAddress offLinkDst = flipBit(src, prefixLen - 1); // last network bit
+        final InetAddress onLinkDst = flipBit(src, prefixLen);      // first host bit
+
+        assertEquals(0, AddressSelectingDnsResolver.commonPrefixLen(src, offLinkDst, prefixLen));
+        assertEquals(prefixLen, AddressSelectingDnsResolver.commonPrefixLen(src, onLinkDst, prefixLen));
+    }
+
+    @Test
+    void commonPrefixLen_offLinkIpv6_preservesRawPrefixLength() throws Exception {
+        // Unlike IPv4, an off-link IPv6 destination must not tie: Rule 9 keeps ranking
+        // by raw common-prefix length regardless of the source's own prefix length, so
+        // the IPv4-only off-link restriction above must not affect IPv6.
+        final InetAddress src = inet("2001:db8::1");
+        final int srcPrefixLen = 64;
+
+        final InetAddress d1 = flipBit(src, 40); // raw common prefix 40, off-link (40 < 64)
+        final InetAddress d2 = flipBit(src, 50); // raw common prefix 50, off-link (50 < 64)
+
+        assertEquals(40, AddressSelectingDnsResolver.commonPrefixLen(src, d1, srcPrefixLen));
+        assertEquals(50, AddressSelectingDnsResolver.commonPrefixLen(src, d2, srcPrefixLen));
+    }
+
+    private static InetAddress flipBit(final InetAddress base, final int bitIndex) throws UnknownHostException {
+        final byte[] bytes = base.getAddress().clone();
+        bytes[bitIndex / 8] ^= (byte) (0x80 >>> (bitIndex % 8));
+        return InetAddress.getByAddress(bytes);
+    }
+
+    @Test
+    void rfcRule9_offLinkIpv4DestinationsPreserveDnsRoundRobin() throws Exception {
+        // A private source behind NAT, with public IPv4 A records that are all
+        // off-link relative to it. Before this restriction,
+        // Rule 9 ranked them by each destination's raw (uncapped) common-prefix bit
+        // count with the source even though none of them share its subnet,
+        // producing a deterministic, non-DNS order and defeating round-robin.
+        final InetAddress src = inet("192.168.0.240");
+        final InetAddress d1 = inet("203.0.113.5");
+        final InetAddress d2 = inet("198.51.100.7");
+        final InetAddress d3 = inet("192.0.2.9");
+        final InetAddress d4 = inet("93.184.216.34");
+
+        delegate.add("t.example", d1, d2, d3, d4);
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegate, ProtocolFamilyPreference.DEFAULT,
+                dest -> src, fixedPrefixLength(24));
+
+        final InetAddress[] out = r.resolve("t.example");
+        assertEquals(Arrays.asList(d1, d2, d3, d4), Arrays.asList(out));
+    }
+
+    @Test
+    void commonPrefixLen_unknownSourcePrefixLength_ipv4Ties() throws Exception {
+        // When the source's own prefix length can't be determined, on-link status
+        // can't be established either; IPv4 must tie (0), not rank by the raw
+        // common-prefix bit count the way IPv6 still does in this same case (see
+        // commonPrefixLen_ipv6FallsBackToUncappedWhenPrefixLengthIsUnknown).
+        final InetAddress src = inet("10.1.2.3");
+        final InetAddress dst = inet("10.1.2.200");
+        assertEquals(0, AddressSelectingDnsResolver.commonPrefixLen(src, dst, -1));
+    }
+
+    @Test
+    void rfcRule9_unknownSourcePrefixLength_preservesDnsOrderForIpv4() throws Exception {
+        // End-to-end through the real (non-pinned) prefix-length lookup: 10.1.2.3 is
+        // not a local address on the test machine, so the real lookup returns -1 and
+        // Rule 9 must tie for every destination instead of ranking them by raw
+        // common-prefix bits, which would otherwise reorder this list.
+        final InetAddress src = inet("10.1.2.3");
+        Assumptions.assumeTrue(NetworkInterface.getByInetAddress(src) == null,
+                "source is a local interface address in this environment");
+        final InetAddress d1 = inet("10.200.0.1");
+        final InetAddress d2 = inet("11.0.0.1");
+        final InetAddress d3 = inet("10.1.2.200");
+        final InetAddress d4 = inet("172.16.0.1");
+        final InetAddress d5 = inet("8.8.8.8");
+
+        delegate.add("u.example", d1, d2, d3, d4, d5);
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegate, ProtocolFamilyPreference.DEFAULT, dest -> src);
+
+        final InetAddress[] out = r.resolve("u.example");
+        assertEquals(Arrays.asList(d1, d2, d3, d4, d5), Arrays.asList(out));
+    }
+
+    @Test
     void classifyScope_unknownMulticastNibble_fallsBackToGlobal() throws Exception {
         // ff03::1 -> scope nibble 0x3, which is not a known Scope constant.
         assertEquals(AddressSelectingDnsResolver.Scope.GLOBAL,
@@ -545,21 +664,27 @@ class AddressSelectingDnsResolverTest {
     @Test
     void rfcRule9_appliesToIpv4Pairs() throws Exception {
         // Both IPv4, same policy (::ffff:0:0/96 → prec 35, label 4), same scope (GLOBAL).
-        // Rule 9 should prefer the address whose source shares a longer prefix.
+        // aDst is on-link within aSrc's /24 (so Rule 9 still applies, capped at 24); bDst is
+        // off-link relative to bSrc's /24 (differs in the third octet, 114 vs 113), so it ties
+        // at 0 under the off-link restriction. A pinned prefix length is required here:
+        // neither source is a real local interface address, so without the pin the real
+        // lookup returns -1 for both, which ties them both at 0 for IPv4 and just preserves
+        // delegate order (bDst, aDst) instead of exercising the real on-link/off-link
+        // distinction this test is about.
         final InetAddress aDst = inet("192.0.2.1");
         final InetAddress bDst = inet("203.0.113.1");
 
-        // aSrc shares 24 bits with aDst (192.0.2.x); bSrc shares only 8 bits with bDst (203 vs 203).
         final InetAddress aSrc = inet("192.0.2.100");
         final InetAddress bSrc = inet("203.0.114.1");
 
         delegate.add("t.example", bDst, aDst);
 
-        final AddressSelectingDnsResolver r =
-                new AddressSelectingDnsResolver(delegate, ProtocolFamilyPreference.DEFAULT, sourceMap(aDst, aSrc, bDst, bSrc));
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegate, ProtocolFamilyPreference.DEFAULT, sourceMap(aDst, aSrc, bDst, bSrc),
+                fixedPrefixLength(24));
 
         final InetAddress[] out = r.resolve("t.example");
-        // aSrc-aDst share more prefix bits than bSrc-bDst, so aDst should come first.
+        // aDst is on-link (ranks by its capped common prefix); bDst is off-link (ties at 0).
         assertEquals(Arrays.asList(aDst, bDst), Arrays.asList(out));
     }
 
@@ -751,10 +876,11 @@ class AddressSelectingDnsResolverTest {
     }
 
     @Test
-    void commonPrefixLen_fallsBackToUncappedWhenPrefixLengthIsUnknown() throws Exception {
+    void commonPrefixLen_ipv6FallsBackToUncappedWhenPrefixLengthIsUnknown() throws Exception {
         // -1 means the caller could not determine a real prefix length to cap at
-        // (e.g. the source is not bound to any local interface); the uncapped
-        // bit-wise common prefix is used instead.
+        // (e.g. the source is not bound to any local interface). For IPv6 the
+        // uncapped bit-wise common prefix is used instead; IPv4 ties at 0 in this
+        // same case (see commonPrefixLen_unknownSourcePrefixLength_ipv4Ties).
         final InetAddress src = inet("2003::2");
         final InetAddress dst = inet("2003::1");
 
@@ -768,11 +894,7 @@ class AddressSelectingDnsResolverTest {
         // length, so it never exercises the real sourcePrefixLength(InetAddress)
         // lookup wired through sortByRfc6724(). This test does, via the real
         // DEFAULT_SOURCE_PREFIX_LENGTH_RESOLVER (no fixedPrefixLength(..) override
-        // and no sourcePrefixLengthResolver override): if that lookup silently
-        // returned -1 for every source, aDst (an exact copy of src, uncapped common
-        // prefix = full width) would strictly outrank bDst (differs at the very
-        // first host bit, uncapped common prefix = prefixLen) and the delegate's
-        // order would be reordered instead of tying and being preserved.
+        // and no sourcePrefixLengthResolver override).
         final InterfaceAddress real = findRealInterfaceAddress();
         Assumptions.assumeTrue(real != null, "no usable local interface address found in this environment");
 
@@ -781,21 +903,53 @@ class AddressSelectingDnsResolverTest {
         final int fullWidth = src instanceof Inet6Address ? 128 : 32;
         Assumptions.assumeTrue(fullWidth - prefixLen >= 1, "source has no spare host bits in this environment");
 
-        final InetAddress aDst = InetAddress.getByAddress(src.getAddress().clone());
-        final byte[] bBytes = src.getAddress().clone();
-        bBytes[prefixLen / 8] ^= (byte) (0x80 >>> (prefixLen % 8));
-        final InetAddress bDst = InetAddress.getByAddress(bBytes);
+        if (src instanceof Inet6Address) {
+            // If the real lookup silently returned -1, aDst (an exact copy of src,
+            // uncapped common prefix = full width) would strictly outrank bDst
+            // (differs at the very first host bit, uncapped common prefix =
+            // prefixLen) and the delegate's order would be reordered instead of
+            // tying and being preserved. IPv6 falls back to the uncapped common
+            // prefix when the length is unknown (see
+            // commonPrefixLen_ipv6FallsBackToUncappedWhenPrefixLengthIsUnknown).
+            final InetAddress aDst = InetAddress.getByAddress(src.getAddress().clone());
+            final InetAddress bDst = flipBit(src, prefixLen);
 
-        // bDst first: under the real (capped) lookup both tie at prefixLen and this
-        // order is preserved; under the mutant (-1, uncapped) aDst's far higher raw
-        // common-prefix count would strictly win and reorder to [aDst, bDst].
-        delegate.add("t.example", bDst, aDst);
+            delegate.add("t.example", bDst, aDst);
+
+            final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                    delegate, ProtocolFamilyPreference.DEFAULT, sourceMap(aDst, src, bDst, src));
+
+            final InetAddress[] out = r.resolve("t.example");
+            assertEquals(Arrays.asList(bDst, aDst), Arrays.asList(out));
+            return;
+        }
+
+        // For IPv4, -1 ties instead of falling back to the uncapped common prefix
+        // (see commonPrefixLen_unknownSourcePrefixLength_ipv4Ties), so an exact-
+        // copy-vs-flipped-bit pair would tie either way and couldn't tell a working
+        // lookup from a broken one. Use an on-link-vs-off-link pair instead: under
+        // the real (working) lookup the on-link destination strictly outranks the
+        // off-link one and the delegate's off-link-first order is reordered; under
+        // a broken (-1) lookup both would tie at 0 for IPv4 and the original order
+        // would be preserved instead.
+        Assumptions.assumeTrue(prefixLen >= 1, "source has no network bits in this environment");
+        final InetAddress onLinkDst = flipBit(src, prefixLen);
+        final InetAddress offLinkDst = flipBit(src, prefixLen - 1);
+        Assumptions.assumeTrue(
+                AddressSelectingDnsResolver.classifyScope(offLinkDst)
+                        == AddressSelectingDnsResolver.classifyScope(src)
+                        && AddressSelectingDnsResolver.classifyScope(onLinkDst)
+                        == AddressSelectingDnsResolver.classifyScope(src)
+                        && !offLinkDst.isMulticastAddress(),
+                "flipped destination does not share the source's scope in this environment");
+
+        delegate.add("t.example", offLinkDst, onLinkDst);
 
         final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
-                delegate, ProtocolFamilyPreference.DEFAULT, sourceMap(aDst, src, bDst, src));
+                delegate, ProtocolFamilyPreference.DEFAULT, sourceMap(onLinkDst, src, offLinkDst, src));
 
         final InetAddress[] out = r.resolve("t.example");
-        assertEquals(Arrays.asList(bDst, aDst), Arrays.asList(out));
+        assertEquals(Arrays.asList(onLinkDst, offLinkDst), Arrays.asList(out));
     }
 
     private static InterfaceAddress findRealInterfaceAddress() throws SocketException {
