@@ -32,6 +32,8 @@ import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.InterfaceAddress;
+import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
@@ -46,6 +48,7 @@ import java.util.stream.Collectors;
 import org.apache.hc.client5.http.config.ProtocolFamilyPreference;
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.ThreadingBehavior;
+import org.apache.hc.core5.util.Args;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,13 +61,20 @@ import org.slf4j.LoggerFactory;
  *
  * <p>
  * {@link ProtocolFamilyPreference#DEFAULT} keeps the RFC 6724 sorted order intact (no family bias).
- * {@link ProtocolFamilyPreference#INTERLEAVE} interleaves IPv6 and IPv4 addresses (v6, v4, v6, …),
- * preserving the relative order within each family as produced by RFC 6724 sorting.
+ * {@link ProtocolFamilyPreference#INTERLEAVE} interleaves IPv6 and IPv4 addresses, starting from
+ * whichever family the RFC 6724 sort ranks first, and preserving the relative order within each
+ * family as produced by that sort.
+ * </p>
+ *
+ * <p>
+ * A wildcard ({@code 0.0.0.0}, {@code ::}) or multicast destination is not a valid connect target,
+ * but RFC 6724 Rule 1 only deprioritizes an unusable destination, it does not remove it; this class
+ * does the same, sorting such destinations last rather than dropping them from the result.
  * </p>
  *
  * @since 5.7
  */
-@Contract(threading = ThreadingBehavior.IMMUTABLE)
+@Contract(threading = ThreadingBehavior.IMMUTABLE_CONDITIONAL)
 public final class AddressSelectingDnsResolver implements DnsResolver {
 
     private static final Logger LOG = LoggerFactory.getLogger(AddressSelectingDnsResolver.class);
@@ -76,6 +86,14 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         InetAddress resolveSource(final InetSocketAddress destination) throws SocketException;
     }
 
+    // Package-private seam so tests can pin the Rule 9 prefix-length cap (RFC 6724 §2.2)
+    // without depending on a real local network interface. Returns -1 to fall back to
+    // the uncapped comparison.
+    @FunctionalInterface
+    interface SourcePrefixLengthResolver {
+        int resolvePrefixLength(final InetAddress source);
+    }
+
     private static final SourceAddressResolver DEFAULT_SOURCE_ADDRESS_RESOLVER = destination -> {
         try (final DatagramSocket socket = new DatagramSocket()) {
             socket.connect(destination);
@@ -83,9 +101,13 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         }
     };
 
+    private static final SourcePrefixLengthResolver DEFAULT_SOURCE_PREFIX_LENGTH_RESOLVER =
+            AddressSelectingDnsResolver::sourcePrefixLength;
+
     private final DnsResolver delegate;
     private final ProtocolFamilyPreference familyPreference;
     private final SourceAddressResolver sourceAddressResolver;
+    private final SourcePrefixLengthResolver sourcePrefixLengthResolver;
 
     /**
      * Creates a new resolver that applies RFC 6724 ordering with no family bias (DEFAULT).
@@ -113,9 +135,21 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
             final DnsResolver delegate,
             final ProtocolFamilyPreference familyPreference,
             final SourceAddressResolver sourceAddressResolver) {
-        this.delegate = Objects.requireNonNull(delegate, "delegate");
+        this(delegate, familyPreference, sourceAddressResolver, DEFAULT_SOURCE_PREFIX_LENGTH_RESOLVER);
+    }
+
+    // Package-private for unit tests: additionally allows pinning the Rule 9 prefix-length
+    // cap without a real local interface backing the source address.
+    AddressSelectingDnsResolver(
+            final DnsResolver delegate,
+            final ProtocolFamilyPreference familyPreference,
+            final SourceAddressResolver sourceAddressResolver,
+            final SourcePrefixLengthResolver sourcePrefixLengthResolver) {
+        this.delegate = Args.notNull(delegate, "delegate");
         this.familyPreference = familyPreference != null ? familyPreference : ProtocolFamilyPreference.DEFAULT;
         this.sourceAddressResolver = sourceAddressResolver != null ? sourceAddressResolver : DEFAULT_SOURCE_ADDRESS_RESOLVER;
+        this.sourcePrefixLengthResolver = sourcePrefixLengthResolver != null
+                ? sourcePrefixLengthResolver : DEFAULT_SOURCE_PREFIX_LENGTH_RESOLVER;
     }
 
     @Override
@@ -126,7 +160,7 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("resolved '{}' -> null", host);
             }
-            return null;
+            throw new UnknownHostException(host);
         }
 
         if (LOG.isTraceEnabled()) {
@@ -142,7 +176,7 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("resolved '{}' -> []", host);
             }
-            return null;
+            throw new UnknownHostException(host);
         }
 
         if (candidates.size() == 1) {
@@ -164,15 +198,72 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
 
     @Override
     public List<InetSocketAddress> resolve(final String host, final int port) throws UnknownHostException {
-        final InetAddress[] ordered = resolve(host);
-        if (ordered == null) {
+        // Delegate to delegate.resolve(host, port) rather than this.resolve(host): a
+        // delegate that overrides the 2-argument resolve(host, port) itself (e.g. to
+        // resolve host+port jointly via SRV records) must still be consulted.
+        final List<InetSocketAddress> delegated = delegate.resolve(host, port);
+
+        // Keyed by address for filtering/ordering, but the delegate's own
+        // InetSocketAddress entries (and whatever port each one carries) are what's
+        // returned: a delegate may legitimately return different ports per address.
+        final List<InetSocketAddress> candidates = filterSocketCandidates(delegated, familyPreference);
+        if (candidates.isEmpty()) {
             // Do NOT fall back to createUnresolved: an unresolved address would let
             // downstream code re-resolve the hostname and bypass family filtering
             // (e.g. IPV4_ONLY / IPV6_ONLY).
             throw new UnknownHostException(host);
         }
-        return Arrays.stream(ordered)
-                .map(a -> new InetSocketAddress(a, port))
+
+        if (LOG.isTraceEnabled()) {
+            LOG.trace("resolving host '{}' port {} via delegate {}", host, port, delegate.getClass().getName());
+            LOG.trace("familyPreference={}", familyPreference);
+            LOG.trace("delegate returned {} addresses for '{}': {}", delegated.size(), host, delegated);
+        }
+
+        if (candidates.size() < 2) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("resolved '{}':{} -> {}", host, port, candidates);
+            }
+            return candidates;
+        }
+
+        final List<InetAddress> rfcSorted = sortByRfc6724(
+                candidates.stream().map(InetSocketAddress::getAddress).collect(Collectors.toList()));
+        final List<InetAddress> ordered = applyFamilyPreference(rfcSorted, familyPreference);
+
+        // Re-attach each ordered address to its own original InetSocketAddress entry
+        // (there can be more than one candidate per address, e.g. distinct ports for
+        // the same host), preserving the delegate's port rather than overwriting it.
+        // Matched by reference, not InetAddress.equals(): sortByRfc6724() returns the
+        // same instances it was given, and Inet6Address.equals() ignores the scope id,
+        // which would otherwise conflate e.g. fe80::1%2 and fe80::1%3.
+        final List<InetSocketAddress> byAddressInOrder = new ArrayList<>(ordered.size());
+        final List<InetSocketAddress> remaining = new ArrayList<>(candidates);
+        for (final InetAddress a : ordered) {
+            final Iterator<InetSocketAddress> it = remaining.iterator();
+            while (it.hasNext()) {
+                final InetSocketAddress next = it.next();
+                if (next.getAddress() == a) {
+                    byAddressInOrder.add(next);
+                    it.remove();
+                    break;
+                }
+            }
+        }
+
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("resolved '{}':{} -> {}", host, port, byAddressInOrder);
+        }
+
+        return byAddressInOrder;
+    }
+
+    private static List<InetSocketAddress> filterSocketCandidates(
+            final List<InetSocketAddress> resolved,
+            final ProtocolFamilyPreference pref) {
+        return resolved.stream()
+                .filter(sa -> sa != null && !sa.isUnresolved())
+                .filter(sa -> shouldInclude(pref, sa.getAddress()))
                 .collect(Collectors.toList());
     }
 
@@ -184,24 +275,15 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         return delegate.resolveCanonicalHostname(host);
     }
 
-    private static boolean isUsableDestination(final InetAddress ip) {
-        if (ip == null) {
-            return false;
-        }
-        if (ip.isAnyLocalAddress()) {
-            return false;
-        }
-        // HTTP/TCP is for unicast destinations; multicast is not a valid connect target.
-        return !ip.isMulticastAddress();
-    }
-
-
     private static List<InetAddress> filterCandidates(
             final InetAddress[] resolved,
             final ProtocolFamilyPreference pref) {
 
+        // Wildcard and multicast destinations are not dropped here: RFC 6724 Rule 1
+        // deprioritizes an unusable destination, it does not remove it (see
+        // isProbableDestination() and sortByRfc6724()).
         return Arrays.stream(resolved)
-                .filter(AddressSelectingDnsResolver::isUsableDestination)
+                .filter(Objects::nonNull)
                 .filter(a -> shouldInclude(pref, a))
                 .collect(Collectors.toList());
     }
@@ -217,7 +299,6 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         }
     }
 
-
     // --- RFC 6724 helpers ---
 
     private List<InetAddress> sortByRfc6724(final List<InetAddress> addrs) {
@@ -231,8 +312,13 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
 
         final List<Info> infos = new ArrayList<>(addrs.size());
         for (final InetAddress dst : addrs) {
-            final InetAddress src = inferSourceAddress(new InetSocketAddress(dst, PROBE_PORT));
-            infos.add(new Info(dst, src, ipAttrOf(dst), ipAttrOf(src)));
+            final InetAddress src = isProbableDestination(dst)
+                    ? inferSourceAddress(new InetSocketAddress(dst, PROBE_PORT))
+                    : null;
+            // Resolved once per destination, not once per comparator invocation: a real
+            // NetworkInterface lookup is too costly to repeat on every Rule 9 comparison.
+            final int srcPrefixLen = src != null ? sourcePrefixLengthResolver.resolvePrefixLength(src) : -1;
+            infos.add(new Info(dst, src, ipAttrOf(dst), ipAttrOf(src), srcPrefixLen));
         }
 
         if (LOG.isTraceEnabled()) {
@@ -255,6 +341,14 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         }
 
         return out;
+    }
+
+    // A wildcard or multicast destination cannot be meaningfully probed for a source
+    // address: connecting a UDP socket to one is unreliable and platform-dependent.
+    // Treat its source as undefined instead, so Rule 1 (and, failing a tie there,
+    // Rule 2) deprioritizes it the way RFC 6724 intends, rather than dropping it.
+    private static boolean isProbableDestination(final InetAddress ip) {
+        return !ip.isAnyLocalAddress() && !ip.isMulticastAddress();
     }
 
     private InetAddress inferSourceAddress(final InetSocketAddress destination) {
@@ -352,12 +446,15 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         final InetAddress src;
         final Attr dstAttr;
         final Attr srcAttr;
+        final int srcPrefixLen;
 
-        Info(final InetAddress dst, final InetAddress src, final Attr dstAttr, final Attr srcAttr) {
+        Info(final InetAddress dst, final InetAddress src, final Attr dstAttr, final Attr srcAttr,
+             final int srcPrefixLen) {
             this.dst = dst;
             this.src = src;
             this.dstAttr = dstAttr;
             this.srcAttr = srcAttr;
+            this.srcPrefixLen = srcPrefixLen;
         }
     }
 
@@ -640,15 +737,14 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         // Rule 9: Use longest matching prefix (RFC 6724 §6).
         // Applies when DA and DB belong to the same address family.
         //
-        // Note: this is an approximation. A fully correct implementation would
-        // use the source address's on-link prefix length (from the interface
-        // configuration / routing table), not the bit-wise common-prefix of
-        // source and destination. The JDK does not expose interface prefix
-        // lengths for source address selection, so we fall back to
-        // CommonPrefixLen(Source(D), D) as a reasonable heuristic.
+        // CommonPrefixLen(S, D) (§2.2) is capped at the length of S's own prefix,
+        // not the full address width: commonPrefixLen() applies that cap using the
+        // source's real network prefix length, resolved once per destination (see
+        // Info.srcPrefixLen) rather than on every comparison, and falls back to the
+        // uncapped bit-wise common prefix when that length is unknown (-1).
         if (aDst.getClass() == bDst.getClass()) {
-            final int commonA = commonPrefixLen(aSrc, aDst);
-            final int commonB = commonPrefixLen(bSrc, bDst);
+            final int commonA = commonPrefixLen(aSrc, aDst, a.srcPrefixLen);
+            final int commonB = commonPrefixLen(bSrc, bDst, b.srcPrefixLen);
             if (commonA > commonB) {
                 return preferA;
             }
@@ -661,10 +757,16 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         return 0;
     };
 
-    private static int commonPrefixLen(final InetAddress a, final InetAddress b) {
+    // Package-private for unit testing.
+    static int commonPrefixLen(final InetAddress a, final InetAddress b, final int srcPrefixLen) {
         if (a == null || b == null || a.getClass() != b.getClass()) {
             return 0;
         }
+        final int raw = rawCommonPrefixLen(a, b);
+        return srcPrefixLen >= 0 ? Math.min(raw, srcPrefixLen) : raw;
+    }
+
+    private static int rawCommonPrefixLen(final InetAddress a, final InetAddress b) {
         final byte[] aa = a.getAddress();
         final byte[] bb = b.getAddress();
         final int len = Math.min(aa.length, bb.length);
@@ -684,6 +786,25 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
             }
         }
         return bits;
+    }
+
+    // The source's own network prefix length (RFC 6724 §2.2's cap on CommonPrefixLen),
+    // or -1 if src cannot be matched to any local network interface.
+    private static int sourcePrefixLength(final InetAddress src) {
+        try {
+            final NetworkInterface iface = NetworkInterface.getByInetAddress(src);
+            if (iface == null) {
+                return -1;
+            }
+            for (final InterfaceAddress ifaceAddr : iface.getInterfaceAddresses()) {
+                if (src.equals(ifaceAddr.getAddress())) {
+                    return ifaceAddr.getNetworkPrefixLength();
+                }
+            }
+            return -1;
+        } catch (final SocketException ex) {
+            return -1;
+        }
     }
 
     static String addr(final InetAddress a) {

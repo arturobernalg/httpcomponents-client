@@ -62,9 +62,11 @@ public enum ProtocolFamilyPreference {
     IPV6_ONLY,
 
     /**
-     * Interleave address families (v6, then v4, then v6, …) when multiple
-     * addresses are available, preserving the relative order within each family
-     * as produced by RFC 6724 sorting.
+     * Interleave address families when multiple addresses are available,
+     * starting from whichever family the RFC 6724 sort ranks first and
+     * preserving the relative order within each family as produced by that
+     * sort. Not hardcoded to IPv6 first: a destination list the sort ranks
+     * IPv4 first interleaves as (v4, v6, v4, …).
      */
     INTERLEAVE
 

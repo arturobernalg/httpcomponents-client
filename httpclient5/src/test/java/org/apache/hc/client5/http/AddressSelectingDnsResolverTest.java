@@ -31,20 +31,25 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.InterfaceAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.Arrays;
+import java.util.Enumeration;
 import java.util.List;
 
 import org.apache.hc.client5.http.config.ProtocolFamilyPreference;
 import org.apache.hc.client5.http.impl.InMemoryDnsResolver;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -93,7 +98,7 @@ class AddressSelectingDnsResolverTest {
     }
 
     @Test
-    void ipv4Only_emptyWhenNoIPv4Candidates() throws Exception {
+    void ipv4Only_throwsWhenNoIPv4Candidates() throws Exception {
         final InetAddress v6a = inet("2001:db8::1");
         final InetAddress v6b = inet("2001:db8::2");
 
@@ -102,8 +107,9 @@ class AddressSelectingDnsResolverTest {
         final AddressSelectingDnsResolver r =
                 new AddressSelectingDnsResolver(delegate, ProtocolFamilyPreference.IPV4_ONLY, NO_SOURCE_ADDR);
 
-        final InetAddress[] ordered = r.resolve("v6only.example");
-        assertNull(ordered);
+        // Consistent with every other DnsResolver in this codebase: "nothing left to
+        // resolve to" is reported by throwing, never by returning null.
+        assertThrows(UnknownHostException.class, () -> r.resolve("v6only.example"));
     }
 
     @Test
@@ -162,18 +168,44 @@ class AddressSelectingDnsResolverTest {
     }
 
     @Test
-    void filtersOutMulticastDestinations() throws Exception {
+    void multicastDestinationIsDeprioritizedNotDropped() throws Exception {
+        // RFC 6724 Rule 1 deprioritizes an unusable destination, it does not remove
+        // it. A multicast destination is never probed for a source address (see
+        // isProbableDestination()): its source is undefined, so Rule 1 sorts it
+        // behind a destination with a real, defined source, but it is still present
+        // in the result, listed first in the delegate's own order.
         final InetAddress multicastV6 = inet("ff02::1");
         final InetAddress v6 = inet("2001:db8::1");
+        final InetAddress v6Src = inet("2001:db8::abcd");
 
         delegate.add("mcast.example", multicastV6, v6);
 
+        final AddressSelectingDnsResolver.SourceAddressResolver stub = dest ->
+                v6.equals(dest.getAddress()) ? v6Src : fail("must not probe a multicast destination");
+
         final AddressSelectingDnsResolver r =
-                new AddressSelectingDnsResolver(delegate, ProtocolFamilyPreference.DEFAULT, NO_SOURCE_ADDR);
+                new AddressSelectingDnsResolver(delegate, ProtocolFamilyPreference.DEFAULT, stub);
 
         final InetAddress[] out = r.resolve("mcast.example");
-        assertEquals(1, out.length);
-        assertEquals(v6, out[0]);
+        assertEquals(Arrays.asList(v6, multicastV6), Arrays.asList(out));
+    }
+
+    @Test
+    void wildcardDestinationIsDeprioritizedNotDropped() throws Exception {
+        final InetAddress wildcard = inet("0.0.0.0");
+        final InetAddress v4 = inet("192.0.2.1");
+        final InetAddress v4Src = inet("192.0.2.100");
+
+        delegate.add("wild.example", wildcard, v4);
+
+        final AddressSelectingDnsResolver.SourceAddressResolver stub = dest ->
+                v4.equals(dest.getAddress()) ? v4Src : fail("must not probe a wildcard destination");
+
+        final AddressSelectingDnsResolver r =
+                new AddressSelectingDnsResolver(delegate, ProtocolFamilyPreference.DEFAULT, stub);
+
+        final InetAddress[] out = r.resolve("wild.example");
+        assertEquals(Arrays.asList(v4, wildcard), Arrays.asList(out));
     }
 
     // -------------------------------------------------------------------------
@@ -356,23 +388,70 @@ class AddressSelectingDnsResolverTest {
     @Test
     void rfcRule9_prefersLongestMatchingPrefix_ipv6Only() throws Exception {
         // Both in same policy (::/0 -> prec 40, label 1), same scope (GLOBAL).
-        // A's source shares a longer prefix with its destination than B's.
+        // A's source shares a longer prefix with its destination than B's, even
+        // after capping at a realistic /48 source prefix (RFC 6724 §2.2) — so this
+        // is not just a same-subnet tie, A genuinely has more matching bits within
+        // what the source's own prefix allows.
         final InetAddress aDst = inet("2003::1");
-        final InetAddress bDst = inet("2003::1:0:0:1");
+        final InetAddress bDst = inet("2003:0:1::1");
 
-        // aSrc shares a full /64 with aDst; bSrc only shares /48.
+        // Capped at /48: aSrc/aDst share 48 bits (same /48); bSrc/bDst share 13.
         final InetAddress aSrc = inet("2003::2");
-        final InetAddress bSrc = inet("2003::2:0:0:1");
+        final InetAddress bSrc = inet("2004::2");
 
         delegate.add("t.example", bDst, aDst);
 
-        final AddressSelectingDnsResolver r =
-                new AddressSelectingDnsResolver(delegate, ProtocolFamilyPreference.DEFAULT, sourceMap(aDst, aSrc, bDst, bSrc));
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegate, ProtocolFamilyPreference.DEFAULT, sourceMap(aDst, aSrc, bDst, bSrc),
+                fixedPrefixLength(48));
 
         final InetAddress[] out = r.resolve("t.example");
-        // A has longer common prefix (src=2003::2, dst=2003::1 share 127 bits)
-        // B has shorter common prefix (src=2003::2:0:0:1, dst=2003::1:0:0:1 share 79 bits)
         assertEquals(Arrays.asList(aDst, bDst), Arrays.asList(out));
+    }
+
+    @Test
+    void rfcRule9_commonPrefixCappedAtSourcePrefix_tiesPreserveDnsOrder_ipv6() throws Exception {
+        // Both destinations are in the same /64 as their (same) source, differing
+        // only in interface-ID bits beyond the source's own /64 prefix (RFC 6724
+        // §2.2): CommonPrefixLen must cap at 64 for both, so they tie and Rule 10
+        // preserves the delegate's original (DNS) order — not a reorder by raw
+        // bit-width, which would spuriously prefer whichever shares more bits
+        // past the subnet boundary.
+        final InetAddress aDst = inet("2003::1:0:0:10");
+        final InetAddress bDst = inet("2003::1:0:0:2");
+        final InetAddress src = inet("2003::1:0:0:1");
+
+        delegate.add("t.example", aDst, bDst);
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegate, ProtocolFamilyPreference.DEFAULT, sourceMap(aDst, src, bDst, src),
+                fixedPrefixLength(64));
+
+        final InetAddress[] out = r.resolve("t.example");
+        assertEquals(Arrays.asList(aDst, bDst), Arrays.asList(out));
+    }
+
+    @Test
+    void rfcRule9_commonPrefixCappedAtSourcePrefix_tiesPreserveDnsOrder_ipv4() throws Exception {
+        // Same idea for IPv4: both destinations share the source's /24 subnet but
+        // differ in host bits, so DNS round-robin order must survive instead of
+        // being overridden by whichever host address happens to share more bits.
+        final InetAddress aDst = inet("10.0.1.10");
+        final InetAddress bDst = inet("10.0.1.60");
+        final InetAddress src = inet("10.0.1.50");
+
+        delegate.add("t.example", aDst, bDst);
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegate, ProtocolFamilyPreference.DEFAULT, sourceMap(aDst, src, bDst, src),
+                fixedPrefixLength(24));
+
+        final InetAddress[] out = r.resolve("t.example");
+        assertEquals(Arrays.asList(aDst, bDst), Arrays.asList(out));
+    }
+
+    private static AddressSelectingDnsResolver.SourcePrefixLengthResolver fixedPrefixLength(final int len) {
+        return source -> len;
     }
 
     @Test
@@ -433,7 +512,7 @@ class AddressSelectingDnsResolverTest {
         final AddressSelectingDnsResolver r =
                 new AddressSelectingDnsResolver(delegate, ProtocolFamilyPreference.IPV4_ONLY, NO_SOURCE_ADDR);
 
-        assertNull(r.resolve("v6.example"));
+        assertThrows(UnknownHostException.class, () -> r.resolve("v6.example"));
     }
 
     @Test
@@ -652,6 +731,332 @@ class AddressSelectingDnsResolverTest {
         r.resolve("dual.example");
 
         assertArrayEquals(before, delegateArray, "resolve() must not mutate the delegate's array in place");
+    }
+
+    @Test
+    void commonPrefixLen_cappedAtSourcesOwnNetworkPrefixLength() throws Exception {
+        // RFC 6724 §2.2: CommonPrefixLen(S, D) is capped at the length of S's own
+        // prefix, not the full address width. A destination built from a copy of a
+        // real local source address's own bits matches it bit-for-bit (the full
+        // address width, raw), but the interface-ID portion beyond the source's own
+        // prefix length must not count.
+        final InterfaceAddress real = findRealInterfaceAddress();
+        Assumptions.assumeTrue(real != null, "no usable local interface address found in this environment");
+
+        final InetAddress src = real.getAddress();
+        final int prefixLen = real.getNetworkPrefixLength();
+        final InetAddress dst = InetAddress.getByAddress(src.getAddress().clone());
+
+        assertEquals(prefixLen, AddressSelectingDnsResolver.commonPrefixLen(src, dst, prefixLen));
+    }
+
+    @Test
+    void commonPrefixLen_fallsBackToUncappedWhenPrefixLengthIsUnknown() throws Exception {
+        // -1 means the caller could not determine a real prefix length to cap at
+        // (e.g. the source is not bound to any local interface); the uncapped
+        // bit-wise common prefix is used instead.
+        final InetAddress src = inet("2003::2");
+        final InetAddress dst = inet("2003::1");
+
+        assertEquals(126, AddressSelectingDnsResolver.commonPrefixLen(src, dst, -1));
+    }
+
+    @Test
+    void rule9_realLocalSource_sameSubnetDestinationsTie_viaDefaultPrefixLookup() throws Exception {
+        // End-to-end regression: commonPrefixLen_cappedAtSourcesOwnNetworkPrefixLength
+        // above calls commonPrefixLen() directly with an externally-computed prefix
+        // length, so it never exercises the real sourcePrefixLength(InetAddress)
+        // lookup wired through sortByRfc6724(). This test does, via the real
+        // DEFAULT_SOURCE_PREFIX_LENGTH_RESOLVER (no fixedPrefixLength(..) override
+        // and no sourcePrefixLengthResolver override): if that lookup silently
+        // returned -1 for every source, aDst (an exact copy of src, uncapped common
+        // prefix = full width) would strictly outrank bDst (differs at the very
+        // first host bit, uncapped common prefix = prefixLen) and the delegate's
+        // order would be reordered instead of tying and being preserved.
+        final InterfaceAddress real = findRealInterfaceAddress();
+        Assumptions.assumeTrue(real != null, "no usable local interface address found in this environment");
+
+        final InetAddress src = real.getAddress();
+        final int prefixLen = real.getNetworkPrefixLength();
+        final int fullWidth = src instanceof Inet6Address ? 128 : 32;
+        Assumptions.assumeTrue(fullWidth - prefixLen >= 1, "source has no spare host bits in this environment");
+
+        final InetAddress aDst = InetAddress.getByAddress(src.getAddress().clone());
+        final byte[] bBytes = src.getAddress().clone();
+        bBytes[prefixLen / 8] ^= (byte) (0x80 >>> (prefixLen % 8));
+        final InetAddress bDst = InetAddress.getByAddress(bBytes);
+
+        // bDst first: under the real (capped) lookup both tie at prefixLen and this
+        // order is preserved; under the mutant (-1, uncapped) aDst's far higher raw
+        // common-prefix count would strictly win and reorder to [aDst, bDst].
+        delegate.add("t.example", bDst, aDst);
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegate, ProtocolFamilyPreference.DEFAULT, sourceMap(aDst, src, bDst, src));
+
+        final InetAddress[] out = r.resolve("t.example");
+        assertEquals(Arrays.asList(bDst, aDst), Arrays.asList(out));
+    }
+
+    private static InterfaceAddress findRealInterfaceAddress() throws SocketException {
+        final Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
+        while (ifaces.hasMoreElements()) {
+            for (final InterfaceAddress ia : ifaces.nextElement().getInterfaceAddresses()) {
+                final InetAddress addr = ia.getAddress();
+                final int fullWidth = addr instanceof Inet6Address ? 128 : 32;
+                if (ia.getNetworkPrefixLength() > 0 && ia.getNetworkPrefixLength() < fullWidth) {
+                    return ia;
+                }
+            }
+        }
+        return null;
+    }
+
+    @Test
+    void resolveHostPort_consultsDelegatesOwnTwoArgOverride() throws Exception {
+        // AddressSelectingDnsResolver's resolve(host, port) must call
+        // delegate.resolve(host, port), not its own resolve(host): a delegate that
+        // overrides the 2-argument method to return candidates the 1-argument method
+        // alone would not otherwise be silently bypassed.
+        final InetAddress v4 = inet("192.0.2.1");
+        final InetAddress v6 = inet("2001:db8::1");
+
+        final DnsResolver delegateWithOwnTwoArgOverride = new DnsResolver() {
+            @Override
+            public InetAddress[] resolve(final String host) {
+                return new InetAddress[] {v6};
+            }
+
+            @Override
+            public String resolveCanonicalHostname(final String host) {
+                return host;
+            }
+
+            @Override
+            public List<InetSocketAddress> resolve(final String host, final int port) {
+                // Distinct, non-requested ports: proves the result is the delegate's
+                // own entries, not ones reconstructed from the requested port.
+                return Arrays.asList(new InetSocketAddress(v6, 8443), new InetSocketAddress(v4, 9443));
+            }
+        };
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegateWithOwnTwoArgOverride, ProtocolFamilyPreference.DEFAULT, NO_SOURCE_ADDR);
+
+        final List<InetSocketAddress> out = r.resolve("dual.example", 443);
+        assertEquals(2, out.size());
+        assertEquals(new InetSocketAddress(v6, 8443), out.get(0));
+        assertEquals(new InetSocketAddress(v4, 9443), out.get(1));
+    }
+
+    @Test
+    void resolveHostPort_preservesDelegatesDistinctPortsPerAddress() throws Exception {
+        // Regression: resolve(host, port) must not reconstruct InetSocketAddress
+        // entries from the requested port, overwriting whatever port the delegate
+        // actually assigned to each address (e.g. via SRV-style per-target ports).
+        final InetAddress v4a = inet("192.0.2.1");
+        final InetAddress v4b = inet("192.0.2.2");
+
+        final DnsResolver delegateWithDistinctPorts = new DnsResolver() {
+            @Override
+            public InetAddress[] resolve(final String host) {
+                return new InetAddress[] {v4a, v4b};
+            }
+
+            @Override
+            public String resolveCanonicalHostname(final String host) {
+                return host;
+            }
+
+            @Override
+            public List<InetSocketAddress> resolve(final String host, final int port) {
+                return Arrays.asList(new InetSocketAddress(v4a, 9443), new InetSocketAddress(v4b, 9444));
+            }
+        };
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegateWithDistinctPorts, ProtocolFamilyPreference.DEFAULT, NO_SOURCE_ADDR);
+
+        final List<InetSocketAddress> out = r.resolve("multi.example", 443);
+        assertEquals(2, out.size());
+        assertTrue(out.contains(new InetSocketAddress(v4a, 9443)));
+        assertTrue(out.contains(new InetSocketAddress(v4b, 9444)));
+    }
+
+    @Test
+    void resolveHostPort_singleCandidate_keepsDelegatesPort() throws Exception {
+        // A single candidate must bypass sortByRfc6724() entirely (see
+        // resolve_singleCandidateOfRequestedFamily_returnedWithoutRfcSort), and that
+        // short-circuit must return the delegate's own entry unmodified rather than
+        // rebuilding an InetSocketAddress from the requested port.
+        final InetAddress v4 = inet("192.0.2.1");
+
+        final DnsResolver delegateWithOwnPort = new DnsResolver() {
+            @Override
+            public InetAddress[] resolve(final String host) {
+                return new InetAddress[] {v4};
+            }
+
+            @Override
+            public String resolveCanonicalHostname(final String host) {
+                return host;
+            }
+
+            @Override
+            public List<InetSocketAddress> resolve(final String host, final int port) {
+                return Arrays.asList(new InetSocketAddress(v4, 9443));
+            }
+        };
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegateWithOwnPort, ProtocolFamilyPreference.DEFAULT, NO_SOURCE_ADDR);
+
+        final List<InetSocketAddress> out = r.resolve("single.example", 443);
+        assertEquals(1, out.size());
+        assertEquals(new InetSocketAddress(v4, 9443), out.get(0));
+    }
+
+    @Test
+    void resolveHostPort_appliesRfc6724Ordering_whenDelegateOrderDiffersFromRfcOrder() throws Exception {
+        // Regression: resolveHostPort_appliesRfc6724Ordering (above) uses IPV4_ONLY
+        // with a single result, so it never proves sortByRfc6724() actually runs on
+        // the two-argument path. Here the delegate returns IPv4 before IPv6, with
+        // distinct, trackable ports, and DEFAULT preference should still rank the
+        // global IPv6 destination first (precedence 40 vs 35) while preserving each
+        // address's own port through the re-attach step.
+        final InetAddress v4 = inet("192.0.2.1");
+        final InetAddress v6 = inet("2003::1");
+        final InetAddress v4Src = inet("192.0.2.100");
+        final InetAddress v6Src = inet("2003::2");
+
+        final DnsResolver delegateWrongOrder = new DnsResolver() {
+            @Override
+            public InetAddress[] resolve(final String host) {
+                return new InetAddress[] {v4, v6};
+            }
+
+            @Override
+            public String resolveCanonicalHostname(final String host) {
+                return host;
+            }
+
+            @Override
+            public List<InetSocketAddress> resolve(final String host, final int port) {
+                return Arrays.asList(new InetSocketAddress(v4, 9443), new InetSocketAddress(v6, 8443));
+            }
+        };
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegateWrongOrder, ProtocolFamilyPreference.DEFAULT, sourceMap(v6, v6Src, v4, v4Src));
+
+        final List<InetSocketAddress> out = r.resolve("dual.example", 443);
+        assertEquals(Arrays.asList(new InetSocketAddress(v6, 8443), new InetSocketAddress(v4, 9443)), out);
+    }
+
+    @Test
+    void resolveHostPort_throwsWhenDelegateReturnsOnlyUnresolvedEntry() throws Exception {
+        // Regression: DnsResolver.resolve(String) may return null by contract, and
+        // the default resolve(String, int) then yields a single createUnresolved(..)
+        // entry. That entry must be filtered out like any other unusable candidate,
+        // not returned as-is: an unresolved address would let downstream code
+        // re-resolve the hostname itself and bypass family filtering entirely.
+        final DnsResolver unresolvingDelegate = new DnsResolver() {
+            @Override
+            public InetAddress[] resolve(final String host) {
+                return null;
+            }
+
+            @Override
+            public String resolveCanonicalHostname(final String host) {
+                return host;
+            }
+
+            @Override
+            public List<InetSocketAddress> resolve(final String host, final int port) {
+                return Arrays.asList(InetSocketAddress.createUnresolved(host, port));
+            }
+        };
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                unresolvingDelegate, ProtocolFamilyPreference.DEFAULT, NO_SOURCE_ADDR);
+
+        assertThrows(UnknownHostException.class, () -> r.resolve("unresolved.example", 443));
+    }
+
+    @Test
+    void resolveHostPort_dropsUnresolvedEntry_whenMixedWithResolved() throws Exception {
+        // Regression: a delegate's two-arg result mixing an unresolved entry with a
+        // genuinely resolved one must drop the former and return the latter, not
+        // throw a NullPointerException trying to classify the unresolved entry.
+        final InetAddress v4 = inet("192.0.2.1");
+
+        final DnsResolver mixedDelegate = new DnsResolver() {
+            @Override
+            public InetAddress[] resolve(final String host) {
+                return new InetAddress[] {v4};
+            }
+
+            @Override
+            public String resolveCanonicalHostname(final String host) {
+                return host;
+            }
+
+            @Override
+            public List<InetSocketAddress> resolve(final String host, final int port) {
+                return Arrays.asList(InetSocketAddress.createUnresolved("other.example", port),
+                        new InetSocketAddress(v4, port));
+            }
+        };
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                mixedDelegate, ProtocolFamilyPreference.DEFAULT, NO_SOURCE_ADDR);
+
+        final List<InetSocketAddress> out = r.resolve("mixed.example", 443);
+        assertEquals(Arrays.asList(new InetSocketAddress(v4, 443)), out);
+    }
+
+    @Test
+    void resolveHostPort_preservesScopeIdOrdering_forSameAddressOnDifferentZones() throws Exception {
+        // Regression: the sort-then-re-attach step previously matched sorted results
+        // back to their original InetSocketAddress entries via InetAddress.equals(),
+        // which ignores the IPv6 scope id. For the same link-local address on two
+        // different zones, where only one zone has a usable source, that silently
+        // attached the wrong zone's port to the preferred (Rule-1-usable) entry.
+        final byte[] linkLocal = inet("fe80::1").getAddress();
+        final InetAddress zone2 = Inet6Address.getByAddress(null, linkLocal, 2);
+        final InetAddress zone3 = Inet6Address.getByAddress(null, linkLocal, 3);
+        final InetAddress usableSrc = inet("fe80::100");
+
+        final AddressSelectingDnsResolver.SourceAddressResolver onlyZone3Usable = dest -> {
+            final InetAddress d = dest.getAddress();
+            if (d instanceof Inet6Address && ((Inet6Address) d).getScopeId() == 3) {
+                return usableSrc;
+            }
+            return null;
+        };
+
+        final DnsResolver delegateTwoZones = new DnsResolver() {
+            @Override
+            public InetAddress[] resolve(final String host) {
+                return new InetAddress[] {zone2, zone3};
+            }
+
+            @Override
+            public String resolveCanonicalHostname(final String host) {
+                return host;
+            }
+
+            @Override
+            public List<InetSocketAddress> resolve(final String host, final int port) {
+                return Arrays.asList(new InetSocketAddress(zone2, 80), new InetSocketAddress(zone3, 81));
+            }
+        };
+
+        final AddressSelectingDnsResolver r = new AddressSelectingDnsResolver(
+                delegateTwoZones, ProtocolFamilyPreference.DEFAULT, onlyZone3Usable);
+
+        final List<InetSocketAddress> out = r.resolve("linklocal.example", 443);
+        assertEquals(Arrays.asList(new InetSocketAddress(zone3, 81), new InetSocketAddress(zone2, 80)), out);
     }
 
 }
