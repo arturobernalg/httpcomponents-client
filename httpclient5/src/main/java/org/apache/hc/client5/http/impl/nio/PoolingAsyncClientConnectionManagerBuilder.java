@@ -27,6 +27,7 @@
 
 package org.apache.hc.client5.http.impl.nio;
 
+import org.apache.hc.client5.http.AsyncDnsResolver;
 import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.client5.http.SchemePortResolver;
@@ -60,6 +61,7 @@ public class PoolingAsyncClientConnectionManagerBuilder {
     private DnsResolver dnsResolver;
     private boolean happyEyeballsEnabled;
     private TimeValue connectionAttemptDelay;
+    private AsyncDnsResolver asyncDnsResolver;
     private PoolConcurrencyPolicy poolConcurrencyPolicy;
     private PoolReusePolicy poolReusePolicy;
 
@@ -133,6 +135,25 @@ public class PoolingAsyncClientConnectionManagerBuilder {
     @Experimental
     public final PoolingAsyncClientConnectionManagerBuilder setConnectionAttemptDelay(final TimeValue connectionAttemptDelay) {
         this.connectionAttemptDelay = connectionAttemptDelay;
+        return this;
+    }
+
+    /**
+     * Sets an optional {@link AsyncDnsResolver} used, when {@link #setHappyEyeballsEnabled(boolean)}
+     * is enabled, to resolve address families (A / AAAA) independently and race connection
+     * attempts against each family's addresses as soon as that family resolves (RFC 8305,
+     * Section 3), instead of waiting for {@link #setDnsResolver(DnsResolver)} to resolve every
+     * family behind one blocking call. Has no effect unless Happy Eyeballs racing is enabled;
+     * {@code null} (the default) falls back to {@link #setDnsResolver(DnsResolver)}.
+     *
+     * @param asyncDnsResolver the asynchronous DNS resolver, or {@code null} to use
+     *                         {@link #setDnsResolver(DnsResolver)}.
+     * @return this instance.
+     * @since 5.7
+     */
+    @Experimental
+    public final PoolingAsyncClientConnectionManagerBuilder setAsyncDnsResolver(final AsyncDnsResolver asyncDnsResolver) {
+        this.asyncDnsResolver = asyncDnsResolver;
         return this;
     }
 
@@ -317,6 +338,20 @@ public class PoolingAsyncClientConnectionManagerBuilder {
             final DnsResolver dnsResolver,
             final boolean happyEyeballsEnabled,
             final TimeValue connectionAttemptDelay) {
+        return createConnectionOperator(tlsStrategy, schemePortResolver, dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, null);
+    }
+
+    /**
+     * @since 5.7
+     */
+    @Internal
+    protected AsyncClientConnectionOperator createConnectionOperator(
+            final TlsStrategy tlsStrategy,
+            final SchemePortResolver schemePortResolver,
+            final DnsResolver dnsResolver,
+            final boolean happyEyeballsEnabled,
+            final TimeValue connectionAttemptDelay,
+            final AsyncDnsResolver asyncDnsResolver) {
         return new DefaultAsyncClientConnectionOperator(
                 RegistryBuilder.<TlsStrategy>create()
                         .register(URIScheme.HTTPS.getId(), tlsStrategy)
@@ -324,7 +359,8 @@ public class PoolingAsyncClientConnectionManagerBuilder {
                 schemePortResolver,
                 dnsResolver,
                 happyEyeballsEnabled,
-                connectionAttemptDelay);
+                connectionAttemptDelay,
+                asyncDnsResolver);
     }
 
     public PoolingAsyncClientConnectionManager build() {
@@ -340,7 +376,7 @@ public class PoolingAsyncClientConnectionManagerBuilder {
         }
         final PoolingAsyncClientConnectionManager poolingmgr = new PoolingAsyncClientConnectionManager(
                 createConnectionOperator(tlsStrategyCopy, schemePortResolver, dnsResolver,
-                        happyEyeballsEnabled, connectionAttemptDelay),
+                        happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver),
                 poolConcurrencyPolicy,
                 poolReusePolicy,
                 null,

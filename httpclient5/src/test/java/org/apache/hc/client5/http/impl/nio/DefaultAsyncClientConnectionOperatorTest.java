@@ -337,8 +337,10 @@ class DefaultAsyncClientConnectionOperatorTest {
     /**
      * The same TLS-rejection fallback must also work after Happy Eyeballs racing decides a
      * winner, not only on the plain sequential (non-racing) path: {@link
-     * MultihomeIOSessionRequester.Race#onWinnerRejected} falls back by calling the same
-     * sequential machinery the other tests in this class exercise directly.
+     * MultihomeIOSessionRequester.Race#onWinnerRejected} tries the remaining known addresses
+     * itself, one at a time, the same observable behaviour as the plain sequential path the
+     * other tests in this class exercise directly, even though the two no longer share one
+     * implementation.
      */
     @Test
     void testCancelDuringFallbackAfterRacingWinnerTlsRejectionCancelsNextAttempt() throws Exception {
@@ -389,11 +391,15 @@ class DefaultAsyncClientConnectionOperatorTest {
      * strategy later reports the handshake failed (because the connection it was using was
      * just closed), no new attempt against the next address must start.
      *
-     * <p>With racing enabled, {@code Race.onWinnerRejected()} calls {@code executeNext()}
-     * directly, so this variant is what exercises the {@code isDone()} guard at the top of
-     * that method. Without racing, the sequential path reaches {@code onFailure()} first,
-     * whose own {@code isDone()} guard is what stops it there; this variant does not, on its
-     * own, exercise the top-of-{@code executeNext()} guard.
+     * <p>With racing enabled, {@code Race.onWinnerRejected()} delegates to the race's own
+     * {@code tryNextFallbackAttempt()}, whose own {@code future.isDone()} guard is what stops
+     * it here; this is a different method from the plain sequential path's own
+     * {@code executeNext()}/{@code onFailure()}, but the same guard, checked for the same
+     * reason: the future can already be done (cancelled during the pending validation this
+     * variant exercises) without the race's own {@code cancelled} flag ever being set, since
+     * {@code Race#cancel()} itself is a no-op while a winner is decided and its validation is
+     * still pending. Without racing, the sequential path reaches {@code onFailure()} first,
+     * whose own {@code isDone()} guard is what stops it there.
      */
     private int cancelDuringHandshakeThenReportedFailed(final boolean happyEyeballs) throws Exception {
         final DnsResolver dnsResolver = Mockito.mock(DnsResolver.class);

@@ -30,6 +30,7 @@ package org.apache.hc.client5.http.impl.nio;
 import java.net.SocketAddress;
 import java.util.concurrent.Future;
 
+import org.apache.hc.client5.http.AsyncDnsResolver;
 import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.ThreadingBehavior;
@@ -87,6 +88,35 @@ public final class MultihomeConnectionInitiator implements ConnectionInitiator {
             final TimeValue connectionAttemptDelay) {
         this.connectionInitiator = Args.notNull(connectionInitiator, "Connection initiator");
         this.sessionRequester = new MultihomeIOSessionRequester(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay);
+    }
+
+    /**
+     * Creates a multi-home connection initiator that, when {@code happyEyeballsEnabled} is
+     * {@code true} and {@code asyncDnsResolver} is not {@code null}, resolves each address
+     * family (A / AAAA) independently through {@code asyncDnsResolver} and races connection
+     * attempts against each family's addresses as soon as that family resolves (RFC 8305,
+     * Sections 3 and 8), rather than waiting for {@code dnsResolver} to resolve every family
+     * behind one blocking call. When {@code asyncDnsResolver} is {@code null}, behavior is
+     * identical to {@link #MultihomeConnectionInitiator(ConnectionInitiator, DnsResolver, boolean, TimeValue)}.
+     *
+     * @param connectionInitiator the connection initiator.
+     * @param dnsResolver the DNS resolver to use when {@code asyncDnsResolver} is {@code null}.
+     * @param happyEyeballsEnabled whether to race connection attempts instead of trying them
+     *                             sequentially.
+     * @param connectionAttemptDelay delay between the start of successive connection attempts;
+     *                               see {@link #MultihomeConnectionInitiator(ConnectionInitiator, DnsResolver, boolean, TimeValue)}.
+     * @param asyncDnsResolver optional resolver capable of resolving address families
+     *                         independently and asynchronously; may be {@code null}.
+     * @since 5.7
+     */
+    public MultihomeConnectionInitiator(
+            final ConnectionInitiator connectionInitiator,
+            final DnsResolver dnsResolver,
+            final boolean happyEyeballsEnabled,
+            final TimeValue connectionAttemptDelay,
+            final AsyncDnsResolver asyncDnsResolver) {
+        this.connectionInitiator = Args.notNull(connectionInitiator, "Connection initiator");
+        this.sessionRequester = new MultihomeIOSessionRequester(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver);
     }
 
     @Override
