@@ -63,6 +63,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.apache.hc.client5.http.AddressOrderingStrategy;
 import org.apache.hc.client5.http.AsyncDnsResolver;
 import org.apache.hc.client5.http.DnsResolutionCallback;
 import org.apache.hc.client5.http.DnsResolver;
@@ -3738,4 +3739,258 @@ class MultihomeIOSessionRequesterTest {
 
         assertFalse(future.isDone(), "operation failed with two resolved IPv4 addresses never tried");
     }
+
+    // -------------------------------------------------------------------------
+    // AddressOrderingStrategy: pluggable merge ordering for the async-DNS path.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void asyncDns_noAddressOrderingStrategyConfigured_mergesWithDefaultFamilyAlternation() throws Exception {
+        // Backward compatibility: a requester built without an AddressOrderingStrategy
+        // (every pre-existing constructor overload) must merge exactly as it always
+        // did, IPv6 first, alternating families.
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final List<InetSocketAddress> ipv6 = ipv6Addresses(2);
+        final List<InetSocketAddress> ipv4 = addresses(2);
+        final List<SocketAddress> attempted = new ArrayList<>();
+        final AtomicReference<FutureCallback<IOSession>> stalledCallback = new AtomicReference<>();
+
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attempted.add(invocation.getArgument(1));
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    if (attempted.size() == 1) {
+                        // The very first attempt (ipv6.get(0), started the moment AAAA
+                        // resolves) stalls, so both merges below land entirely in the
+                        // still-pending suffix rather than one of them also racing.
+                        stalledCallback.set(cb);
+                        return Mockito.mock(Future.class);
+                    }
+                    cb.failed(new IOException("refused"));
+                    return CompletableFuture.completedFuture(null);
+                });
+
+        final MultihomeIOSessionRequester requester = new MultihomeIOSessionRequester(
+                dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        asyncDnsResolver.callback.resolved(Collections.singletonList(ipv6.get(0)));
+        asyncDnsResolver.callback.resolved(Collections.singletonList(ipv6.get(1)));
+        asyncDnsResolver.callback.resolved(ipv4);
+        asyncDnsResolver.callback.completed();
+
+        scheduler.fireNext();
+        scheduler.fireNext();
+        scheduler.fireNext();
+        stalledCallback.get().failed(new IOException("refused"));
+
+        assertTrue(future.isDone());
+        assertEquals(Arrays.asList(ipv6.get(0), ipv6.get(1), ipv4.get(0), ipv4.get(1)), attempted);
+    }
+
+    @Test
+    void asyncDns_customAddressOrderingStrategy_governsMergeOrderInstead() throws Exception {
+        // The actual plumbing this adds: a configured AddressOrderingStrategy, not a
+        // hardcoded family-alternation, decides how a newly resolved family batch is
+        // merged into the race's still-pending address list.
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final List<InetSocketAddress> ipv6 = ipv6Addresses(2);
+        final List<InetSocketAddress> ipv4 = addresses(2);
+        final List<SocketAddress> attempted = new ArrayList<>();
+        final AtomicReference<FutureCallback<IOSession>> stalledCallback = new AtomicReference<>();
+
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attempted.add(invocation.getArgument(1));
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    if (attempted.size() == 1) {
+                        stalledCallback.set(cb);
+                        return Mockito.mock(Future.class);
+                    }
+                    cb.failed(new IOException("refused"));
+                    return CompletableFuture.completedFuture(null);
+                });
+
+        // Every IPv4 address ahead of every IPv6 one: not interleaved at all, demonstrating
+        // that a custom strategy's output is honored exactly as given, rather than this
+        // class imposing its own alternation on top of it.
+        final AddressOrderingStrategy ipv4First = (v6, v4) -> {
+            final List<InetSocketAddress> out = new ArrayList<>(v4);
+            out.addAll(v6);
+            return out;
+        };
+
+        final MultihomeIOSessionRequester requester = new MultihomeIOSessionRequester(
+                dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, ipv4First, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        asyncDnsResolver.callback.resolved(Collections.singletonList(ipv6.get(0)));
+        asyncDnsResolver.callback.resolved(Collections.singletonList(ipv6.get(1)));
+        asyncDnsResolver.callback.resolved(ipv4);
+        asyncDnsResolver.callback.completed();
+
+        scheduler.fireNext();
+        scheduler.fireNext();
+        scheduler.fireNext();
+        stalledCallback.get().failed(new IOException("refused"));
+
+        assertTrue(future.isDone());
+        // Same inputs as the default-strategy test above, but the merge order is now
+        // IPv4 ahead of IPv6, exactly as the configured strategy dictates.
+        assertEquals(Arrays.asList(ipv6.get(0), ipv4.get(0), ipv4.get(1), ipv6.get(1)), attempted);
+    }
+
+    // -------------------------------------------------------------------------
+    // Exception safety: a failing AddressOrderingStrategy must never cost the race an
+    // already-resolved, already-pending address.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void asyncDns_throwingAddressOrderingStrategy_fallsBackToSimpleWithoutLosingPendingAddresses() throws Exception {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final List<InetSocketAddress> ipv6 = ipv6Addresses(2);
+        final List<InetSocketAddress> ipv4 = addresses(1);
+        final List<SocketAddress> attempted = new ArrayList<>();
+
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attempted.add(invocation.getArgument(1));
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.failed(new IOException("refused"));
+                    return CompletableFuture.completedFuture(null);
+                });
+
+        final AtomicInteger calls = new AtomicInteger();
+        final AddressOrderingStrategy throwsOnSecondMerge = (v6, v4) -> {
+            if (calls.incrementAndGet() == 2) {
+                throw new IllegalStateException("boom");
+            }
+            return AddressOrderingStrategy.simple().interleave(v6, v4);
+        };
+
+        final MultihomeIOSessionRequester requester = new MultihomeIOSessionRequester(
+                dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, throwsOnSecondMerge, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        // AAAA: two addresses; the first is attempted at once (and fails), leaving the
+        // second merged into the still-pending suffix.
+        asyncDnsResolver.callback.resolved(ipv6);
+        // A: the strategy throws on this merge. The already-pending IPv6 address and this
+        // new IPv4 one must still end up in the pending list rather than being discarded.
+        assertThrows(IllegalStateException.class, () -> asyncDnsResolver.callback.resolved(ipv4));
+        asyncDnsResolver.callback.completed();
+
+        scheduler.fireNext();
+        scheduler.fireNext();
+
+        assertTrue(future.isDone());
+        assertEquals(3, attempted.size(), "attempted=" + attempted);
+        assertTrue(attempted.containsAll(ipv6) && attempted.containsAll(ipv4), "attempted=" + attempted);
+    }
+
+    @Test
+    void asyncDns_throwingAddressOrderingStrategy_onResolutionDelayElapsed_stillTriesBufferedAddress() throws Exception {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final List<InetSocketAddress> ipv4 = addresses(1);
+        final List<SocketAddress> attempted = new ArrayList<>();
+
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attempted.add(invocation.getArgument(1));
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.failed(new IOException("refused"));
+                    return CompletableFuture.completedFuture(null);
+                });
+
+        final AddressOrderingStrategy alwaysThrows = (v6, v4) -> {
+            throw new IllegalStateException("boom");
+        };
+
+        final MultihomeIOSessionRequester requester = new MultihomeIOSessionRequester(
+                dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, alwaysThrows, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        // A arrives first: buffered for the Resolution Delay rather than merged immediately.
+        asyncDnsResolver.callback.resolved(ipv4);
+        assertFalse(future.isDone());
+        assertEquals(1, scheduler.pendingCount(), "the Resolution Delay timer must be pending");
+
+        // The Resolution Delay elapses with no AAAA: the merge runs on this (simulated)
+        // timer and the strategy throws, but the buffered IPv4 address must still be tried
+        // rather than silently discarded, exactly as a successful merge would have tried it.
+        assertThrows(IllegalStateException.class, scheduler::fireNext);
+        asyncDnsResolver.callback.failed(new UnknownHostException("no AAAA record"));
+        asyncDnsResolver.callback.completed();
+
+        assertTrue(future.isDone());
+        assertEquals(ipv4, attempted, "the resolved address was never tried; attempted=" + attempted);
+    }
+
+    // -------------------------------------------------------------------------
+    // AddressOrderingStrategy.destinationOrdered(): the RFC 6724-aware entry point,
+    // exercised through an actual race rather than a direct, isolated call.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void asyncDns_destinationOrderedStrategy_throughRealRace_triesEveryAddressExactlyOnce() throws Exception {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final List<InetSocketAddress> ipv6 = ipv6Addresses(3);
+        final List<InetSocketAddress> ipv4 = addresses(3);
+        final List<SocketAddress> attempted = new ArrayList<>();
+
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attempted.add(invocation.getArgument(1));
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.failed(new IOException("refused"));
+                    return CompletableFuture.completedFuture(null);
+                });
+
+        final MultihomeIOSessionRequester requester = new MultihomeIOSessionRequester(
+                dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver,
+                AddressOrderingStrategy.destinationOrdered(), scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        asyncDnsResolver.callback.resolved(ipv6);
+        asyncDnsResolver.callback.resolved(ipv4);
+        asyncDnsResolver.callback.completed();
+
+        // One address starts at once; every attempt fails immediately, so the race
+        // advances through the remaining five, one per simulated minimum-spacing tick.
+        for (int i = 0; i < 5; i++) {
+            scheduler.fireNext();
+        }
+
+        assertTrue(future.isDone());
+        final List<SocketAddress> expected = new ArrayList<>(ipv6);
+        expected.addAll(ipv4);
+        assertEquals(6, attempted.size(), "attempted=" + attempted);
+        assertTrue(attempted.containsAll(expected), "attempted=" + attempted);
+    }
+
 }

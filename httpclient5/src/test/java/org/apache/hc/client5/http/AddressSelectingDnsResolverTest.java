@@ -43,9 +43,13 @@ import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Random;
 
 import org.apache.hc.client5.http.config.ProtocolFamilyPreference;
 import org.apache.hc.client5.http.impl.InMemoryDnsResolver;
@@ -690,7 +694,7 @@ class AddressSelectingDnsResolverTest {
 
     @Test
     void ipAttrOf_ipv4_usesMappedPolicyPrecedenceAndLabel() throws Exception {
-        // RFC 6724 §2.1 Table 2: ::ffff:0:0/96 -> precedence 35, label 4.
+        // RFC 6724 §2.1's precedence and label policy entry for ::ffff:0:0/96: precedence 35, label 4.
         //
         // Regression: InetAddress.getByName("::ffff:0:0") collapses to a 4-byte
         // Inet4Address on the JDK. Network#contains() always compares IPv4
@@ -1211,6 +1215,345 @@ class AddressSelectingDnsResolverTest {
 
         final List<InetSocketAddress> out = r.resolve("linklocal.example", 443);
         assertEquals(Arrays.asList(new InetSocketAddress(zone3, 81), new InetSocketAddress(zone2, 80)), out);
+    }
+
+    // -------------------------------------------------------------------------
+    // sortAndInterleave(..): the standalone RFC 6724 ordering shared with
+    // AddressOrderingStrategy.destinationOrdered() for Happy Eyeballs async-DNS racing.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void sortAndInterleave_ordersTheSameWayInterleavePreferenceDoes() throws Exception {
+        final InetAddress v6a = inet("2001:db8::1");
+        final InetAddress v6b = inet("2001:db8::2");
+        final InetAddress v4a = inet("192.0.2.1");
+        final InetAddress v4b = inet("203.0.113.10");
+
+        final List<InetSocketAddress> candidates = Arrays.asList(
+                new InetSocketAddress(v6a, 1), new InetSocketAddress(v6b, 2),
+                new InetSocketAddress(v4a, 3), new InetSocketAddress(v4b, 4));
+
+        final List<InetSocketAddress> out =
+                AddressSelectingDnsResolver.sortAndInterleave(candidates, NO_SOURCE_ADDR, fixedPrefixLength(-1));
+
+        // With NO_SOURCE_ADDR every candidate ties under Rule 1, so the RFC sort is a
+        // stable no-op and this reduces to the plain family-alternating interleave,
+        // exactly like ProtocolFamilyPreference.INTERLEAVE with the same stub (see
+        // interleave_alternatesFamilies_preservingRelativeOrder_whenRfcSortIsNoop above).
+        assertEquals(Arrays.asList(
+                new InetSocketAddress(v6a, 1), new InetSocketAddress(v4a, 3),
+                new InetSocketAddress(v6b, 2), new InetSocketAddress(v4b, 4)), out);
+    }
+
+    @Test
+    void sortAndInterleave_preservesPorts_matchingByAddressIdentity() throws Exception {
+        // Each candidate keeps its own port through the sort + interleave + re-attach
+        // round trip, exactly like AddressSelectingDnsResolver#resolve(host, int) does
+        // for the DnsResolver SPI (see resolveHostPort_appliesRfc6724Ordering* above):
+        // sortAndInterleave() must give Happy Eyeballs racing code the same guarantee.
+        final InetAddress v6 = inet("2003::1");
+        final InetAddress v4 = inet("192.0.2.1");
+        final InetAddress v6Src = inet("2003::2");
+        final InetAddress v4Src = inet("192.0.2.100");
+
+        final List<InetSocketAddress> candidates = Arrays.asList(
+                new InetSocketAddress(v4, 9443), new InetSocketAddress(v6, 8443));
+
+        final List<InetSocketAddress> out = AddressSelectingDnsResolver.sortAndInterleave(
+                candidates, sourceMap(v6, v6Src, v4, v4Src), fixedPrefixLength(-1));
+
+        // Global IPv6 (precedence 40) outranks plain IPv4 (precedence 35, via the
+        // ::ffff:0:0/96 policy entry) under Rule 6, each address keeping its own port.
+        assertEquals(Arrays.asList(new InetSocketAddress(v6, 8443), new InetSocketAddress(v4, 9443)), out);
+    }
+
+    @Test
+    void sortAndInterleave_isNotBlindlyIpv6First_whenRfc6724RulesPreferIpv4() throws Exception {
+        // The gap this method closes: a merge that simply alternated families,
+        // IPv6 first, regardless of RFC 6724 rule outcomes, would place v6Teredo
+        // ahead of v4Global below. RFC 6724 itself says otherwise for this specific
+        // pair, and sortAndInterleave() must follow the rules, not the family.
+        final InetAddress v6Teredo = inet("2001::1");     // Teredo (RFC 6724 §2.1 policy entry: precedence 5, label 5)
+        final InetAddress v4Global = inet("192.0.2.1");   // precedence 35, label 4 (::ffff:0:0/96 policy entry)
+
+        // Sources chosen so Rule 5 (prefer matching label) already decides it, and
+        // Rule 6 (prefer higher precedence) agrees: v4Global's source is itself
+        // IPv4-mapped (label 4, matching v4Global's own label), while v6Teredo's
+        // source is a plain global address outside every specific policy prefix
+        // (label 1, the ::/0 default), which does not match Teredo's label 5.
+        final InetAddress v6OtherSrc = inet("2003::2");
+        final InetAddress v4OtherSrc = inet("192.0.2.100");
+
+        final List<InetSocketAddress> candidates = Arrays.asList(
+                new InetSocketAddress(v6Teredo, 1), new InetSocketAddress(v4Global, 2));
+
+        final List<InetSocketAddress> out = AddressSelectingDnsResolver.sortAndInterleave(
+                candidates, sourceMap(v6Teredo, v6OtherSrc, v4Global, v4OtherSrc), fixedPrefixLength(-1));
+
+        assertEquals(Arrays.asList(new InetSocketAddress(v4Global, 2), new InetSocketAddress(v6Teredo, 1)), out);
+
+        // The blind, family-first alternation this replaces would have returned the
+        // opposite order; confirm the two strategies really do disagree here, not
+        // merely that one of them produced some order.
+        final List<InetSocketAddress> blindlyV6First = AddressOrderingStrategy.simple().interleave(
+                Arrays.asList(new InetSocketAddress(v6Teredo, 1)), Arrays.asList(new InetSocketAddress(v4Global, 2)));
+        assertEquals(Arrays.asList(new InetSocketAddress(v6Teredo, 1), new InetSocketAddress(v4Global, 2)), blindlyV6First);
+    }
+
+    @Test
+    void sortAndInterleave_singleCandidate_returnsItUnchanged() throws Exception {
+        final InetSocketAddress only = new InetSocketAddress(inet("192.0.2.1"), 443);
+        assertEquals(Arrays.asList(only),
+                AddressSelectingDnsResolver.sortAndInterleave(Arrays.asList(only), NO_SOURCE_ADDR, fixedPrefixLength(-1)));
+    }
+
+    @Test
+    void sortAndInterleave_noSeamOverload_usesRealLocalRouting() throws Exception {
+        // The no-seam overload (used by AddressOrderingStrategy.destinationOrdered()) must
+        // still return a permutation of its input: a loopback destination always has a
+        // real, resolvable local source on any host, so this does not depend on outside
+        // network reachability.
+        final List<InetSocketAddress> candidates = Arrays.asList(
+                new InetSocketAddress(inet("127.0.0.1"), 1), new InetSocketAddress(inet("::1"), 2));
+
+        final List<InetSocketAddress> out = AddressSelectingDnsResolver.sortAndInterleave(candidates);
+        assertEquals(2, out.size());
+        assertTrue(out.containsAll(candidates));
+    }
+
+    @Test
+    void sortAndInterleave_dropsNullAndUnresolvedAddressesInsteadOfThrowing() throws Exception {
+        // Regression: an unresolved InetSocketAddress has no InetAddress to sort by.
+        // mergeAddressDataLocked's pending-address merge (Happy Eyeballs async-DNS racing)
+        // can hand this method a batch assembled from more than one resolution event, unlike
+        // the DnsResolver SPI's own resolve(host, int), which already rules this out.
+        final InetSocketAddress resolved = new InetSocketAddress(inet("192.0.2.1"), 80);
+        final InetSocketAddress unresolved = InetSocketAddress.createUnresolved("example.invalid", 80);
+        final List<InetSocketAddress> withUnresolved = Arrays.asList(resolved, unresolved);
+
+        assertEquals(Arrays.asList(resolved),
+                AddressSelectingDnsResolver.sortAndInterleave(withUnresolved, NO_SOURCE_ADDR, fixedPrefixLength(-1)));
+        assertEquals(Arrays.asList(resolved), AddressSelectingDnsResolver.sortAndInterleave(withUnresolved));
+
+        // AddressOrderingStrategy.destinationOrdered() combines both families into one
+        // sortAndInterleave() call and must not propagate the NPE this filtering closes.
+        assertEquals(Arrays.asList(resolved),
+                AddressOrderingStrategy.destinationOrdered().interleave(new ArrayList<>(), withUnresolved));
+    }
+
+    // -------------------------------------------------------------------------
+    // RFC 6724 Section 10.2 worked examples, validated through sortAndInterleave(..)
+    // directly (not just through resolve(..)), both input orders.
+    // -------------------------------------------------------------------------
+
+    private static AddressSelectingDnsResolver.SourceAddressResolver sourceMap(final String... hostAndSourcePairs) {
+        final Map<InetAddress, InetAddress> bySourceHost = new HashMap<>();
+        for (int i = 0; i < hostAndSourcePairs.length; i += 2) {
+            bySourceHost.put(inet(hostAndSourcePairs[i]), inet(hostAndSourcePairs[i + 1]));
+        }
+        return dest -> {
+            final InetAddress source = bySourceHost.get(dest.getAddress());
+            if (source == null) {
+                throw new SocketException("no route to " + dest);
+            }
+            return source;
+        };
+    }
+
+    private static List<String> hostAddressesOf(final List<InetSocketAddress> addresses) {
+        final List<String> out = new ArrayList<>(addresses.size());
+        for (final InetSocketAddress address : addresses) {
+            out.add(address.getAddress().getHostAddress());
+        }
+        return out;
+    }
+
+    private static List<String> orderedHostAddresses(
+            final AddressSelectingDnsResolver.SourceAddressResolver source, final int prefixLength, final String... destHosts)
+            throws Exception {
+        final List<InetSocketAddress> candidates = new ArrayList<>(destHosts.length);
+        int port = 1;
+        for (final String host : destHosts) {
+            candidates.add(new InetSocketAddress(inet(host), port++));
+        }
+        return hostAddressesOf(AddressSelectingDnsResolver.sortAndInterleave(candidates, source, s -> prefixLength));
+    }
+
+    /** Asserts that {@code first} must sort ahead of {@code second}, in both input orders. */
+    private static void assertRfc6724WorkedExample(
+            final String first, final String firstSource, final String second, final String secondSource, final int prefixLength)
+            throws Exception {
+        final AddressSelectingDnsResolver.SourceAddressResolver source = sourceMap(first, firstSource, second, secondSource);
+        final List<String> expected = Arrays.asList(inet(first).getHostAddress(), inet(second).getHostAddress());
+        assertEquals(expected, orderedHostAddresses(source, prefixLength, first, second));
+        assertEquals(expected, orderedHostAddresses(source, prefixLength, second, first));
+    }
+
+    @Test
+    void rfc6724WorkedExample1_matchingScope() throws Exception {
+        assertRfc6724WorkedExample("2001:db8:1::1", "2001:db8:1::2", "198.51.100.121", "169.254.13.78", -1);
+    }
+
+    @Test
+    void rfc6724WorkedExample2_matchingScope() throws Exception {
+        assertRfc6724WorkedExample("198.51.100.121", "198.51.100.117", "2001:db8:1::1", "fe80::1", -1);
+    }
+
+    @Test
+    void rfc6724WorkedExample3_higherPrecedence() throws Exception {
+        assertRfc6724WorkedExample("2001:db8:1::1", "2001:db8:1::2", "10.1.2.3", "10.1.2.4", -1);
+    }
+
+    @Test
+    void rfc6724WorkedExample4_smallerScope() throws Exception {
+        assertRfc6724WorkedExample("fe80::1", "fe80::2", "2001:db8:1::1", "2001:db8:1::2", -1);
+    }
+
+    @Test
+    void rfc6724WorkedExample7_longestMatchingPrefix() throws Exception {
+        assertRfc6724WorkedExample("2001:db8:1::1", "2001:db8:1::2", "2001:db8:3ffe::1", "2001:db8:3f44::2", -1);
+        assertRfc6724WorkedExample("2001:db8:1::1", "2001:db8:1::2", "2001:db8:3ffe::1", "2001:db8:3f44::2", 64);
+    }
+
+    @Test
+    void rfc6724WorkedExample8_matchingLabel() throws Exception {
+        assertRfc6724WorkedExample("2002:c633:6401::1", "2002:c633:6401::2", "2001:db8:1::1", "2002:c633:6401::2", -1);
+    }
+
+    @Test
+    void rfc6724WorkedExample9_higherPrecedence() throws Exception {
+        assertRfc6724WorkedExample("2001:db8:1::1", "2001:db8:1::2", "2002:c633:6401::1", "2002:c633:6401::2", -1);
+    }
+
+    // -------------------------------------------------------------------------
+    // Teredo vs IPv4, RFC 6724 Section 2.1's default precedence/label policy entries.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void teredoVsIpv4_nativeV6Source_rule5Decides() throws Exception {
+        // Source label 1 vs Teredo destination label 5: mismatch. The IPv4 pair matches
+        // (label 4 both ways), so Rule 5 (prefer matching label) decides: IPv4 first.
+        final AddressSelectingDnsResolver.SourceAddressResolver source =
+                sourceMap("2001::1", "2a00:1450::2", "192.0.2.1", "192.0.2.100");
+        assertEquals(Arrays.asList("192.0.2.1", "2001:0:0:0:0:0:0:1"),
+                orderedHostAddresses(source, -1, "2001::1", "192.0.2.1"));
+    }
+
+    @Test
+    void teredoVsIpv4_teredoSource_rule6Decides() throws Exception {
+        // Both pairs match their own label (5/5 and 4/4): Rule 5 ties, so Rule 6 (higher
+        // precedence) decides: IPv4's precedence 35 beats Teredo's precedence 5.
+        final AddressSelectingDnsResolver.SourceAddressResolver source =
+                sourceMap("2001::1", "2001::2", "192.0.2.1", "192.0.2.100");
+        assertEquals(Arrays.asList("192.0.2.1", "2001:0:0:0:0:0:0:1"),
+                orderedHostAddresses(source, -1, "2001::1", "192.0.2.1"));
+    }
+
+    @Test
+    void teredoVsIpv4_noIpv4Source_rule1DecidesByReachability() throws Exception {
+        final AddressSelectingDnsResolver.SourceAddressResolver source = sourceMap("2001::1", "2001::2");
+        assertEquals(Arrays.asList("2001:0:0:0:0:0:0:1", "192.0.2.1"),
+                orderedHostAddresses(source, -1, "192.0.2.1", "2001::1"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Interleave shape (RFC 8305 Section 4): never a whole family ahead of the other.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void interleaveShape_twoAndTwo_alternatesIpv6First_regardlessOfInputOrder() throws Exception {
+        final AddressSelectingDnsResolver.SourceAddressResolver source = sourceMap(
+                "2a00:1450::a", "2a00:1450:1::2", "2a00:1450::b", "2a00:1450:1::2",
+                "192.0.2.1", "10.0.0.5", "192.0.2.2", "10.0.0.5");
+        final List<String> expected = Arrays.asList(
+                "2a00:1450:0:0:0:0:0:a", "192.0.2.1", "2a00:1450:0:0:0:0:0:b", "192.0.2.2");
+        assertEquals(expected, orderedHostAddresses(source, 24, "192.0.2.1", "192.0.2.2", "2a00:1450::a", "2a00:1450::b"));
+        assertEquals(expected, orderedHostAddresses(source, 24, "2a00:1450::a", "2a00:1450::b", "192.0.2.1", "192.0.2.2"));
+        assertEquals(expected, orderedHostAddresses(source, 24, "192.0.2.1", "2a00:1450::a", "192.0.2.2", "2a00:1450::b"));
+    }
+
+    @Test
+    void interleaveShape_ipv4OnlyReachable_alternatesIpv4First() throws Exception {
+        final AddressSelectingDnsResolver.SourceAddressResolver source = sourceMap("192.0.2.1", "10.0.0.5", "192.0.2.2", "10.0.0.5");
+        assertEquals(Arrays.asList("192.0.2.1", "2a00:1450:0:0:0:0:0:a", "192.0.2.2", "2a00:1450:0:0:0:0:0:b"),
+                orderedHostAddresses(source, 24, "2a00:1450::a", "2a00:1450::b", "192.0.2.1", "192.0.2.2"));
+    }
+
+    @Test
+    void interleaveShape_unevenFamilies_largerFamilyNeverBlocksTheSmaller() throws Exception {
+        final AddressSelectingDnsResolver.SourceAddressResolver source = sourceMap(
+                "2a00:1450::a", "2a00:1450:1::2", "2a00:1450::b", "2a00:1450:1::2", "2a00:1450::c", "2a00:1450:1::2",
+                "2a00:1450::d", "2a00:1450:1::2", "192.0.2.1", "10.0.0.5");
+        final List<String> out = orderedHostAddresses(source, 24, "2a00:1450::a", "2a00:1450::b", "2a00:1450::c", "2a00:1450::d", "192.0.2.1");
+        assertEquals("192.0.2.1", out.get(1), out.toString());
+    }
+
+    @Test
+    void interleaveShape_mixedTeredoNativeAndTwoIpv4_stillInterleaves() throws Exception {
+        final AddressSelectingDnsResolver.SourceAddressResolver source = sourceMap(
+                "2001::1", "2a00:1450:1::2", "2a00:1450::a", "2a00:1450:1::2", "192.0.2.1", "10.0.0.5", "192.0.2.2", "10.0.0.5");
+        // RFC 6724 sort ranks native IPv6 first, then both IPv4, then Teredo last; interleave
+        // alternates starting from that sort's own first family: native v6, v4, Teredo, v4.
+        assertEquals(Arrays.asList("2a00:1450:0:0:0:0:0:a", "192.0.2.1", "2001:0:0:0:0:0:0:1", "192.0.2.2"),
+                orderedHostAddresses(source, 24, "2001::1", "2a00:1450::a", "192.0.2.1", "192.0.2.2"));
+    }
+
+    @Test
+    void interleaveShape_randomized_isAlwaysAPermutation_andAlternatesWhileBothFamiliesRemain() throws Exception {
+        final String[] pool = {
+                "2a00:1450::a", "2a00:1450::b", "2001::1", "2002:c633:6401::1", "fd00::1", "fe80::1", "::1",
+                "192.0.2.1", "192.0.2.2", "10.1.2.3", "127.0.0.1", "169.254.1.1", "203.0.113.9" };
+        final Random random = new Random(8305);
+        for (int c = 0; c < 2000; c++) {
+            final int n = 2 + random.nextInt(8);
+            final List<InetSocketAddress> in = new ArrayList<>(n);
+            final Map<InetAddress, InetAddress> sources = new HashMap<>();
+            for (int i = 0; i < n; i++) {
+                final InetAddress dest = inet(pool[random.nextInt(pool.length)]);
+                in.add(new InetSocketAddress(dest, i + 1));
+                if (random.nextInt(4) != 0) {
+                    sources.put(dest, dest instanceof Inet6Address
+                            ? inet(random.nextBoolean() ? "2a00:1450:1::2" : "fe80::9") : inet("10.1.2.4"));
+                }
+            }
+            final AddressSelectingDnsResolver.SourceAddressResolver source = dest -> {
+                final InetAddress found = sources.get(dest.getAddress());
+                if (found == null) {
+                    throw new SocketException("no route to " + dest);
+                }
+                return found;
+            };
+            final List<InetSocketAddress> out = AddressSelectingDnsResolver.sortAndInterleave(in, source, s -> 24);
+
+            assertEquals(in.size(), out.size(), "case " + c);
+            final List<InetSocketAddress> remaining = new ArrayList<>(in);
+            int v6Count = 0;
+            int v4Count = 0;
+            for (final InetSocketAddress address : out) {
+                assertTrue(removeByIdentity(remaining, address), "case " + c + ": not a permutation: " + out);
+                if (address.getAddress() instanceof Inet6Address) {
+                    v6Count++;
+                } else {
+                    v4Count++;
+                }
+            }
+            // Strict alternation for as long as both families still have an untried address.
+            final int alternatingPrefixLength = 2 * Math.min(v6Count, v4Count);
+            for (int i = 1; i < alternatingPrefixLength; i++) {
+                assertFalse((out.get(i).getAddress() instanceof Inet6Address) == (out.get(i - 1).getAddress() instanceof Inet6Address),
+                        "case " + c + ": " + out);
+            }
+        }
+    }
+
+    private static boolean removeByIdentity(final List<InetSocketAddress> list, final InetSocketAddress target) {
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i) == target) {
+                list.remove(i);
+                return true;
+            }
+        }
+        return false;
     }
 
 }

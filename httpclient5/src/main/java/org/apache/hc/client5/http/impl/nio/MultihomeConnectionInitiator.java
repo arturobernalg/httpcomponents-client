@@ -30,6 +30,7 @@ package org.apache.hc.client5.http.impl.nio;
 import java.net.SocketAddress;
 import java.util.concurrent.Future;
 
+import org.apache.hc.client5.http.AddressOrderingStrategy;
 import org.apache.hc.client5.http.AsyncDnsResolver;
 import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.core5.annotation.Contract;
@@ -117,6 +118,42 @@ public final class MultihomeConnectionInitiator implements ConnectionInitiator {
             final AsyncDnsResolver asyncDnsResolver) {
         this.connectionInitiator = Args.notNull(connectionInitiator, "Connection initiator");
         this.sessionRequester = new MultihomeIOSessionRequester(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver);
+    }
+
+    /**
+     * Same as {@link #MultihomeConnectionInitiator(ConnectionInitiator, DnsResolver, boolean,
+     * TimeValue, AsyncDnsResolver)}, but additionally lets the caller control how addresses
+     * from independently-resolved A/AAAA batches are merged into the race, once both
+     * {@code happyEyeballsEnabled} and {@code asyncDnsResolver} apply. Addresses resolved
+     * through {@code dnsResolver} alone (the non-{@code asyncDnsResolver} racing path) are
+     * unaffected: {@code dnsResolver}'s own returned order already decides that race's address
+     * list, including any RFC 6724 ordering applied by a {@link
+     * org.apache.hc.client5.http.AddressSelectingDnsResolver} configured as {@code dnsResolver}
+     * itself.
+     *
+     * @param connectionInitiator the connection initiator.
+     * @param dnsResolver the DNS resolver to use when {@code asyncDnsResolver} is {@code null}.
+     * @param happyEyeballsEnabled whether to race connection attempts instead of trying them
+     *                             sequentially.
+     * @param connectionAttemptDelay delay between the start of successive connection attempts;
+     *                               see {@link #MultihomeConnectionInitiator(ConnectionInitiator, DnsResolver, boolean, TimeValue)}.
+     * @param asyncDnsResolver optional resolver capable of resolving address families
+     *                         independently and asynchronously; may be {@code null}.
+     * @param addressOrderingStrategy how to merge a newly resolved address family into the
+     *                                race's still-pending list; {@code null} keeps the default,
+     *                                family-alternating order.
+     * @since 5.7
+     */
+    public MultihomeConnectionInitiator(
+            final ConnectionInitiator connectionInitiator,
+            final DnsResolver dnsResolver,
+            final boolean happyEyeballsEnabled,
+            final TimeValue connectionAttemptDelay,
+            final AsyncDnsResolver asyncDnsResolver,
+            final AddressOrderingStrategy addressOrderingStrategy) {
+        this.connectionInitiator = Args.notNull(connectionInitiator, "Connection initiator");
+        this.sessionRequester = new MultihomeIOSessionRequester(
+                dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver, addressOrderingStrategy);
     }
 
     @Override

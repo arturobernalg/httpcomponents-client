@@ -237,32 +237,80 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         final List<InetAddress> rfcSorted = sortByRfc6724(
                 candidates.stream().map(InetSocketAddress::getAddress).collect(Collectors.toList()));
         final List<InetAddress> ordered = applyFamilyPreference(rfcSorted, familyPreference);
-
-        // Re-attach each ordered address to its own original InetSocketAddress entry
-        // (there can be more than one candidate per address, e.g. distinct ports for
-        // the same host), preserving the delegate's port rather than overwriting it.
-        // Matched by reference, not InetAddress.equals(): sortByRfc6724() returns the
-        // same instances it was given, and Inet6Address.equals() ignores the scope id,
-        // which would otherwise conflate e.g. fe80::1%2 and fe80::1%3.
-        final List<InetSocketAddress> byAddressInOrder = new ArrayList<>(ordered.size());
-        final List<InetSocketAddress> remaining = new ArrayList<>(candidates);
-        for (final InetAddress a : ordered) {
-            final Iterator<InetSocketAddress> it = remaining.iterator();
-            while (it.hasNext()) {
-                final InetSocketAddress next = it.next();
-                if (next.getAddress() == a) {
-                    byAddressInOrder.add(next);
-                    it.remove();
-                    break;
-                }
-            }
-        }
+        final List<InetSocketAddress> byAddressInOrder = reattach(ordered, candidates);
 
         if (LOG.isDebugEnabled()) {
             LOG.debug("resolved '{}':{} -> {}", host, port, byAddressInOrder);
         }
 
         return byAddressInOrder;
+    }
+
+    /**
+     * Orders {@code candidates} the same way {@link ProtocolFamilyPreference#INTERLEAVE} does,
+     * for callers that need this ordering without going through the {@link DnsResolver} SPI:
+     * Happy Eyeballs connection racing applies it to address batches resolved independently via
+     * the {@code AsyncDnsResolver} SPI, once both A and AAAA have arrived. Never collapses to a
+     * single address: a race needs more than one candidate to try early, in family order.
+     *
+     * @param candidates the addresses to order; not modified.
+     * @return a new list, ordered by RFC 6724 rule and interleaved by family.
+     */
+    static List<InetSocketAddress> sortAndInterleave(final List<InetSocketAddress> candidates) {
+        return sortAndInterleave(candidates, DEFAULT_SOURCE_ADDRESS_RESOLVER, DEFAULT_SOURCE_PREFIX_LENGTH_RESOLVER);
+    }
+
+    // Package-private seam: lets tests pin source-address inference (see
+    // SourceAddressResolver/SourcePrefixLengthResolver above) instead of depending on this
+    // host's real routing table, exactly as the package-private constructors below do for
+    // ordinary DnsResolver use.
+    static List<InetSocketAddress> sortAndInterleave(
+            final List<InetSocketAddress> candidates,
+            final SourceAddressResolver sourceAddressResolver,
+            final SourcePrefixLengthResolver sourcePrefixLengthResolver) {
+        Args.notNull(candidates, "candidates");
+        // Mirrors resolve(host, int)'s own filtering: a null or unresolved entry has no
+        // InetAddress to sort by and would NPE below. A single DnsResolver call already
+        // rules this out; a caller merging batches from more than one resolution event
+        // (Happy Eyeballs racing independently-resolved A/AAAA) cannot assume that.
+        final List<InetSocketAddress> usable = candidates.stream()
+                .filter(sa -> sa != null && !sa.isUnresolved())
+                .collect(Collectors.toList());
+        if (usable.size() < 2) {
+            return usable;
+        }
+        final List<InetAddress> addresses = usable.stream()
+                .map(InetSocketAddress::getAddress)
+                .collect(Collectors.toList());
+        final List<InetAddress> ordered = interleaveFamilies(
+                sortByRfc6724(addresses, sourceAddressResolver, sourcePrefixLengthResolver));
+        return reattach(ordered, usable);
+    }
+
+    /**
+     * Re-attaches each address of {@code ordered} to its own original {@code InetSocketAddress}
+     * entry in {@code original} (there can be more than one candidate per address, e.g. distinct
+     * ports for the same host), preserving whatever port each one carried rather than overwriting
+     * it. Matched by reference, not {@code InetAddress.equals()}: {@code ordered} always holds
+     * the same instances {@code original} does, and {@code Inet6Address.equals()} ignores the
+     * scope id, which would otherwise conflate e.g. {@code fe80::1%2} and {@code fe80::1%3}.
+     */
+    private static List<InetSocketAddress> reattach(
+            final List<InetAddress> ordered, final List<InetSocketAddress> original) {
+        final List<InetSocketAddress> result = new ArrayList<>(ordered.size());
+        final List<InetSocketAddress> remaining = new ArrayList<>(original);
+        for (final InetAddress a : ordered) {
+            final Iterator<InetSocketAddress> it = remaining.iterator();
+            while (it.hasNext()) {
+                final InetSocketAddress next = it.next();
+                if (next.getAddress() == a) {
+                    result.add(next);
+                    it.remove();
+                    break;
+                }
+            }
+        }
+        return result;
     }
 
     private static List<InetSocketAddress> filterSocketCandidates(
@@ -309,6 +357,16 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
     // --- RFC 6724 helpers ---
 
     private List<InetAddress> sortByRfc6724(final List<InetAddress> addrs) {
+        return sortByRfc6724(addrs, sourceAddressResolver, sourcePrefixLengthResolver);
+    }
+
+    // The core RFC 6724 sort, taking its source-address inference as explicit parameters
+    // rather than instance fields, so #sortAndInterleave can share it without needing an
+    // AddressSelectingDnsResolver instance (and the DnsResolver delegate that would require).
+    private static List<InetAddress> sortByRfc6724(
+            final List<InetAddress> addrs,
+            final SourceAddressResolver sourceAddressResolver,
+            final SourcePrefixLengthResolver sourcePrefixLengthResolver) {
         if (addrs.size() < 2) {
             return addrs;
         }
@@ -320,7 +378,7 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         final List<Info> infos = new ArrayList<>(addrs.size());
         for (final InetAddress dst : addrs) {
             final InetAddress src = isProbableDestination(dst)
-                    ? inferSourceAddress(new InetSocketAddress(dst, PROBE_PORT))
+                    ? inferSourceAddress(new InetSocketAddress(dst, PROBE_PORT), sourceAddressResolver)
                     : null;
             // Resolved once per destination, not once per comparator invocation: a real
             // NetworkInterface lookup is too costly to repeat on every Rule 9 comparison.
@@ -358,7 +416,8 @@ public final class AddressSelectingDnsResolver implements DnsResolver {
         return !ip.isAnyLocalAddress() && !ip.isMulticastAddress();
     }
 
-    private InetAddress inferSourceAddress(final InetSocketAddress destination) {
+    private static InetAddress inferSourceAddress(
+            final InetSocketAddress destination, final SourceAddressResolver sourceAddressResolver) {
         try {
             return sourceAddressResolver.resolveSource(destination);
         } catch (final SocketException ex) {

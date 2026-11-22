@@ -36,6 +36,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.apache.hc.client5.http.AddressOrderingStrategy;
 import org.apache.hc.client5.http.AsyncDnsResolver;
 import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.client5.http.SchemePortResolver;
@@ -114,9 +115,30 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
             final boolean happyEyeballsEnabled,
             final TimeValue connectionAttemptDelay,
             final AsyncDnsResolver asyncDnsResolver) {
+        this(tlsStrategyLookup, schemePortResolver, dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver, null);
+    }
+
+    /**
+     * Same as {@link #DefaultAsyncClientConnectionOperator(Lookup, SchemePortResolver,
+     * DnsResolver, boolean, TimeValue, AsyncDnsResolver)}, but additionally lets the caller
+     * control how addresses from independently-resolved A/AAAA batches are merged into a
+     * Happy Eyeballs race once both {@code happyEyeballsEnabled} and {@code asyncDnsResolver}
+     * apply; see {@link AddressOrderingStrategy}.
+     *
+     * @since 5.7
+     */
+    protected DefaultAsyncClientConnectionOperator(
+            final Lookup<TlsStrategy> tlsStrategyLookup,
+            final SchemePortResolver schemePortResolver,
+            final DnsResolver dnsResolver,
+            final boolean happyEyeballsEnabled,
+            final TimeValue connectionAttemptDelay,
+            final AsyncDnsResolver asyncDnsResolver,
+            final AddressOrderingStrategy addressOrderingStrategy) {
         this.tlsStrategyLookup = Args.notNull(tlsStrategyLookup, "TLS strategy lookup");
         this.schemePortResolver = schemePortResolver != null ? schemePortResolver : DefaultSchemePortResolver.INSTANCE;
-        this.sessionRequester = new MultihomeIOSessionRequester(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver);
+        this.sessionRequester = new MultihomeIOSessionRequester(
+                dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver, addressOrderingStrategy);
     }
 
     @Override

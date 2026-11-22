@@ -50,6 +50,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
+import org.apache.hc.client5.http.AddressOrderingStrategy;
 import org.apache.hc.client5.http.AsyncDnsResolver;
 import org.apache.hc.client5.http.ConnectExceptionSupport;
 import org.apache.hc.client5.http.DnsResolutionCallback;
@@ -107,6 +108,7 @@ final class MultihomeIOSessionRequester {
     private final boolean happyEyeballsEnabled;
     private final TimeValue connectionAttemptDelay;
     private final AsyncDnsResolver asyncDnsResolver;
+    private final AddressOrderingStrategy addressOrderingStrategy;
     private final ScheduledExecutorService staggerScheduler;
 
     MultihomeIOSessionRequester(final DnsResolver dnsResolver) {
@@ -117,7 +119,7 @@ final class MultihomeIOSessionRequester {
             final DnsResolver dnsResolver,
             final boolean happyEyeballsEnabled,
             final TimeValue connectionAttemptDelay) {
-        this(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, null, null);
+        this(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, null, (ScheduledExecutorService) null);
     }
 
     MultihomeIOSessionRequester(
@@ -125,7 +127,7 @@ final class MultihomeIOSessionRequester {
             final boolean happyEyeballsEnabled,
             final TimeValue connectionAttemptDelay,
             final AsyncDnsResolver asyncDnsResolver) {
-        this(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver, null);
+        this(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver, (ScheduledExecutorService) null);
     }
 
     // Package-private: allows unit tests to supply a deterministic, synchronous scheduler
@@ -138,13 +140,37 @@ final class MultihomeIOSessionRequester {
         this(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, null, staggerScheduler);
     }
 
-    // Package-private: full constructor, letting unit tests control both the DNS
-    // resolution strategy and stagger scheduling.
+    // Package-private: lets a caller configure the async-DNS merge path's address ordering
+    // (see AddressOrderingStrategy) without also needing a custom stagger scheduler.
     MultihomeIOSessionRequester(
             final DnsResolver dnsResolver,
             final boolean happyEyeballsEnabled,
             final TimeValue connectionAttemptDelay,
             final AsyncDnsResolver asyncDnsResolver,
+            final AddressOrderingStrategy addressOrderingStrategy) {
+        this(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver, addressOrderingStrategy, null);
+    }
+
+    // Package-private: pre-dates AddressOrderingStrategy; kept so existing call sites (and
+    // tests) that control DNS resolution and stagger scheduling, but not address ordering,
+    // need no change. Delegates to the full constructor with the default ordering.
+    MultihomeIOSessionRequester(
+            final DnsResolver dnsResolver,
+            final boolean happyEyeballsEnabled,
+            final TimeValue connectionAttemptDelay,
+            final AsyncDnsResolver asyncDnsResolver,
+            final ScheduledExecutorService staggerScheduler) {
+        this(dnsResolver, happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver, null, staggerScheduler);
+    }
+
+    // Package-private: full constructor, letting unit tests control the DNS resolution
+    // strategy, the async-DNS merge path's address ordering, and stagger scheduling.
+    MultihomeIOSessionRequester(
+            final DnsResolver dnsResolver,
+            final boolean happyEyeballsEnabled,
+            final TimeValue connectionAttemptDelay,
+            final AsyncDnsResolver asyncDnsResolver,
+            final AddressOrderingStrategy addressOrderingStrategy,
             final ScheduledExecutorService staggerScheduler) {
         this.dnsResolver = dnsResolver != null ? dnsResolver : SystemDefaultDnsResolver.INSTANCE;
         this.happyEyeballsEnabled = happyEyeballsEnabled;
@@ -155,6 +181,7 @@ final class MultihomeIOSessionRequester {
         }
         this.connectionAttemptDelay = delay;
         this.asyncDnsResolver = asyncDnsResolver;
+        this.addressOrderingStrategy = addressOrderingStrategy != null ? addressOrderingStrategy : AddressOrderingStrategy.simple();
         this.staggerScheduler = staggerScheduler;
     }
 
@@ -537,6 +564,15 @@ final class MultihomeIOSessionRequester {
      * after the race has already been decided starts no attempt of its own, but is still
      * recorded: if the winner then fails {@link SessionValidator}'s check, it is exactly what
      * {@link Race#onWinnerRejected} falls back to.
+     *
+     * <p>
+     * Each time a family resolves, its addresses are merged into the race's still-pending list
+     * via {@link #addressOrderingStrategy} (see {@link Race#mergeAddressDataLocked}). That
+     * merge, not this method, is where RFC 6724-aware ordering, if configured, is applied: it
+     * must still interleave families rather than pick one address ahead of racing (RFC 8305
+     * Sections 3 and 6), since collapsing to a single "best" address here would defeat the
+     * purpose of resolving both families independently in the first place.
+     * </p>
      */
     private Future<IOSession> connectWithAsyncResolution(
             final ConnectionInitiator connectionInitiator,
@@ -823,13 +859,25 @@ final class MultihomeIOSessionRequester {
                         // concludes every address is exhausted, before the buffered IPv4
                         // addresses, merged by the next line, ever become visible to it.
                         final boolean hadNoNextAddress = nextIndex >= remoteAddresses.size();
-                        mergeAddressDataLocked(addresses, true);
+                        RuntimeException orderingFailure = mergeAddressDataLocked(addresses, true);
                         final List<InetSocketAddress> buffered = bufferedIpv4;
                         bufferedIpv4 = null;
                         if (buffered != null) {
-                            mergeAddressDataLocked(buffered, false);
+                            final RuntimeException bufferedFailure = mergeAddressDataLocked(buffered, false);
+                            if (orderingFailure == null) {
+                                orderingFailure = bufferedFailure;
+                            } else if (bufferedFailure != null && LOG.isWarnEnabled()) {
+                                LOG.warn("{}:{} address ordering strategy also failed merging the buffered address batch",
+                                        remoteEndpoint.getHostName(), remoteEndpoint.getPort(), bufferedFailure);
+                            }
                         }
+                        // Trigger first, so a race that has nothing else outstanding still
+                        // starts an attempt for whatever was just merged, even though the
+                        // strategy failure below is about to be thrown.
                         abort = triggerAfterMergeLocked(hadNoNextAddress);
+                        if (abort == null && orderingFailure != null) {
+                            throw orderingFailure;
+                        }
                     } else {
                         abort = mergeAddressesLocked(addresses, true);
                     }
@@ -908,10 +956,19 @@ final class MultihomeIOSessionRequester {
          * Merges newly resolved addresses of one family into the race. Addresses already
          * attempted (indices {@code < nextIndex}: in flight, succeeded or failed) are never
          * touched. The still-pending suffix is rebuilt by splitting it back into its two
-         * families and re-interleaving with the new arrivals (RFC 8305 Section 6, IPv6
+         * families and re-interleaving with the new arrivals (RFC 8305 Section 4, IPv6
          * first), rather than simply appending the new addresses after whatever was already
          * pending, which would let a newly arrived, preferred AAAA address end up queued
          * behind an older, still-untried A address.
+         *
+         * <p>
+         * {@link #triggerAfterMergeLocked} always runs, even if {@link #addressOrderingStrategy}
+         * failed (see {@link #mergeAddressDataLocked}): a merge that fell back to {@link
+         * AddressOrderingStrategy#simple()} must still start or pace an attempt exactly as a
+         * successful merge would, rather than leaving a newly merged address stranded with
+         * nothing to ever try it. The failure itself is thrown afterward, unless doing so would
+         * discard a synchronous {@code connect()} failure of equal standing.
+         * </p>
          *
          * <p>Must be called while holding {@code lock}.</p>
          *
@@ -921,8 +978,12 @@ final class MultihomeIOSessionRequester {
          */
         private RaceAbort mergeAddressesLocked(final List<InetSocketAddress> newAddresses, final boolean newIsIpv6) {
             final boolean hadNoNextAddress = nextIndex >= remoteAddresses.size();
-            mergeAddressDataLocked(newAddresses, newIsIpv6);
-            return triggerAfterMergeLocked(hadNoNextAddress);
+            final RuntimeException orderingFailure = mergeAddressDataLocked(newAddresses, newIsIpv6);
+            final RaceAbort abort = triggerAfterMergeLocked(hadNoNextAddress);
+            if (abort == null && orderingFailure != null) {
+                throw orderingFailure;
+            }
+            return abort;
         }
 
         /**
@@ -936,9 +997,34 @@ final class MultihomeIOSessionRequester {
          * itself be synchronous and can exhaust every address known so far before a second,
          * not yet merged, batch (the buffered one) ever becomes visible to it.
          *
+         * <p>
+         * The still-pending suffix (from {@code nextIndex} on) is rebuilt by splitting it
+         * back into its two families and handing both, plus the newly arrived batch, to
+         * {@link #addressOrderingStrategy}, rather than simply appending the new addresses
+         * after whatever was already pending, which would let a newly arrived, preferred
+         * address end up queued behind an older, still-untried one of the other family. The
+         * default strategy merely alternates families; an RFC 6724-aware strategy additionally
+         * orders each family by destination-selection rule, while still interleaving rather
+         * than collapsing to one address, since the race, not this ordering, must stay the one
+         * to decide the winner (RFC 8305 Section 3).
+         * </p>
+         *
+         * <p>
+         * {@code remoteAddresses} is mutated only after the merge has been computed, and only
+         * with a result that is never {@code null}: if {@link #addressOrderingStrategy} throws
+         * or returns {@code null}, {@link AddressOrderingStrategy#simple()} is used instead for
+         * this merge, so that already-pending, already-resolved addresses are never dropped
+         * because of a failing strategy. The original failure, if any, is returned rather than
+         * thrown here, so a caller merging more than one batch in the same call can finish
+         * every merge and still decide whether to start an attempt before it surfaces.
+         * </p>
+         *
          * <p>Must be called while holding {@code lock}.</p>
+         *
+         * @return the exception {@link #addressOrderingStrategy} threw, or {@code null} if it
+         * returned normally; the merge itself always succeeds either way.
          */
-        private void mergeAddressDataLocked(final List<InetSocketAddress> newAddresses, final boolean newIsIpv6) {
+        private RuntimeException mergeAddressDataLocked(final List<InetSocketAddress> newAddresses, final boolean newIsIpv6) {
             final int attemptedCount = Math.min(nextIndex, remoteAddresses.size());
             final List<InetSocketAddress> pendingIpv6 = new ArrayList<>();
             final List<InetSocketAddress> pendingIpv4 = new ArrayList<>();
@@ -948,10 +1034,29 @@ final class MultihomeIOSessionRequester {
             }
             (newIsIpv6 ? pendingIpv6 : pendingIpv4).addAll(newAddresses);
 
+            List<InetSocketAddress> merged;
+            RuntimeException failure;
+            try {
+                merged = addressOrderingStrategy.interleave(pendingIpv6, pendingIpv4);
+                failure = merged != null ? null : new IllegalStateException(
+                        "AddressOrderingStrategy returned null for " + addressOrderingStrategy);
+            } catch (final RuntimeException ex) {
+                merged = null;
+                failure = ex;
+            }
+            if (merged == null) {
+                merged = AddressOrderingStrategy.simple().interleave(pendingIpv6, pendingIpv4);
+                if (LOG.isWarnEnabled()) {
+                    LOG.warn("{}:{} address ordering strategy failed; falling back to the default merge order",
+                            remoteEndpoint.getHostName(), remoteEndpoint.getPort(), failure);
+                }
+            }
+
             while (remoteAddresses.size() > attemptedCount) {
                 remoteAddresses.remove(remoteAddresses.size() - 1);
             }
-            remoteAddresses.addAll(interleave(pendingIpv6, pendingIpv4));
+            remoteAddresses.addAll(merged);
+            return failure;
         }
 
         /**
@@ -984,7 +1089,7 @@ final class MultihomeIOSessionRequester {
             if (!hadNoNextAddress || pendingStagger != null) {
                 // A next address was already known and either already started or already
                 // has a stagger pacing it: these new addresses simply join the pending queue
-                // in their RFC 8305 Section 6 order; nothing further to do right now.
+                // in their RFC 8305 Section 4 order; nothing further to do right now.
                 return null;
             }
             if (outstanding == 0) {
@@ -1000,22 +1105,6 @@ final class MultihomeIOSessionRequester {
                         this::onStaggerElapsed, connectionAttemptDelay.getDuration(), connectionAttemptDelay.getTimeUnit());
                 return null;
             }
-        }
-
-        /** Alternates between the two families (RFC 8305 Section 6), AAAA first. */
-        private List<InetSocketAddress> interleave(
-                final List<InetSocketAddress> ipv6, final List<InetSocketAddress> ipv4) {
-            final List<InetSocketAddress> result = new ArrayList<>(ipv6.size() + ipv4.size());
-            final int max = Math.max(ipv6.size(), ipv4.size());
-            for (int i = 0; i < max; i++) {
-                if (i < ipv6.size()) {
-                    result.add(ipv6.get(i));
-                }
-                if (i < ipv4.size()) {
-                    result.add(ipv4.get(i));
-                }
-            }
-            return result;
         }
 
         /** One address family failed to resolve; recorded as a candidate failure cause. */

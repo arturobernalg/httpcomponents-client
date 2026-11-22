@@ -27,11 +27,14 @@
 
 package org.apache.hc.client5.http.impl.nio;
 
+import org.apache.hc.client5.http.AddressOrderingStrategy;
+import org.apache.hc.client5.http.AddressSelectingDnsResolver;
 import org.apache.hc.client5.http.AsyncDnsResolver;
 import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.client5.http.SchemePortResolver;
 import org.apache.hc.client5.http.config.ConnectionConfig;
+import org.apache.hc.client5.http.config.ProtocolFamilyPreference;
 import org.apache.hc.client5.http.config.TlsConfig;
 import org.apache.hc.client5.http.nio.AsyncClientConnectionOperator;
 import org.apache.hc.client5.http.ssl.ConscryptClientTlsStrategy;
@@ -62,6 +65,12 @@ public class PoolingAsyncClientConnectionManagerBuilder {
     private boolean happyEyeballsEnabled;
     private TimeValue connectionAttemptDelay;
     private AsyncDnsResolver asyncDnsResolver;
+    private boolean destinationOrderingEnabled;
+    // Package-private: read directly by #createConnectionOperator below, which build() calls
+    // through the same overload that pre-dates this field, rather than growing that hook's
+    // parameter list for the third time on this branch; also read directly by tests in this
+    // package, which need to confirm this field's wiring without a parameter to capture.
+    AddressOrderingStrategy addressOrderingStrategy;
     private PoolConcurrencyPolicy poolConcurrencyPolicy;
     private PoolReusePolicy poolReusePolicy;
 
@@ -154,6 +163,37 @@ public class PoolingAsyncClientConnectionManagerBuilder {
     @Experimental
     public final PoolingAsyncClientConnectionManagerBuilder setAsyncDnsResolver(final AsyncDnsResolver asyncDnsResolver) {
         this.asyncDnsResolver = asyncDnsResolver;
+        return this;
+    }
+
+    /**
+     * When {@link #setHappyEyeballsEnabled(boolean)} is also enabled, orders each newly
+     * resolved address batch by RFC 6724 destination selection rules before interleaving it
+     * into the race's pending list (see {@link AddressOrderingStrategy#destinationOrdered()}),
+     * instead of the default plain family alternation. Applies only to the independently
+     * resolved A/AAAA merge driven by {@link #setAsyncDnsResolver(AsyncDnsResolver)}; has no
+     * effect on the synchronous path driven by {@link #setDnsResolver(DnsResolver)} alone.
+     *
+     * <p>
+     * For the synchronous path, configure {@link AddressSelectingDnsResolver} with
+     * {@link ProtocolFamilyPreference#INTERLEAVE} as {@link #setDnsResolver(DnsResolver)}
+     * directly; this builder does not wrap it for you.
+     * </p>
+     *
+     * <p>
+     * Has no effect unless Happy Eyeballs racing is enabled, and none at all unless an
+     * {@code AsyncDnsResolver} is also configured; disabled ({@code false}) by default, in
+     * which case addresses are merged in {@code AsyncDnsResolver}'s arrival order, unchanged
+     * from prior behavior. This feature is considered experimental and may be discontinued.
+     * </p>
+     *
+     * @param enabled whether to apply RFC 6724-aware ordering to the async-DNS merge path.
+     * @return this instance.
+     * @since 5.7
+     */
+    @Experimental
+    public final PoolingAsyncClientConnectionManagerBuilder setDestinationOrderingEnabled(final boolean enabled) {
+        this.destinationOrderingEnabled = enabled;
         return this;
     }
 
@@ -342,6 +382,10 @@ public class PoolingAsyncClientConnectionManagerBuilder {
     }
 
     /**
+     * Terminal hook: reads {@link #addressOrderingStrategy} directly rather than taking it as
+     * a parameter, so configuring it (see {@link #setDestinationOrderingEnabled(boolean)})
+     * does not add yet another overload on top of this one.
+     *
      * @since 5.7
      */
     @Internal
@@ -360,7 +404,8 @@ public class PoolingAsyncClientConnectionManagerBuilder {
                 dnsResolver,
                 happyEyeballsEnabled,
                 connectionAttemptDelay,
-                asyncDnsResolver);
+                asyncDnsResolver,
+                addressOrderingStrategy);
     }
 
     public PoolingAsyncClientConnectionManager build() {
@@ -374,6 +419,12 @@ public class PoolingAsyncClientConnectionManagerBuilder {
                 tlsStrategyCopy = DefaultClientTlsStrategy.createDefault();
             }
         }
+        // setDestinationOrderingEnabled(true) applies RFC 6724-aware ordering to the async-DNS
+        // merge path only; see #setDestinationOrderingEnabled for why the synchronous path is
+        // not touched here. Has no effect unless Happy Eyeballs racing is also enabled.
+        this.addressOrderingStrategy = happyEyeballsEnabled && destinationOrderingEnabled
+                ? AddressOrderingStrategy.destinationOrdered()
+                : null;
         final PoolingAsyncClientConnectionManager poolingmgr = new PoolingAsyncClientConnectionManager(
                 createConnectionOperator(tlsStrategyCopy, schemePortResolver, dnsResolver,
                         happyEyeballsEnabled, connectionAttemptDelay, asyncDnsResolver),
