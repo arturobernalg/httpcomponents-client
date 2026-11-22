@@ -34,7 +34,9 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
@@ -306,6 +308,21 @@ final class MultihomeIOSessionRequester {
     }
 
     /**
+     * The distinct addresses of {@code addresses}, in first-occurrence order. A losing race
+     * attempt's address is re-queued as a fallback candidate (see {@link
+     * Race#onAttemptCompleted}) and can therefore appear more than once by the time every
+     * address is exhausted; the aggregated failure reported to the caller must still name
+     * each one only once.
+     */
+    private static InetAddress[] distinctAddresses(final List<InetSocketAddress> addresses) {
+        final Set<InetAddress> distinct = new LinkedHashSet<>();
+        for (final InetSocketAddress address : addresses) {
+            distinct.add(address.getAddress());
+        }
+        return distinct.toArray(new InetAddress[0]);
+    }
+
+    /**
      * Runs {@code validator} against a freshly connected {@code session}, if one is given;
      * otherwise accepts the session unconditionally. On rejection, closes the session and
      * invokes {@code onRejected} with the rejection cause so the caller can fall back to
@@ -332,19 +349,22 @@ final class MultihomeIOSessionRequester {
             final Runnable onAccepted,
             final Consumer<Exception> onRejected) {
         if (validator == null) {
+            deliver(session, future);
             if (onAccepted != null) {
                 onAccepted.run();
             }
-            deliver(session, future);
             return;
         }
         validator.validate(session, new FutureCallback<IOSession>() {
             @Override
             public void completed(final IOSession validatedSession) {
+                // Deliver the winner before running onAccepted: onAccepted may cancel a DNS
+                // resolution that is no longer needed, and a slow or throwing cancel() must
+                // not delay, or risk losing, a session that has already passed validation.
+                deliver(validatedSession, future);
                 if (onAccepted != null) {
                     onAccepted.run();
                 }
-                deliver(validatedSession, future);
             }
 
             @Override
@@ -573,11 +593,17 @@ final class MultihomeIOSessionRequester {
         private final ComplexFuture<IOSession> future;
 
         private final ReentrantLock lock = new ReentrantLock();
+        // Slot `i` is reserved, under `lock`, the moment attempt `i` is assigned its index,
+        // strictly before connectionInitiator#connect is called for it (see #startNextLocked):
+        // a ConnectionInitiator is free to invoke its callback synchronously, which can
+        // recurse into #startNextLocked for the next attempt before the call for this one
+        // returns. Reserving the slot up front, rather than appending once connect() returns,
+        // keeps inFlight.get(i) the future for attempt #i regardless of that reentrancy;
+        // appending only on return would let the reentrant attempt's own append claim the
+        // slot this attempt expects, shifting every later entry by one.
         private final List<Future<IOSession>> inFlight = new ArrayList<>();
         // Parallel to inFlight, same index-for-index: the address each entry in inFlight was
-        // started against. Entries are appended in strictly increasing attempt-index order
-        // (see #startNextLocked), so inFlightAddresses.get(i) is always the address attempt
-        // #i raced with.
+        // started against.
         private final List<InetSocketAddress> inFlightAddresses = new ArrayList<>();
         // Indices (into inFlight/inFlightAddresses) of attempts that have already failed or
         // been cancelled on their own merits, independently of losing a race: an attempt that
@@ -963,6 +989,13 @@ final class MultihomeIOSessionRequester {
             outstanding++;
             lastAttemptStartNanos = System.nanoTime();
 
+            // Reserve this attempt's slot before calling connect(): see the comment on
+            // #inFlight for why this must happen first, rather than once connect() returns.
+            // inFlight.size() == index here, since every earlier attempt reserved its own
+            // slot the same way before nextIndex was advanced past it.
+            inFlight.add(null);
+            inFlightAddresses.add(remoteAddress);
+
             if (LOG.isDebugEnabled()) {
                 LOG.debug("{}:{} racing attempt {} {}->{} ({})",
                         remoteEndpoint.getHostName(), remoteEndpoint.getPort(), index, localAddress, remoteAddress, connectTimeout);
@@ -992,8 +1025,7 @@ final class MultihomeIOSessionRequester {
                         }
 
                     });
-            inFlight.add(attemptFuture);
-            inFlightAddresses.add(remoteAddress);
+            inFlight.set(index, attemptFuture);
 
             // pendingStagger != null here means the attempt above already completed
             // synchronously and its own failure/cancellation handler already scheduled the
@@ -1173,8 +1205,7 @@ final class MultihomeIOSessionRequester {
                     LOG.debug("{}:{} connection failed validation after racing ({}); no address remains",
                             remoteEndpoint.getHostName(), remoteEndpoint.getPort(), priorCause.getClass());
                 }
-                enhanceAndFail(future, remoteEndpoint, priorCause,
-                        exhausted.stream().map(InetSocketAddress::getAddress).toArray(InetAddress[]::new));
+                enhanceAndFail(future, remoteEndpoint, priorCause, distinctAddresses(exhausted));
                 return;
             }
             if (LOG.isDebugEnabled()) {
@@ -1191,7 +1222,13 @@ final class MultihomeIOSessionRequester {
 
                         @Override
                         public void completed(final IOSession session) {
-                            acceptOrReject(session, validator, future, cause -> tryNextFallbackAttempt(cause));
+                            // A fallback attempt that is accepted is just as much the race's
+                            // winner as one that won the TCP race outright: it must trigger
+                            // #onWinnerAccepted exactly the same way, so a DNS resolution for
+                            // the other address family that is still outstanding is cancelled
+                            // rather than left running to its own timeout for nothing.
+                            acceptOrReject(session, validator, future, Race.this::onWinnerAccepted,
+                                    cause -> tryNextFallbackAttempt(cause));
                         }
 
                         @Override
@@ -1308,10 +1345,7 @@ final class MultihomeIOSessionRequester {
 
         private void finish(final Exception cause) {
             if (cause instanceof IOException && !remoteAddresses.isEmpty()) {
-                final InetAddress[] addresses = remoteAddresses.stream()
-                        .map(InetSocketAddress::getAddress)
-                        .toArray(InetAddress[]::new);
-                future.failed(ConnectExceptionSupport.enhance((IOException) cause, remoteEndpoint, addresses));
+                future.failed(ConnectExceptionSupport.enhance((IOException) cause, remoteEndpoint, distinctAddresses(remoteAddresses)));
             } else {
                 future.failed(cause);
             }
@@ -1322,28 +1356,48 @@ final class MultihomeIOSessionRequester {
             final List<Future<IOSession>> toCancel;
             final Cancellable resolutionToCancel;
             final Future<IOSession> fallbackToCancel;
+            final boolean fullyCancelled;
             lock.lock();
             try {
+                if (cancelled) {
+                    return false;
+                }
                 // `decided` alone does not mean nothing is left to cancel: the race's winner
                 // may have since failed validation (`winnerRejectedEver`), and this race may
                 // still be driving its own fallback attempts, a wait on DNS resolution, or
                 // both. `winnerRejected` itself is not enough here: it is only true during
                 // the wait sub-state, not while a fallback attempt is actively in flight.
-                if (cancelled || decided && !winnerRejectedEver) {
-                    return false;
+                if (decided && !winnerRejectedEver) {
+                    // Nothing of the race's own is left to cancel: the winner was accepted
+                    // (in which case #onWinnerAccepted already cancelled and cleared
+                    // #resolution), or its validation is still pending. In the latter case, a
+                    // DNS resolution for the other family may still be outstanding and is now
+                    // certain never to be needed, whatever the validator goes on to decide.
+                    // Marking this race `cancelled` too keeps #setResolutionCancellable
+                    // consistent: a resolution handle it has not seen yet is still cancelled
+                    // the moment it arrives, instead of being recorded as still useful.
+                    cancelled = true;
+                    resolutionToCancel = resolution;
+                    resolution = null;
+                    toCancel = Collections.emptyList();
+                    fallbackToCancel = null;
+                    fullyCancelled = false;
+                } else {
+                    cancelled = true;
+                    winnerRejected = false;
+                    cancelPendingStaggerLocked();
+                    if (pendingResolutionDelay != null) {
+                        pendingResolutionDelay.cancel(false);
+                        pendingResolutionDelay = null;
+                    }
+                    bufferedIpv4 = null;
+                    toCancel = new ArrayList<>(inFlight);
+                    resolutionToCancel = resolution;
+                    resolution = null;
+                    fallbackToCancel = fallbackAttempt;
+                    fallbackAttempt = null;
+                    fullyCancelled = true;
                 }
-                cancelled = true;
-                winnerRejected = false;
-                cancelPendingStaggerLocked();
-                if (pendingResolutionDelay != null) {
-                    pendingResolutionDelay.cancel(false);
-                    pendingResolutionDelay = null;
-                }
-                bufferedIpv4 = null;
-                toCancel = new ArrayList<>(inFlight);
-                resolutionToCancel = resolution;
-                fallbackToCancel = fallbackAttempt;
-                fallbackAttempt = null;
             } finally {
                 lock.unlock();
             }
@@ -1356,7 +1410,7 @@ final class MultihomeIOSessionRequester {
             if (fallbackToCancel != null) {
                 fallbackToCancel.cancel(true);
             }
-            return true;
+            return fullyCancelled;
         }
 
         // Must be called while holding `lock`.

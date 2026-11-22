@@ -31,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -2132,5 +2133,521 @@ class MultihomeIOSessionRequesterTest {
         asyncDnsResolver.callback.resolved(addresses(1));
         assertEquals(2, attemptCallbacks.size());
         assertEquals(0, scheduler.pendingCount(), "stagger timer scheduled for an already decided race");
+    }
+
+    // -------------------------------------------------------------------------
+    // Reentrant attempt bookkeeping
+    // -------------------------------------------------------------------------
+
+    /**
+     * A {@link ConnectionInitiator} that invokes its callback synchronously, from inside
+     * {@code connect()}, can make a losing attempt's own failure recurse into starting the
+     * next attempt before the outer frame that started the loser has appended its own future
+     * to the race's bookkeeping. The race must still attribute each future to the attempt
+     * that created it by attempt index, not by the order in which {@code connect()} calls
+     * happened to return, or a reentrant start like this shifts every later bookkeeping entry
+     * by one: the still-racing loser would then be left both uncancelled and unretried, while
+     * the already-failed attempt would be misidentified as the loser and retried instead.
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void happyEyeballs_reentrantRacingStart_loserBookkeepingStaysAligned() throws Exception {
+        final List<InetSocketAddress> remoteAddresses = addresses(3);
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+        Mockito.when(dnsResolver.resolve("somehost", 8080)).thenReturn(remoteAddresses);
+
+        final IOSession rejectedWinner = Mockito.mock(IOSession.class);
+        final IOSession accepted = Mockito.mock(IOSession.class);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final List<Future<IOSession>> attemptFutures = new ArrayList<>();
+        final List<FutureCallback<IOSession>> attemptCallbacks = new ArrayList<>();
+        final List<SocketAddress> attemptAddresses = new ArrayList<>();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attemptAddresses.add(invocation.getArgument(1));
+                    attemptCallbacks.add(invocation.getArgument(5));
+                    final Future<IOSession> attemptFuture = Mockito.mock(Future.class);
+                    attemptFutures.add(attemptFuture);
+                    if (attemptCallbacks.size() == 2) {
+                        // Address #2 is refused from inside connect(), after more than the
+                        // 10ms RFC 8305 minimum spacing: the fallback to #3 below runs, and
+                        // returns, before this call itself does.
+                        final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                        Thread.sleep(15);
+                        cb.failed(new IOException("refused"));
+                    }
+                    return attemptFuture;
+                });
+        final MultihomeIOSessionRequester.SessionValidator validator = (session, callback) -> {
+            if (session == rejectedWinner) {
+                callback.failed(new IOException("handshake failed"));
+            } else {
+                callback.completed(session);
+            }
+        };
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, null, Timeout.ofSeconds(5), null, validator, null);
+
+        assertEquals(1, attemptCallbacks.size()); // address #1 in flight
+        scheduler.fireNext(); // address #2 starts, fails synchronously -> #3 starts reentrantly
+        assertEquals(3, attemptCallbacks.size());
+        assertEquals(remoteAddresses.get(2), attemptAddresses.get(2));
+
+        attemptCallbacks.get(0).completed(rejectedWinner); // #1 wins and is rejected; #3 is the only genuine loser
+
+        Mockito.verify(attemptFutures.get(2)).cancel(true);
+        assertEquals(4, attemptCallbacks.size(), "the winner's rejection must retry the in-flight loser #3");
+        assertEquals(remoteAddresses.get(2), attemptAddresses.get(3),
+                "fallback must retry #3, not the already-failed #2");
+
+        attemptCallbacks.get(3).completed(accepted);
+        assertSame(accepted, future.get());
+    }
+
+    // -------------------------------------------------------------------------
+    // Settled attempts must never be mistaken for genuine race losers
+    // -------------------------------------------------------------------------
+
+    /**
+     * An attempt that already failed on its own, before a winner was decided, must stay
+     * excluded from the loser-retry walk after the winner is later rejected: unlike a genuine
+     * loser (one still racing at the moment the winner was decided), it must not be cancelled
+     * a second time, and its address must not be retried. Genuine losers, by contrast, must
+     * be retried ahead of any address not yet attempted at all, in the order their attempts
+     * were originally started.
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void happyEyeballs_winnerRejected_settledAttemptExcluded_genuineLosersRetriedBeforeUntriedAddress() throws Exception {
+        final List<InetSocketAddress> remoteAddresses = addresses(5);
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+        Mockito.when(dnsResolver.resolve("somehost", 8080)).thenReturn(remoteAddresses);
+
+        final IOSession rejected = Mockito.mock(IOSession.class);
+        final IOSession rejected2 = Mockito.mock(IOSession.class);
+        final IOSession accepted = Mockito.mock(IOSession.class);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final List<Future<IOSession>> attemptFutures = new ArrayList<>();
+        final List<FutureCallback<IOSession>> attemptCallbacks = new ArrayList<>();
+        final List<SocketAddress> attemptAddresses = new ArrayList<>();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attemptAddresses.add(invocation.getArgument(1));
+                    attemptCallbacks.add(invocation.getArgument(5));
+                    final Future<IOSession> attemptFuture = Mockito.mock(Future.class);
+                    attemptFutures.add(attemptFuture);
+                    return attemptFuture;
+                });
+        final MultihomeIOSessionRequester.SessionValidator validator = (session, callback) -> {
+            if (session == rejected) {
+                callback.failed(new IOException("handshake failed"));
+            } else if (session == rejected2) {
+                callback.failed(new IOException("handshake failed again"));
+            } else {
+                callback.completed(session);
+            }
+        };
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, null, Timeout.ofSeconds(5), null, validator, null);
+
+        assertEquals(1, attemptCallbacks.size());                     // #1 in flight
+        scheduler.fireNext();
+        assertEquals(2, attemptCallbacks.size());                     // #2 in flight
+        attemptCallbacks.get(0).failed(new IOException("refused"));   // #1 settles on its own, before any winner
+        if (attemptCallbacks.size() == 2) {
+            // Less than the 10ms minimum spacing since #2 started: paced by a timer.
+            scheduler.fireNext();
+        }
+        assertEquals(3, attemptCallbacks.size());                     // #3 in flight
+        scheduler.fireNext();
+        assertEquals(4, attemptCallbacks.size());                     // #4 in flight
+
+        attemptCallbacks.get(2).completed(rejected);                  // #3 wins; #2 and #4 are genuine losers, #5 untried
+
+        Mockito.verify(attemptFutures.get(1)).cancel(true);
+        Mockito.verify(attemptFutures.get(3)).cancel(true);
+        Mockito.verify(attemptFutures.get(0), Mockito.never()).cancel(true);
+        assertEquals(5, attemptCallbacks.size());
+        assertEquals(remoteAddresses.get(1), attemptAddresses.get(4),
+                "the genuine loser #2 must be retried before the never-yet-tried #5");
+
+        // Late callbacks reaching the ORIGINAL, now-cancelled loser attempts must stay inert.
+        attemptCallbacks.get(1).cancelled();
+        attemptCallbacks.get(3).failed(new IOException("late"));
+        final IOSession lateSession = Mockito.mock(IOSession.class);
+        attemptCallbacks.get(1).completed(lateSession);
+        Mockito.verify(lateSession).close(CloseMode.IMMEDIATE);
+        assertEquals(5, attemptCallbacks.size());
+        assertFalse(future.isDone());
+
+        attemptCallbacks.get(4).failed(new IOException("refused again"));
+        assertEquals(6, attemptCallbacks.size());
+        assertEquals(remoteAddresses.get(3), attemptAddresses.get(5), "the other genuine loser #4 must be retried next");
+
+        attemptCallbacks.get(5).completed(rejected2);
+        assertEquals(7, attemptCallbacks.size());
+        assertEquals(remoteAddresses.get(4), attemptAddresses.get(6), "only now is the never-yet-tried #5 retried");
+
+        attemptCallbacks.get(6).completed(accepted);
+        assertSame(accepted, future.get());
+    }
+
+    /**
+     * An attempt unexpectedly cancelled (by something other than the race itself, before a
+     * winner is decided) must be excluded from the loser-retry walk exactly like one that
+     * failed on its own merits: it already settled on its own, not by losing a race, so it
+     * must neither be cancelled a second time nor have its address retried as a fallback
+     * candidate.
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void happyEyeballs_winnerDecided_unexpectedlyCancelledAttemptExcludedFromLoserRetry() throws Exception {
+        final List<InetSocketAddress> remoteAddresses = addresses(3);
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+        Mockito.when(dnsResolver.resolve("somehost", 8080)).thenReturn(remoteAddresses);
+
+        final IOSession rejectedWinner = Mockito.mock(IOSession.class);
+        final IOSession accepted = Mockito.mock(IOSession.class);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final Future<IOSession> firstAttempt = Mockito.mock(Future.class);
+        final Future<IOSession> secondAttempt = Mockito.mock(Future.class);
+        final Future<IOSession> thirdAttempt = Mockito.mock(Future.class);
+        final List<SocketAddress> attemptAddresses = new ArrayList<>();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attemptAddresses.add(invocation.getArgument(1));
+                    return firstAttempt; // address #1: stalls
+                })
+                .thenAnswer(invocation -> {
+                    attemptAddresses.add(invocation.getArgument(1));
+                    return secondAttempt; // address #2: stalls, cancelled externally below
+                })
+                .thenAnswer(invocation -> {
+                    attemptAddresses.add(invocation.getArgument(1));
+                    return thirdAttempt; // address #3: stalls
+                })
+                .thenAnswer(invocation -> {
+                    attemptAddresses.add(invocation.getArgument(1));
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.completed(accepted);
+                    return CompletableFuture.completedFuture(accepted);
+                });
+        final MultihomeIOSessionRequester.SessionValidator validator = (session, callback) -> {
+            if (session == rejectedWinner) {
+                callback.failed(new IOException("handshake failed"));
+            } else {
+                callback.completed(session);
+            }
+        };
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, null, Timeout.ofSeconds(5), null, validator, null);
+
+        scheduler.fireNext(); // address #2 starts racing alongside #1
+
+        final FutureCallback<IOSession>[] firstTwo = captureCallbacks(connectionInitiator, 2);
+        firstTwo[1].cancelled(); // address #2 unexpectedly cancelled, unrelated to this race
+        scheduler.fireNext(); // minimum-spacing advance to address #3
+
+        final FutureCallback<IOSession>[] firstThree = captureCallbacks(connectionInitiator, 3);
+        firstThree[0].completed(rejectedWinner); // address #1 wins; #3 is the genuine loser
+
+        Mockito.verify(thirdAttempt).cancel(true);
+        Mockito.verify(secondAttempt, Mockito.never()).cancel(true);
+        assertEquals(4, attemptAddresses.size(), "the winner's rejection must retry address #3, not #2");
+        assertEquals(remoteAddresses.get(2), attemptAddresses.get(3));
+        assertTrue(future.isDone());
+        assertEquals(accepted, future.get());
+    }
+
+    // -------------------------------------------------------------------------
+    // Aggregated failure message must not list a re-queued address twice
+    // -------------------------------------------------------------------------
+
+    /**
+     * Once a losing race attempt's address is re-queued as a fallback candidate (see {@link
+     * Race#onAttemptCompleted}), it appears twice in the race's own address bookkeeping: once
+     * as originally raced, once as the re-queued fallback candidate. If every address is then
+     * exhausted, the aggregated failure reported to the caller must still name each distinct
+     * address only once.
+     */
+    @Test
+    void happyEyeballs_exhaustedAfterRequeue_aggregatedFailureListsEachAddressOnce() throws Exception {
+        final List<InetSocketAddress> remoteAddresses = addresses(2);
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+        Mockito.when(dnsResolver.resolve("somehost", 8080)).thenReturn(remoteAddresses);
+
+        final IOSession rejected = Mockito.mock(IOSession.class);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final List<FutureCallback<IOSession>> attemptCallbacks = new ArrayList<>();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attemptCallbacks.add(invocation.getArgument(5));
+                    return Mockito.mock(Future.class);
+                });
+        final MultihomeIOSessionRequester.SessionValidator validator = (session, callback) -> {
+            if (session == rejected) {
+                callback.failed(new IOException("handshake failed"));
+            } else {
+                callback.completed(session);
+            }
+        };
+
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, null, Timeout.ofSeconds(5), null, validator, null);
+
+        scheduler.fireNext();                                        // address #2 starts racing alongside #1
+        attemptCallbacks.get(1).completed(rejected);                 // #2 wins and is rejected; #1 is re-queued as fallback
+        assertEquals(3, attemptCallbacks.size());
+        // A plain IOException is reported to the caller unchanged, with no address list
+        // built at all (see ConnectExceptionSupport#enhance); a ConnectException is the
+        // case that actually embeds the address list this test is about.
+        attemptCallbacks.get(2).failed(new java.net.ConnectException("Connection refused")); // the re-queued #1 also fails: nothing left to try
+
+        final Throwable cause = causeOf(future);
+        final String message = String.valueOf(cause.getMessage());
+        final String address1 = remoteAddresses.get(0).getAddress().toString();
+        assertEquals(message.indexOf(address1), message.lastIndexOf(address1),
+                "address listed more than once: " + message);
+    }
+
+    // -------------------------------------------------------------------------
+    // A DNS resolution still outstanding must be cancelled on every exit, not only one
+    // -------------------------------------------------------------------------
+
+    /**
+     * A fallback attempt that is accepted after the race's TCP winner failed validation is
+     * just as much the operation's winner as one that won the TCP race outright: it must
+     * cancel a DNS resolution for the other address family that is still outstanding exactly
+     * the same way.
+     */
+    @Test
+    void asyncDns_fallbackAttemptAccepted_cancelsOutstandingResolution() throws Exception {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final IOSession rejected = Mockito.mock(IOSession.class);
+        final IOSession accepted = Mockito.mock(IOSession.class);
+        final List<FutureCallback<IOSession>> attemptCallbacks = new ArrayList<>();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attemptCallbacks.add(invocation.getArgument(5));
+                    return Mockito.mock(Future.class);
+                });
+        final MultihomeIOSessionRequester.SessionValidator validator = (session, callback) -> {
+            if (session == rejected) {
+                callback.failed(new IOException("handshake failed"));
+            } else {
+                callback.completed(session);
+            }
+        };
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, null, Timeout.ofSeconds(5), null, validator, null);
+
+        asyncDnsResolver.callback.resolved(ipv6Addresses(2));
+        attemptCallbacks.get(0).completed(rejected);
+        assertEquals(2, attemptCallbacks.size());
+
+        attemptCallbacks.get(1).completed(accepted); // the fallback attempt, not the TCP race winner, is accepted
+        assertSame(accepted, future.get());
+        Mockito.verify(asyncDnsResolver.resolutionHandle).cancel();
+    }
+
+    /** Same as above, but the accepted fallback attempt is for an address of the family that
+     *  resolved only after the TCP winner was already rejected, and resolution is still not
+     *  complete at the time of acceptance. */
+    @Test
+    void asyncDns_lateFamilyFallbackAcceptedBeforeResolutionComplete_cancelsResolution() throws Exception {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final IOSession rejected = Mockito.mock(IOSession.class);
+        final IOSession accepted = Mockito.mock(IOSession.class);
+        final List<FutureCallback<IOSession>> attemptCallbacks = new ArrayList<>();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attemptCallbacks.add(invocation.getArgument(5));
+                    return Mockito.mock(Future.class);
+                });
+        final MultihomeIOSessionRequester.SessionValidator validator = (session, callback) -> {
+            if (session == rejected) {
+                callback.failed(new IOException("handshake failed"));
+            } else {
+                callback.completed(session);
+            }
+        };
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, null, Timeout.ofSeconds(5), null, validator, null);
+
+        asyncDnsResolver.callback.resolved(ipv6Addresses(1));
+        attemptCallbacks.get(0).completed(rejected);
+        asyncDnsResolver.callback.resolved(addresses(1)); // the other family arrives while waiting for a fallback
+        assertEquals(2, attemptCallbacks.size());
+
+        attemptCallbacks.get(1).completed(accepted);
+        assertSame(accepted, future.get());
+        Mockito.verify(asyncDnsResolver.resolutionHandle).cancel();
+    }
+
+    /**
+     * The caller cancels the overall operation while the race winner's validation is still
+     * pending, and validation subsequently fails: {@code Race#cancel}'s branch for "nothing of
+     * the race's own left to cancel" (a winner was decided but never rejected) must still
+     * cancel a DNS resolution for the other address family that is still outstanding, rather
+     * than leaving it to run to its own timeout for nothing.
+     */
+    @Test
+    void asyncDns_cancelDuringWinnerValidation_thenValidationFails_cancelsOutstandingResolution() throws Exception {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final IOSession accepted = Mockito.mock(IOSession.class);
+        final AtomicReference<FutureCallback<IOSession>> validation = new AtomicReference<>();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.completed(accepted);
+                    return CompletableFuture.completedFuture(accepted);
+                });
+        final MultihomeIOSessionRequester.SessionValidator pendingValidator = (session, callback) -> validation.set(callback);
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, null, Timeout.ofSeconds(5), null, pendingValidator, null);
+
+        asyncDnsResolver.callback.resolved(ipv6Addresses(1));
+        assertNotNull(validation.get());
+
+        future.cancel(true);
+        validation.get().failed(new IOException("handshake aborted"));
+
+        assertTrue(future.isCancelled());
+        Mockito.verify(asyncDnsResolver.resolutionHandle).cancel();
+    }
+
+    /** Same as above, but the validator itself reports {@code cancelled()} for the winner,
+     *  rather than the caller cancelling the overall operation directly. */
+    @Test
+    void asyncDns_validatorReportsCancelledForWinner_cancelsOutstandingResolution() throws Exception {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final IOSession accepted = Mockito.mock(IOSession.class);
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    final FutureCallback<IOSession> cb = invocation.getArgument(5);
+                    cb.completed(accepted);
+                    return CompletableFuture.completedFuture(accepted);
+                });
+        final MultihomeIOSessionRequester.SessionValidator cancellingValidator = (session, callback) -> callback.cancelled();
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, null, Timeout.ofSeconds(5), null, cancellingValidator, null);
+
+        asyncDnsResolver.callback.resolved(ipv6Addresses(1));
+
+        assertTrue(future.isCancelled());
+        Mockito.verify(asyncDnsResolver.resolutionHandle).cancel();
+    }
+
+    /**
+     * The resolver hands over an address and the race's winner is accepted before {@code
+     * resolve()} even returns its handle: {@code Race#setResolutionCancellable} must treat the
+     * resolution as no longer needed by checking whether the winner was accepted, not only
+     * whether the race was cancelled as a whole, or a handle arriving this late would never be
+     * cancelled.
+     */
+    @Test
+    void asyncDns_winnerAcceptedBeforeResolutionHandleIsSet_handleCancelledOnceKnown() throws Exception {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final IOSession accepted = Mockito.mock(IOSession.class);
+        final Cancellable handle = Mockito.mock(Cancellable.class);
+        final List<InetSocketAddress> ipv6 = ipv6Addresses(1);
+        final List<FutureCallback<IOSession>> attemptCallbacks = new ArrayList<>();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attemptCallbacks.add(invocation.getArgument(5));
+                    return Mockito.mock(Future.class);
+                });
+        final AsyncDnsResolver resolver = (host, port, callback) -> {
+            callback.resolved(ipv6);
+            // The reactor completes (and accepts, with no validator to fail) the attempt
+            // while the resolver is still busy and has not yet returned its own handle.
+            attemptCallbacks.get(0).completed(accepted);
+            return handle;
+        };
+        final FakeScheduler scheduler = new FakeScheduler();
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), resolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        assertTrue(future.isDone());
+        assertEquals(accepted, future.get());
+        Mockito.verify(handle, Mockito.times(1)).cancel();
+    }
+
+    /**
+     * Once an address family's resolution has reported {@code completed()}, a DNS resolution
+     * handle for it must not be cancelled again when the race's winner is later accepted:
+     * {@code Race#onWinnerAccepted} must consult whether resolution is already complete, not
+     * cancel whatever handle it still has on record unconditionally.
+     */
+    @Test
+    void asyncDns_winnerAcceptedAfterResolutionAlreadyComplete_handleNotCancelledAgain() throws Exception {
+        Mockito.when(namedEndpoint.getHostName()).thenReturn("somehost");
+        Mockito.when(namedEndpoint.getPort()).thenReturn(8080);
+
+        final IOSession accepted = Mockito.mock(IOSession.class);
+        final List<FutureCallback<IOSession>> attemptCallbacks = new ArrayList<>();
+        Mockito.when(connectionInitiator.connect(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    attemptCallbacks.add(invocation.getArgument(5));
+                    return Mockito.mock(Future.class);
+                });
+        final FakeScheduler scheduler = new FakeScheduler();
+        final FakeAsyncDnsResolver asyncDnsResolver = new FakeAsyncDnsResolver();
+        final MultihomeIOSessionRequester requester =
+                new MultihomeIOSessionRequester(dnsResolver, true, TimeValue.ofMilliseconds(250), asyncDnsResolver, scheduler.mock);
+        final Future<IOSession> future = requester.connect(
+                connectionInitiator, namedEndpoint, null, Timeout.ofSeconds(5), null, null);
+
+        asyncDnsResolver.callback.resolved(ipv6Addresses(1));
+        asyncDnsResolver.callback.failed(new UnknownHostException("no A record"));
+        asyncDnsResolver.callback.completed();
+
+        attemptCallbacks.get(0).completed(accepted);
+        assertTrue(future.isDone());
+        assertEquals(accepted, future.get());
+        Mockito.verify(asyncDnsResolver.resolutionHandle, Mockito.never()).cancel();
     }
 }
